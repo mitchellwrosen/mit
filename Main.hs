@@ -3,12 +3,14 @@ module Main where
 import Control.Exception (throwIO)
 import Control.Monad
 import Data.Char
+import Data.Maybe
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.IO qualified as Text
-import System.Environment (getArgs)
+import System.Environment (getArgs, lookupEnv)
 import System.Exit (ExitCode (..), exitFailure)
 import System.IO (Handle, hIsEOF)
+import System.IO.Unsafe (unsafePerformIO)
 import System.Process
 
 main :: IO ()
@@ -91,6 +93,11 @@ main =
           "  mit commit"
         ]
 
+debug :: Bool
+debug =
+  isJust (unsafePerformIO (lookupEnv "debug"))
+{-# NOINLINE debug #-}
+
 die :: Text -> IO a
 die message = do
   Text.putStrLn message
@@ -157,7 +164,7 @@ instance a ~ ExitCode => ProcessOutput (Either a (Stdout Text)) where
 
 git :: ProcessOutput a => [Text] -> IO a
 git args = do
-  do
+  when debug do
     let quote :: Text -> Text
         quote s =
           if Text.any isSpace s then "'" <> Text.replace "'" "\\'" s <> "'" else s
@@ -185,7 +192,7 @@ git args = do
   exitCode <- waitForProcess processHandle
   stdoutLines <- drainTextHandle stdoutHandle
   stderrLines <- drainTextHandle stderrHandle
-  print (stdoutLines, stderrLines, exitCode)
+  when debug (print (stdoutLines, stderrLines, exitCode))
   fromProcessOutput stdoutLines stderrLines exitCode
   where
     drainTextHandle :: Handle -> IO [Text]
@@ -227,7 +234,7 @@ git2 args = do
           use_process_jobs = False
         }
   exitCode <- waitForProcess processHandle
-  print exitCode
+  when debug (print exitCode)
   pure exitCode
 
 --
