@@ -26,7 +26,7 @@ main =
       git ["diff", "--quiet"] >>= \case
         ExitFailure _ -> do
           do
-            code <- git2 ["commit", "--all"]
+            code <- git2 ["commit", "--all", "--quiet"]
             when (code /= ExitSuccess) (throwIO code)
           getBranchRemote branch >>= \case
             Nothing -> git ["push", "--set-upstream"]
@@ -208,7 +208,7 @@ git args = do
 -- Yucky interactive/inherity variant (so 'git commit' can open an editor).
 git2 :: [Text] -> IO ExitCode
 git2 args = do
-  do
+  when debug do
     let quote :: Text -> Text
         quote s =
           if Text.any isSpace s then "'" <> Text.replace "'" "\\'" s <> "'" else s
