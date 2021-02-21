@@ -12,6 +12,7 @@ import System.Exit (ExitCode (..), exitFailure)
 import System.IO (Handle, hIsEOF)
 import System.IO.Unsafe (unsafePerformIO)
 import System.Process
+import Prelude hiding (head)
 
 main :: IO ()
 main =
@@ -19,82 +20,130 @@ main =
     ["clone", parseGitRepo . Text.pack -> Just (url, name)] -> do
       code <- git ["clone", url, "--separate-git-dir", name <> "/.git", name <> "/master"]
       when (code /= ExitSuccess) (throwIO code)
-    ["commit"] -> do
-      Stdout branch <- git ["branch", "--show-current"]
-      () <- git ["reset"]
-      () <- git ["add", "--all", "--intent-to-add"]
-      git ["diff", "--quiet"] >>= \case
-        ExitFailure _ -> do
-          getBranchRemote branch >>= \case
-            Nothing -> do
-              git2 ["commit", "--all", "--quiet"]
-              git ["push", "--set-upstream"]
-            Just remote -> do
-              () <- git ["fetch", remote]
-              upstream <- getBranchUpstream branch
-              git ["rev-list", remote <> "/" <> upstream, Text.cons '^' branch] >>= \case
-                Stdout [] -> do
-                  git2 ["commit", "--all", "--quiet"]
-                  -- TODO handle race condition where the push fails with non-fast-forward anyway?
-                  -- TODO pop stash after
-                  git ["push", "--quiet", remote, branch <> ":" <> upstream]
-                Stdout _ -> die "would fork"
-        ExitSuccess -> exitFailure
-    ["merge", Text.pack -> branch] -> do
-      () <- git ["reset"]
-      () <- git ["add", "--all", "--intent-to-add"]
-      git ["diff", "--quiet"] >>= \case
-        -- for now: just require a clean worktree
-        -- FIXME stash and stuff
-        ExitFailure _ -> die "worktree dirty"
-        ExitSuccess -> do
-          target <-
-            getBranchRemote branch >>= \case
-              Nothing -> pure branch
-              Just remote -> do
-                () <- git ["fetch", remote]
-                upstream <- Text.append (remote <> "/") <$> getBranchUpstream branch
-                -- for now: when merging foo, just require foo and origin/foo to be in sync.
-                -- FIXME lift this restriction with some complicated merging and stuff
-                git ["rev-list", branch, Text.cons '^' upstream] >>= \case
-                  Stdout [] -> pure ()
-                  Stdout _ -> die (branch <> " ahead of " <> upstream)
-                git ["rev-list", upstream, Text.cons '^' branch] >>= \case
-                  Stdout [] -> pure ()
-                  Stdout _ -> die (upstream <> " ahead of " <> branch)
-                pure upstream
-          git ["merge", "--ff", "--no-commit", "--quiet", target] >>= \case
-            ExitFailure _ -> do
-              Stdout conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
-              (Text.putStr . Text.unlines)
-                ( "Merge failed. There are conflicts in the following files:" :
-                  "" :
-                  map ("  " <>) conflicts
-                    ++ [ "",
-                         "Please either:",
-                         "",
-                         "  1. Resolve the conflicts, then run \033[1mmit commit\033[0m.",
-                         "  2. Run \033[1mgit merge --abort\033[0m." -- TODO mit abort
-                       ]
-                )
-              exitFailure
-            ExitSuccess ->
-              git ["rev-parse", "--quiet", "--verify", "MERGE_HEAD"] >>= \case
-                ExitFailure _ -> do
-                  -- TODO pop stash
-                  pure ()
-                ExitSuccess ->
-                  (Text.putStr . Text.unlines)
-                    [ "Merge succeeded. Please either:",
-                      "  1. Run \033[1mmit commit\033[0m.",
-                      "  2. Run \033[1mgit merge --abort\033[0m." -- TODO mit abort
-                    ]
+    ["commit"] -> mitCommit
+    ["merge", branch] -> mitMerge (Text.pack branch)
     _ ->
       (Text.putStr . Text.unlines)
         [ "Usage:",
           "  mit clone ≪repo≫",
-          "  mit commit"
+          "  mit commit",
+          "  mit merge ≪branch≫"
         ]
+
+mitCommit :: IO ()
+mitCommit = do
+  Stdout branch <- git ["branch", "--show-current"]
+  gitDiff >>= \case
+    Differences -> do
+      getBranchRemote branch >>= \case
+        -- New branch: push and set upstream
+        Nothing -> do
+          git2 ["commit", "--all", "--quiet"]
+          git ["push", "--set-upstream"]
+        Just remote -> do
+          () <- git ["fetch", remote]
+          upstream <- getBranchUpstream branch
+          git ["rev-list", remote <> "/" <> upstream, Text.cons '^' branch] >>= \case
+            Stdout [] -> do
+              git2 ["commit", "--all", "--quiet"]
+              -- TODO handle race condition where the push fails with non-fast-forward anyway?
+              -- TODO pop stash after? (what stash?)
+              git ["push", "--quiet", remote, branch <> ":" <> upstream]
+            Stdout _ -> do
+              -- FIXME I think this fails on git prior to 2.30.1, if there are any new files
+              () <- git ["stash", "push", "--quiet"]
+              Stdout head <- git ["rev-parse", "HEAD"]
+              gitMerge (remote <> "/" <> upstream) >>= \case
+                -- We can't even cleanly merge with upstream, so we're already forked. Might as well allow the commit
+                -- locally.
+                MergeFailed _conflicts -> do
+                  () <- git ["merge", "--abort"]
+                  () <- git ["stash", "pop", "--quiet"]
+                  git2 ["commit", "--all", "--quiet"]
+                  Text.putStrLn "warning: forked!" -- TODO recommend what to do next
+                MergeFastForwarded -> do
+                  () <- git ["reset", "--hard", head]
+                  () <- git ["stash", "pop", "--quiet"]
+                  Text.putStrLn "fast-forwarded, then backed out" -- TODO handle this case
+                MergeBubbled -> do
+                  () <- git ["reset", "--hard", head]
+                  () <- git ["stash", "pop", "--quiet"]
+                  Text.putStrLn "bubbled, then backed out" -- TODO handle this case
+    NoDifferences -> exitFailure
+
+mitMerge :: Text -> IO ()
+mitMerge branch =
+  gitDiff >>= \case
+    -- for now: just require a clean worktree
+    -- FIXME stash and stuff
+    Differences -> die "worktree dirty"
+    NoDifferences -> do
+      target <-
+        getBranchRemote branch >>= \case
+          Nothing -> pure branch
+          Just remote -> do
+            () <- git ["fetch", remote]
+            upstream <- Text.append (remote <> "/") <$> getBranchUpstream branch
+            -- for now: when merging foo, just require foo and origin/foo to be in sync.
+            -- FIXME lift this restriction with some complicated merging and stuff
+            git ["rev-list", branch, Text.cons '^' upstream] >>= \case
+              Stdout [] -> pure ()
+              Stdout _ -> die (branch <> " ahead of " <> upstream)
+            git ["rev-list", upstream, Text.cons '^' branch] >>= \case
+              Stdout [] -> pure ()
+              Stdout _ -> die (upstream <> " ahead of " <> branch)
+            pure upstream
+      gitMerge target >>= \case
+        MergeFailed conflicts -> do
+          (Text.putStr . Text.unlines)
+            ( "Merge failed. There are conflicts in the following files:" :
+              "" :
+              map ("  " <>) conflicts
+                ++ [ "",
+                     "Please either:",
+                     "",
+                     "  1. Resolve the conflicts, then run \033[1mmit commit\033[0m.",
+                     "  2. Run \033[1mgit merge --abort\033[0m." -- TODO mit abort
+                   ]
+            )
+          exitFailure
+        MergeFastForwarded -> do
+          -- TODO pop stash
+          pure ()
+        MergeBubbled ->
+          (Text.putStr . Text.unlines)
+            [ "Merge succeeded. Please either:",
+              "  1. Run \033[1mmit commit\033[0m.",
+              "  2. Run \033[1mgit merge --abort\033[0m." -- TODO mit abort
+            ]
+
+data DiffResult
+  = Differences
+  | NoDifferences
+
+gitDiff :: IO DiffResult
+gitDiff = do
+  () <- git ["reset"]
+  () <- git ["add", "--all", "--intent-to-add"]
+  git ["diff", "--quiet"] <&> \case
+    ExitFailure _ -> Differences
+    ExitSuccess -> NoDifferences
+
+data MergeResult
+  = MergeFailed [Text]
+  | MergeBubbled
+  | MergeFastForwarded
+
+gitMerge :: Text -> IO MergeResult
+gitMerge branch =
+  git ["merge", "--ff", "--no-commit", "--quiet", branch] >>= \case
+    ExitFailure _ -> do
+      Stdout conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
+      pure (MergeFailed conflicts)
+    ExitSuccess ->
+      git ["rev-parse", "--quiet", "--verify", "MERGE_HEAD"] >>= \case
+        ExitFailure _ -> pure MergeFastForwarded
+        ExitSuccess -> pure MergeBubbled
 
 debug :: Bool
 debug =
