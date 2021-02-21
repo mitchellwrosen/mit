@@ -7,7 +7,7 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.IO qualified as Text
 import System.Environment (getArgs)
-import System.Exit
+import System.Exit (ExitCode (..), exitFailure)
 import System.IO (Handle, hIsEOF)
 import System.Process
 
@@ -19,21 +19,94 @@ main =
       when (code /= ExitSuccess) (throwIO code)
     ["commit"] -> do
       Stdout branch <- git ["branch", "--show-current"]
+      () <- git ["reset"]
       () <- git ["add", "--all", "--intent-to-add"]
       git ["diff", "--quiet"] >>= \case
         ExitFailure _ -> do
           do
             code <- git2 ["commit", "--all"]
             when (code /= ExitSuccess) (throwIO code)
-          git ["push", "origin", branch <> ":" <> branch]
-        -- TODO pop stash
+          getBranchRemote branch >>= \case
+            Nothing -> git ["push", "--set-upstream"]
+            Just remote -> do
+              () <- git ["fetch", remote]
+              upstream <- getBranchUpstream branch
+              -- TODO don't push if upstream is ahead
+              -- TODO pop stash after
+              git ["push", remote, branch <> ":" <> upstream]
         ExitSuccess -> pure ()
+    ["merge", Text.pack -> branch] -> do
+      () <- git ["reset"]
+      () <- git ["add", "--all", "--intent-to-add"]
+      git ["diff", "--quiet"] >>= \case
+        -- for now: just require a clean worktree
+        -- FIXME stash and stuff
+        ExitFailure _ -> die "worktree dirty"
+        ExitSuccess -> do
+          target <-
+            getBranchRemote branch >>= \case
+              Nothing -> pure branch
+              Just remote -> do
+                () <- git ["fetch", remote]
+                upstream <- Text.append (remote <> "/") <$> getBranchUpstream branch
+                -- for now: when merging foo, just require foo and origin/foo to be in sync.
+                -- FIXME lift this restriction with some complicated merging and stuff
+                git ["rev-list", branch, Text.cons '^' upstream] >>= \case
+                  Stdout [] -> pure ()
+                  Stdout _ -> die (branch <> " ahead of " <> upstream)
+                git ["rev-list", upstream, Text.cons '^' branch] >>= \case
+                  Stdout [] -> pure ()
+                  Stdout _ -> die (upstream <> " ahead of " <> branch)
+                pure upstream
+          git ["merge", "--ff", "--no-commit", "--quiet", target] >>= \case
+            ExitFailure _ -> do
+              Stdout conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
+              (Text.putStr . Text.unlines)
+                ( "Merge failed. There are conflicts in the following files:" :
+                  "" :
+                  map ("  " <>) conflicts
+                    ++ [ "",
+                         "Please either:",
+                         "",
+                         "  1. Resolve the conflicts, then run \033[1mmit commit\033[0m.",
+                         "  2. Run \033[1mgit merge --abort\033[0m." -- TODO mit abort
+                       ]
+                )
+              exitFailure
+            ExitSuccess ->
+              git ["rev-parse", "--quiet", "--verify", "MERGE_HEAD"] >>= \case
+                ExitFailure _ -> do
+                  -- TODO pop stash
+                  pure ()
+                ExitSuccess ->
+                  (Text.putStr . Text.unlines)
+                    [ "Merge succeeded. Please either:",
+                      "  1. Run \033[1mmit commit\033[0m.",
+                      "  2. Run \033[1mgit merge --abort\033[0m." -- TODO mit abort
+                    ]
     _ ->
-      (Text.putStrLn . Text.unlines)
+      (Text.putStr . Text.unlines)
         [ "Usage:",
           "  mit clone ≪repo≫",
           "  mit commit"
         ]
+
+die :: Text -> IO a
+die message = do
+  Text.putStrLn message
+  exitFailure
+
+getBranchRemote :: Text -> IO (Maybe Text)
+getBranchRemote branch = do
+  git ["config", "--local", "--get", "branch." <> branch <> ".remote"] <&> \case
+    Left _ -> Nothing
+    Right (Stdout remote) -> Just remote
+
+getBranchUpstream :: Text -> IO Text
+getBranchUpstream branch = do
+  Stdout (Text.stripPrefix "refs/heads/" -> Just upstream) <-
+    git ["config", "--local", "--get", "branch." <> branch <> ".merge"]
+  pure upstream
 
 -- git@github.com:mitchellwrosen/mit.git -> Just ("git@github.com:mitchellwrosen/mit.git", "mit")
 parseGitRepo :: Text -> Maybe (Text, Text)
@@ -65,6 +138,20 @@ instance ProcessOutput (Stdout Text) where
     case out of
       [] -> throwIO (userError "no stdout")
       line : _ -> pure (Stdout line)
+
+instance a ~ Text => ProcessOutput (Stdout [a]) where
+  fromProcessOutput out _ code = do
+    when (code /= ExitSuccess) (throwIO code)
+    pure (Stdout out)
+
+instance a ~ ExitCode => ProcessOutput (Either a (Stdout Text)) where
+  fromProcessOutput out _ code =
+    case code of
+      ExitFailure _ -> pure (Left code)
+      ExitSuccess ->
+        case out of
+          [] -> throwIO (userError "no stdout")
+          line : _ -> pure (Right (Stdout line))
 
 --
 
@@ -142,3 +229,9 @@ git2 args = do
   exitCode <- waitForProcess processHandle
   print exitCode
   pure exitCode
+
+--
+
+(<&>) :: Functor f => f a -> (a -> b) -> f b
+(<&>) =
+  flip fmap

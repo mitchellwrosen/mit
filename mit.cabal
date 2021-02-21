@@ -7,9 +7,11 @@ common component
   default-extensions:
     BlockArguments
     FlexibleInstances
+    GADTs
     LambdaCase
     ImportQualifiedPost
     OverloadedStrings
+    ScopedTypeVariables
     ViewPatterns
   default-language: Haskell2010
   ghc-options: -Wall
