@@ -15,26 +15,19 @@ main :: IO ()
 main =
   getArgs >>= \case
     ["clone", parseGitRepo . Text.pack -> Just (url, name)] -> do
-      (_, _, code) <- git ["clone", url, "--separate-git-dir", name <> "/.git", name <> "/master"]
+      code <- git ["clone", url, "--separate-git-dir", name <> "/.git", name <> "/master"]
       when (code /= ExitSuccess) (throwIO code)
     ["commit"] -> do
-      branch <- do
-        ([branch], _, code) <- git ["branch", "--show-current"]
-        when (code /= ExitSuccess) (throwIO code)
-        pure branch
-      do
-        (_, _, code) <- git ["add", "--all", "--intent-to-add"]
-        when (code /= ExitSuccess) (throwIO code)
+      Stdout branch <- git ["branch", "--show-current"]
+      () <- git ["add", "--all", "--intent-to-add"]
       git ["diff", "--quiet"] >>= \case
-        (_, _, ExitFailure _) -> do
+        ExitFailure _ -> do
           do
             code <- git2 ["commit", "--all"]
             when (code /= ExitSuccess) (throwIO code)
-          do
-            (_, _, code) <- git ["push", "origin", branch <> ":" <> branch]
-            when (code /= ExitSuccess) (throwIO code)
+          git ["push", "origin", branch <> ":" <> branch]
         -- TODO pop stash
-        (_, _, ExitSuccess) -> pure ()
+        ExitSuccess -> pure ()
     _ ->
       (Text.putStrLn . Text.unlines)
         [ "Usage:",
@@ -48,9 +41,34 @@ parseGitRepo url = do
   url' <- Text.stripSuffix ".git" url
   pure (url, Text.takeWhileEnd (/= '/') url')
 
+-- Some ad-hoc process return value overloading, for cleaner syntax
+
+newtype Stdout a
+  = Stdout a
+
+newtype Stderr a
+  = Stderr a
+
+class ProcessOutput a where
+  fromProcessOutput :: [Text] -> [Text] -> ExitCode -> IO a
+
+instance ProcessOutput () where
+  fromProcessOutput _ _ code =
+    when (code /= ExitSuccess) (throwIO code)
+
+instance ProcessOutput ExitCode where
+  fromProcessOutput _ _ = pure
+
+instance ProcessOutput (Stdout Text) where
+  fromProcessOutput out _ code = do
+    when (code /= ExitSuccess) (throwIO code)
+    case out of
+      [] -> throwIO (userError "no stdout")
+      line : _ -> pure (Stdout line)
+
 --
 
-git :: [Text] -> IO ([Text], [Text], ExitCode)
+git :: ProcessOutput a => [Text] -> IO a
 git args = do
   do
     let quote :: Text -> Text
@@ -81,7 +99,7 @@ git args = do
   stdoutLines <- drainTextHandle stdoutHandle
   stderrLines <- drainTextHandle stderrHandle
   print (stdoutLines, stderrLines, exitCode)
-  pure (stdoutLines, stderrLines, exitCode)
+  fromProcessOutput stdoutLines stderrLines exitCode
   where
     drainTextHandle :: Handle -> IO [Text]
     drainTextHandle handle = do
@@ -93,6 +111,7 @@ git args = do
               True -> pure (reverse acc)
       loop []
 
+-- Yucky interactive/inherity variant (so 'git commit' can open an editor).
 git2 :: [Text] -> IO ExitCode
 git2 args = do
   do

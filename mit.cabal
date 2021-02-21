@@ -6,6 +6,7 @@ common component
   build-depends: base
   default-extensions:
     BlockArguments
+    FlexibleInstances
     LambdaCase
     ImportQualifiedPost
     OverloadedStrings
