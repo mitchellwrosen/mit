@@ -2,12 +2,23 @@ cabal-version: 3.0
 name: mit
 version: 0
 
+common component
+  build-depends: base
+  default-extensions:
+    BlockArguments
+    LambdaCase
+    ImportQualifiedPost
+    OverloadedStrings
+    ViewPatterns
+  default-language: Haskell2010
+  ghc-options: -Wall
+
 executable mit
+  import: component
   build-depends:
-    base,
     bytestring,
     process,
     text,
   ghc-options:
-    -O -Wall -threaded
+    -O -threaded
   main-is: Main.hs
