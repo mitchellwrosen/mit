@@ -25,17 +25,20 @@ main =
       () <- git ["add", "--all", "--intent-to-add"]
       git ["diff", "--quiet"] >>= \case
         ExitFailure _ -> do
-          do
-            code <- git2 ["commit", "--all", "--quiet"]
-            when (code /= ExitSuccess) (throwIO code)
           getBranchRemote branch >>= \case
-            Nothing -> git ["push", "--set-upstream"]
+            Nothing -> do
+              git2 ["commit", "--all", "--quiet"]
+              git ["push", "--set-upstream"]
             Just remote -> do
               () <- git ["fetch", remote]
               upstream <- getBranchUpstream branch
-              -- TODO don't push if upstream is ahead
-              -- TODO pop stash after
-              git ["push", remote, branch <> ":" <> upstream]
+              git ["rev-list", remote <> "/" <> upstream, Text.cons '^' branch] >>= \case
+                Stdout [] -> do
+                  git2 ["commit", "--all", "--quiet"]
+                  -- TODO handle race condition where the push fails with non-fast-forward anyway?
+                  -- TODO pop stash after
+                  git ["push", "--quiet", remote, branch <> ":" <> upstream]
+                Stdout _ -> die "would fork"
         ExitSuccess -> exitFailure
     ["merge", Text.pack -> branch] -> do
       () <- git ["reset"]
@@ -206,7 +209,7 @@ git args = do
       loop []
 
 -- Yucky interactive/inherity variant (so 'git commit' can open an editor).
-git2 :: [Text] -> IO ExitCode
+git2 :: [Text] -> IO ()
 git2 args = do
   when debug do
     let quote :: Text -> Text
@@ -235,7 +238,7 @@ git2 args = do
         }
   exitCode <- waitForProcess processHandle
   when debug (print exitCode)
-  pure exitCode
+  when (exitCode /= ExitSuccess) (throwIO exitCode)
 
 --
 
