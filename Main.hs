@@ -15,23 +15,26 @@ main :: IO ()
 main =
   getArgs >>= \case
     ["clone", parseGitRepo . Text.pack -> Just (url, name)] -> do
-      (_out, _err, code) <- git ["clone", url, "--separate-git-dir", name <> "/.git", name <> "/master"]
+      (_, _, code) <- git ["clone", url, "--separate-git-dir", name <> "/.git", name <> "/master"]
       when (code /= ExitSuccess) (throwIO code)
     ["commit"] -> do
       branch <- do
-        ([branch], _err, code) <- git ["branch", "--show-current"]
+        ([branch], _, code) <- git ["branch", "--show-current"]
         when (code /= ExitSuccess) (throwIO code)
         pure branch
       do
-        (_out, _err, code) <- git ["add", "--all", "--intent-to-add"]
+        (_, _, code) <- git ["add", "--all", "--intent-to-add"]
         when (code /= ExitSuccess) (throwIO code)
-      do
-        code <- git2 ["commit", "--all"]
-        when (code /= ExitSuccess) (throwIO code)
-      do
-        (_out, _err, code) <- git ["push", "origin", branch <> ":" <> branch]
-        when (code /= ExitSuccess) (throwIO code)
-    -- TODO pop stash
+      git ["diff", "--quiet"] >>= \case
+        (_, _, ExitFailure _) -> do
+          do
+            code <- git2 ["commit", "--all"]
+            when (code /= ExitSuccess) (throwIO code)
+          do
+            (_, _, code) <- git ["push", "origin", branch <> ":" <> branch]
+            when (code /= ExitSuccess) (throwIO code)
+        -- TODO pop stash
+        (_, _, ExitSuccess) -> pure ()
     _ ->
       (Text.putStrLn . Text.unlines)
         [ "Usage:",
