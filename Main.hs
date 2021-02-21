@@ -36,7 +36,7 @@ main =
               -- TODO don't push if upstream is ahead
               -- TODO pop stash after
               git ["push", remote, branch <> ":" <> upstream]
-        ExitSuccess -> pure ()
+        ExitSuccess -> exitFailure
     ["merge", Text.pack -> branch] -> do
       () <- git ["reset"]
       () <- git ["add", "--all", "--intent-to-add"]
