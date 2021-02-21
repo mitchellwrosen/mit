@@ -1,0 +1,13 @@
+cabal-version: 3.0
+name: mit
+version: 0
+
+executable mit
+  build-depends:
+    base,
+    bytestring,
+    process,
+    text,
+  ghc-options:
+    -O -Wall -threaded
+  main-is: Main.hs
