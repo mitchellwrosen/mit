@@ -23,7 +23,7 @@ main =
         when (code /= ExitSuccess) (throwIO code)
         pure branch
       do
-        (_out, _err, code) <- git ["add", "--all"]
+        (_out, _err, code) <- git ["add", "--all", "--intent-to-add"]
         when (code /= ExitSuccess) (throwIO code)
       do
         code <- git2 ["commit", "--all"]
