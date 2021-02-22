@@ -7,8 +7,10 @@ executable mit
     base,
     process,
     text,
+    text-ansi,
   default-extensions:
     BlockArguments
+    DerivingStrategies
     FlexibleInstances
     GADTs
     LambdaCase

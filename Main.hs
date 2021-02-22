@@ -6,16 +6,44 @@ import Data.Char
 import Data.Maybe
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.ANSI qualified as Text
 import Data.Text.IO qualified as Text
 import System.Environment (getArgs, lookupEnv)
 import System.Exit (ExitCode (..), exitFailure)
 import System.IO (Handle, hIsEOF)
 import System.IO.Unsafe (unsafePerformIO)
 import System.Process
+import Text.Read (readMaybe)
 import Prelude hiding (head)
 
 main :: IO ()
-main =
+main = do
+  do
+    let validations :: [(GitVersion, Text)]
+        validations =
+          [ ( GitVersion 2 29 0,
+              Text.bold "git commit --patch"
+                <> " was broken for new files added with "
+                <> Text.bold "git add --intent-to-add"
+                <> "."
+            ),
+            ( GitVersion 2 30 1,
+              Text.bold "git stash push"
+                <> " was broken for new files added with "
+                <> Text.bold "git add --intent-to-add"
+                <> "."
+            )
+          ]
+    version <- getGitVersion
+    case foldr (\(ver, warn) acc -> if version < ver then (ver, warn) : acc else acc) [] validations of
+      [] -> pure ()
+      warnings ->
+        (Text.putStrLn . Text.unlines)
+          ( "Warning: your version of " <> Text.bold "git" <> " is buggy." :
+            map
+              (\(ver, warn) -> "  ∙ Prior to " <> Text.bold ("git version " <> showGitVersion ver <> ", " <> warn))
+              warnings
+          )
   getArgs >>= \case
     ["clone", parseGitRepo . Text.pack -> Just (url, name)] -> do
       code <- git ["clone", url, "--separate-git-dir", name <> "/.git", name <> "/master"]
@@ -49,14 +77,17 @@ mitCommit = do
               -- TODO pop stash after? (what stash?)
               git ["push", "--quiet", "origin", branch <> ":" <> branch]
             Stdout _ -> do
-              -- FIXME I think this fails on git prior to 2.30.1, if there are any new files
               () <- git ["stash", "push", "--quiet"]
               let fork :: IO ()
                   fork = do
                     () <- git ["stash", "pop", "--quiet"]
                     git2 ["commit", "--patch", "--quiet"]
                     Text.putStrLn $
-                      "Diverged from origin/" <> branch <> ". Please run \ESC[1mmit sync\ESC[22m."
+                      "Diverged from "
+                        <> Text.italic ("origin/" <> branch)
+                        <> ". Please run "
+                        <> Text.bold "mit sync"
+                        <> "."
               gitMerge ("origin/" <> branch) >>= \case
                 -- We can't even cleanly merge with upstream, so we're already forked. Might as well allow the commit
                 -- locally.
@@ -70,10 +101,10 @@ mitCommit = do
                       fork
                     ExitSuccess -> do
                       (Text.putStr . Text.unlines)
-                        ( "Synchronized with origin/" <> branch <> ":" :
+                        ( "Synchronized with " <> Text.italic ("origin/" <> branch) <> ":" :
                           "" :
                           map ("  " <>) commits
-                            ++ ["", "If everything still looks good, please run \ESC[1mmit commit\ESC[22m."]
+                            ++ ["", "If everything still looks good, please run " <> Text.bold "mit commit" <> "."]
                         )
     NoDifferences -> exitFailure
 
@@ -100,26 +131,42 @@ mitSync maybeBranch =
       gitMerge target >>= \case
         MergeFailed conflicts -> do
           (Text.putStr . Text.unlines)
-            ( "Failed to synchronize with " <> target <> ". There are conflicts in the following files:" :
+            ( "Failed to synchronize with " <> Text.italic target <> ". There are conflicts in the following files:" :
               "" :
               map ("  " <>) conflicts
                 ++ [ "",
                      "Please either:",
                      "",
-                     "  ∙ Resolve the conflicts, then run \ESC[1mmit commit\ESC[22m.",
-                     "  ∙ Run \ESC[1mgit merge --abort\ESC[22m." -- TODO mit abort
+                     "  ∙ Resolve the conflicts, then run " <> Text.bold "mit commit" <> ".",
+                     "  ∙ Run " <> Text.bold "git merge --abort" <> "." -- TODO mit abort
                    ]
             )
           exitFailure
         MergeSucceeded _ commits -> do
           unless (null commits) do
             (Text.putStr . Text.unlines)
-              ( "Synchronized with " <> target <> ":" :
-                "" :
-                map ("  " <>) commits
-              )
+              ("Synchronized with " <> Text.italic target <> ":" : "" : map ("  " <>) commits)
           -- TODO pop stash
           pure ()
+
+data GitVersion
+  = GitVersion Int Int Int
+  deriving stock (Eq, Ord)
+
+getGitVersion :: IO GitVersion
+getGitVersion = do
+  Stdout v0 <- git ["--version"]
+  fromMaybe (throwIO (userError ("Could not parse git version from: " <> Text.unpack v0))) do
+    ["git", "version", v1] <- Just (Text.words v0)
+    [sx, sy, sz] <- Just (Text.split (== '.') v1)
+    x <- readMaybe (Text.unpack sx)
+    y <- readMaybe (Text.unpack sy)
+    z <- readMaybe (Text.unpack sz)
+    pure (pure (GitVersion x y z))
+
+showGitVersion :: GitVersion -> Text
+showGitVersion (GitVersion x y z) =
+  Text.pack (show x) <> "." <> Text.pack (show y) <> "." <> Text.pack (show z)
 
 data DiffResult
   = Differences
