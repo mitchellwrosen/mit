@@ -42,7 +42,7 @@ mitCommit = do
           git2 ["commit", "--patch", "--quiet"]
           git ["push", "--set-upstream"]
         ExitSuccess -> do
-          git ["rev-list", "origin/" <> branch, Text.cons '^' branch] >>= \case
+          git ["rev-list", "--max-count", "1", branch <> "..origin/" <> branch] >>= \case
             Stdout [] -> do
               git2 ["commit", "--patch", "--quiet"]
               -- TODO handle race condition where the push fails with non-fast-forward anyway?
@@ -114,8 +114,22 @@ mitSync maybeBranch =
           exitFailure
         MergeFastForwarded -> do
           Stdout head2 <- git ["rev-parse", "HEAD"]
-          Stdout commits <- git ["rev-list", head2, Text.cons '^' head]
-          unless (null commits) (Text.putStr (Text.unlines commits))
+          -- --first-parent seems desirable for topic branches
+          Stdout commits <-
+            git
+              [ "rev-list",
+                "--color=always",
+                "--date=human",
+                "--format=format:%C(bold black)%h%C(reset) %C(bold white)%s%C(reset) – %C(italic white)%an%C(reset) %C(italic yellow)%ad%C(reset)%C(italic cyan)%d",
+                "--max-count=10",
+                "--max-parents=1", -- don't show merge commits
+                head <> ".." <> head2
+              ]
+          let -- git rev-list with a custom format prefixes every commit with a redundant line :|
+              dropEvens = \case
+                _ : x : xs -> x : dropEvens xs
+                xs -> xs
+          unless (null commits) (Text.putStr (Text.unlines (dropEvens commits)))
           -- TODO pop stash
           pure ()
         MergeBubbled ->
