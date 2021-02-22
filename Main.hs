@@ -32,23 +32,21 @@ main =
 
 mitCommit :: IO ()
 mitCommit = do
-  Stdout branch <- git ["branch", "--show-current"]
   gitDiff >>= \case
     Differences -> do
-      getBranchRemote branch >>= \case
-        -- New branch: push and set upstream
-        Nothing -> do
+      () <- git ["fetch", "--quiet", "origin"]
+      Stdout branch <- git ["branch", "--show-current"]
+      git ["show-ref", "--quiet", "--verify", "refs/remotes/origin/" <> branch] >>= \case
+        ExitFailure _ -> do
           git2 ["commit", "--patch", "--quiet"]
           git ["push", "--set-upstream"]
-        Just remote -> do
-          () <- git ["fetch", remote]
-          upstream <- getBranchUpstream branch
-          git ["rev-list", remote <> "/" <> upstream, Text.cons '^' branch] >>= \case
+        ExitSuccess -> do
+          git ["rev-list", "origin/" <> branch, Text.cons '^' branch] >>= \case
             Stdout [] -> do
               git2 ["commit", "--patch", "--quiet"]
               -- TODO handle race condition where the push fails with non-fast-forward anyway?
               -- TODO pop stash after? (what stash?)
-              git ["push", "--quiet", remote, branch <> ":" <> upstream]
+              git ["push", "--quiet", "origin", branch <> ":" <> branch]
             Stdout _ -> do
               -- FIXME I think this fails on git prior to 2.30.1, if there are any new files
               () <- git ["stash", "push", "--quiet"]
@@ -58,8 +56,8 @@ mitCommit = do
                     () <- git ["stash", "pop", "--quiet"]
                     git2 ["commit", "--patch", "--quiet"]
                     Text.putStrLn $
-                      "Diverged from " <> remote <> "/" <> upstream <> ". Please run \ESC[1mmit sync\ESC[22m."
-              gitMerge (remote <> "/" <> upstream) >>= \case
+                      "Diverged from origin/" <> branch <> ". Please run \ESC[1mmit merge\ESC[22m."
+              gitMerge ("origin/" <> branch) >>= \case
                 -- We can't even cleanly merge with upstream, so we're already forked. Might as well allow the commit
                 -- locally.
                 MergeFailed _conflicts -> do
@@ -72,8 +70,8 @@ mitCommit = do
                       fork
                     ExitSuccess ->
                       Text.putStrLn $
-                        "Synchronized with " <> remote <> "/" <> upstream <> ". If everything still looks good, please "
-                          <> "run \ESC[1mmit commit\ESC[22m."
+                        "Synchronized with origin/" <> branch <> ". If everything still looks good, please run "
+                          <> "\ESC[1mmit commit\ESC[22m."
                 MergeBubbled -> do
                   () <- git ["reset", "--hard", head]
                   () <- git ["stash", "pop", "--quiet"]
@@ -87,21 +85,11 @@ mitMerge branch =
     -- FIXME stash and stuff
     Differences -> die "worktree dirty"
     NoDifferences -> do
+      () <- git ["fetch", "--quiet", "origin"]
       target <-
-        getBranchRemote branch >>= \case
-          Nothing -> pure branch
-          Just remote -> do
-            () <- git ["fetch", remote]
-            upstream <- Text.append (remote <> "/") <$> getBranchUpstream branch
-            -- for now: when merging foo, just require foo and origin/foo to be in sync.
-            -- FIXME lift this restriction with some complicated merging and stuff
-            git ["rev-list", branch, Text.cons '^' upstream] >>= \case
-              Stdout [] -> pure ()
-              Stdout _ -> die (branch <> " ahead of " <> upstream)
-            git ["rev-list", upstream, Text.cons '^' branch] >>= \case
-              Stdout [] -> pure ()
-              Stdout _ -> die (upstream <> " ahead of " <> branch)
-            pure upstream
+        git ["show-ref", "--quiet", "--verify", "refs/remotes/origin/" <> branch] <&> \case
+          ExitFailure _ -> branch
+          ExitSuccess -> "origin/" <> branch
       gitMerge target >>= \case
         MergeFailed conflicts -> do
           (Text.putStr . Text.unlines)
@@ -163,18 +151,6 @@ die :: Text -> IO a
 die message = do
   Text.putStrLn message
   exitFailure
-
-getBranchRemote :: Text -> IO (Maybe Text)
-getBranchRemote branch = do
-  git ["config", "--local", "--get", "branch." <> branch <> ".remote"] <&> \case
-    Left _ -> Nothing
-    Right (Stdout remote) -> Just remote
-
-getBranchUpstream :: Text -> IO Text
-getBranchUpstream branch = do
-  Stdout (Text.stripPrefix "refs/heads/" -> Just upstream) <-
-    git ["config", "--local", "--get", "branch." <> branch <> ".merge"]
-  pure upstream
 
 -- git@github.com:mitchellwrosen/mit.git -> Just ("git@github.com:mitchellwrosen/mit.git", "mit")
 parseGitRepo :: Text -> Maybe (Text, Text)
