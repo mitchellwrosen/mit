@@ -5,6 +5,7 @@ version: 0
 executable mit
   build-depends:
     base,
+    directory,
     process,
     text,
     text-ansi,
