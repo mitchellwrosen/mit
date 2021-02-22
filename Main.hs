@@ -40,7 +40,7 @@ mitCommit = do
       git ["show-ref", "--quiet", "--verify", "refs/remotes/origin/" <> branch] >>= \case
         ExitFailure _ -> do
           git2 ["commit", "--patch", "--quiet"]
-          git ["push", "--set-upstream"]
+          git ["push", "--set-upstream", "origin"]
         ExitSuccess -> do
           git ["rev-list", "--max-count", "1", branch <> "..origin/" <> branch] >>= \case
             Stdout [] -> do
@@ -93,7 +93,9 @@ mitSync maybeBranch =
           Just branch -> pure branch
       target <-
         git ["show-ref", "--quiet", "--verify", "refs/remotes/origin/" <> branch] <&> \case
-          ExitFailure _ -> branch
+          ExitFailure _ ->
+            -- TODO verify branch is a real target
+            branch
           ExitSuccess -> "origin/" <> branch
       gitMerge target >>= \case
         MergeFailed conflicts -> do
