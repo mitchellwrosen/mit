@@ -16,6 +16,8 @@ import System.Process
 import Text.Read (readMaybe)
 import Prelude hiding (head)
 
+-- FIXME careful about --patch for merges :/
+
 main :: IO ()
 main = do
   do
@@ -109,25 +111,43 @@ mitCommit = do
     NoDifferences -> exitFailure
 
 mitSync :: Maybe Text -> IO ()
-mitSync maybeBranch =
+mitSync maybeBranch = do
+  () <- git ["fetch", "--quiet", "origin"]
+  branch <-
+    case maybeBranch of
+      Nothing -> do
+        Stdout branch <- git ["branch", "--show-current"]
+        pure branch
+      Just branch -> do
+        -- TODO verify branch is a real target
+        pure branch
+  target <-
+    git ["show-ref", "--quiet", "--verify", "refs/remotes/origin/" <> branch] <&> \case
+      ExitFailure _ ->
+        branch
+      ExitSuccess -> "origin/" <> branch
+
   gitDiff >>= \case
-    -- for now: just require a clean worktree
-    -- FIXME stash and stuff
-    Differences -> die "worktree dirty"
+    Differences -> do
+      () <- git ["stash", "push", "--quiet"]
+      gitMerge target >>= \case
+        MergeFailed _conflicts -> do
+          () <- git ["merge", "--abort"]
+          () <- git ["stash", "pop", "--quiet"]
+          -- FIXME: handle this case
+          Text.putStrLn "merge failed, so backed out"
+        MergeSucceeded head commits -> do
+          git ["stash", "pop", "--quiet"] >>= \case
+            ExitFailure _ -> do
+              () <- git ["reset", "--hard", head]
+              () <- git ["stash", "pop", "--quiet"]
+              -- FIXME handle this case
+              Text.putStrLn "merge succeeded, but stash pop failed, so backed out"
+            ExitSuccess -> do
+              unless (null commits) do
+                (Text.putStr . Text.unlines)
+                  ("Synchronized with " <> Text.italic target <> ":" : "" : map ("  " <>) commits)
     NoDifferences -> do
-      () <- git ["fetch", "--quiet", "origin"]
-      branch <-
-        case maybeBranch of
-          Nothing -> do
-            Stdout branch <- git ["branch", "--show-current"]
-            pure branch
-          Just branch -> pure branch
-      target <-
-        git ["show-ref", "--quiet", "--verify", "refs/remotes/origin/" <> branch] <&> \case
-          ExitFailure _ ->
-            -- TODO verify branch is a real target
-            branch
-          ExitSuccess -> "origin/" <> branch
       gitMerge target >>= \case
         MergeFailed conflicts -> do
           (Text.putStr . Text.unlines)
