@@ -21,14 +21,14 @@ main =
       code <- git ["clone", url, "--separate-git-dir", name <> "/.git", name <> "/master"]
       when (code /= ExitSuccess) (throwIO code)
     ["commit"] -> mitCommit
-    ["merge"] -> mitMerge Nothing
-    ["merge", branch] -> mitMerge (Just (Text.pack branch))
+    ["sync"] -> mitSync Nothing
+    ["sync", branch] -> mitSync (Just (Text.pack branch))
     _ ->
       (Text.putStr . Text.unlines)
         [ "Usage:",
           "  mit clone ≪repo≫",
           "  mit commit",
-          "  mit merge ≪branch≫"
+          "  mit sync [≪branch≫]"
         ]
 
 mitCommit :: IO ()
@@ -57,7 +57,7 @@ mitCommit = do
                     () <- git ["stash", "pop", "--quiet"]
                     git2 ["commit", "--patch", "--quiet"]
                     Text.putStrLn $
-                      "Diverged from origin/" <> branch <> ". Please run \ESC[1mmit merge\ESC[22m."
+                      "Diverged from origin/" <> branch <> ". Please run \ESC[1mmit sync\ESC[22m."
               gitMerge ("origin/" <> branch) >>= \case
                 -- We can't even cleanly merge with upstream, so we're already forked. Might as well allow the commit
                 -- locally.
@@ -79,8 +79,8 @@ mitCommit = do
                   Text.putStrLn "bubbled, then backed out" -- TODO handle this case
     NoDifferences -> exitFailure
 
-mitMerge :: Maybe Text -> IO ()
-mitMerge maybeBranch =
+mitSync :: Maybe Text -> IO ()
+mitSync maybeBranch =
   gitDiff >>= \case
     -- for now: just require a clean worktree
     -- FIXME stash and stuff
@@ -100,7 +100,7 @@ mitMerge maybeBranch =
       gitMerge target >>= \case
         MergeFailed conflicts -> do
           (Text.putStr . Text.unlines)
-            ( "Merge failed. There are conflicts in the following files:" :
+            ( "Sync failed. There are conflicts in the following files:" :
               "" :
               map ("  " <>) conflicts
                 ++ [ "",
@@ -116,7 +116,7 @@ mitMerge maybeBranch =
           pure ()
         MergeBubbled ->
           (Text.putStr . Text.unlines)
-            [ "Merge succeeded. Please either:",
+            [ "Sync succeeded. Please either:",
               "  1. Run \ESC[1mmit commit\ESC[22m.",
               "  2. Run \ESC[1mgit merge --abort\ESC[22m." -- TODO mit abort
             ]
