@@ -2,8 +2,11 @@ cabal-version: 3.0
 name: mit
 version: 0
 
-common component
-  build-depends: base
+executable mit
+  build-depends:
+    base,
+    process,
+    text,
   default-extensions:
     BlockArguments
     FlexibleInstances
@@ -14,14 +17,6 @@ common component
     ScopedTypeVariables
     ViewPatterns
   default-language: Haskell2010
-  ghc-options: -Wall
-
-executable mit
-  import: component
-  build-depends:
-    bytestring,
-    process,
-    text,
   ghc-options:
-    -O -threaded
+    -O -threaded -Wall
   main-is: Main.hs

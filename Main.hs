@@ -57,26 +57,24 @@ mitCommit = do
                     git2 ["commit", "--patch", "--quiet"]
                     Text.putStrLn $
                       "Diverged from origin/" <> branch <> ". Please run \ESC[1mmit sync\ESC[22m."
-              Stdout head <- git ["rev-parse", "HEAD"]
               gitMerge ("origin/" <> branch) >>= \case
                 -- We can't even cleanly merge with upstream, so we're already forked. Might as well allow the commit
                 -- locally.
                 MergeFailed _conflicts -> do
                   () <- git ["merge", "--abort"]
                   fork
-                MergeFastForwarded -> do
+                MergeSucceeded head commits -> do
                   git ["stash", "pop", "--quiet"] >>= \case
                     ExitFailure _ -> do
                       () <- git ["reset", "--hard", head]
                       fork
-                    ExitSuccess ->
-                      Text.putStrLn $
-                        "Synchronized with origin/" <> branch <> ". If everything still looks good, please run "
-                          <> "\ESC[1mmit commit\ESC[22m."
-                MergeBubbled -> do
-                  () <- git ["reset", "--hard", head]
-                  () <- git ["stash", "pop", "--quiet"]
-                  Text.putStrLn "bubbled, then backed out" -- TODO handle this case
+                    ExitSuccess -> do
+                      (Text.putStr . Text.unlines)
+                        ( "Synchronized with origin/" <> branch <> ":" :
+                          "" :
+                          map ("  " <>) commits
+                            ++ ["", "If everything still looks good, please run \ESC[1mmit commit\ESC[22m."]
+                        )
     NoDifferences -> exitFailure
 
 mitSync :: Maybe Text -> IO ()
@@ -97,47 +95,29 @@ mitSync maybeBranch =
         git ["show-ref", "--quiet", "--verify", "refs/remotes/origin/" <> branch] <&> \case
           ExitFailure _ -> branch
           ExitSuccess -> "origin/" <> branch
-      Stdout head <- git ["rev-parse", "HEAD"]
       gitMerge target >>= \case
         MergeFailed conflicts -> do
           (Text.putStr . Text.unlines)
-            ( "Sync failed. There are conflicts in the following files:" :
+            ( "Failed to synchronize with " <> target <> ". There are conflicts in the following files:" :
               "" :
               map ("  " <>) conflicts
                 ++ [ "",
                      "Please either:",
                      "",
-                     "  1. Resolve the conflicts, then run \ESC[1mmit commit\ESC[22m.",
-                     "  2. Run \ESC[1mgit merge --abort\ESC[22m." -- TODO mit abort
+                     "  ∙ Resolve the conflicts, then run \ESC[1mmit commit\ESC[22m.",
+                     "  ∙ Run \ESC[1mgit merge --abort\ESC[22m." -- TODO mit abort
                    ]
             )
           exitFailure
-        MergeFastForwarded -> do
-          Stdout head2 <- git ["rev-parse", "HEAD"]
-          -- --first-parent seems desirable for topic branches
-          Stdout commits <-
-            git
-              [ "rev-list",
-                "--color=always",
-                "--date=human",
-                "--format=format:%C(bold black)%h%C(reset) %C(bold white)%s%C(reset) – %C(italic white)%an%C(reset) %C(italic yellow)%ad%C(reset)%C(italic cyan)%d",
-                "--max-count=10",
-                "--max-parents=1", -- don't show merge commits
-                head <> ".." <> head2
-              ]
-          let -- git rev-list with a custom format prefixes every commit with a redundant line :|
-              dropEvens = \case
-                _ : x : xs -> x : dropEvens xs
-                xs -> xs
-          unless (null commits) (Text.putStr (Text.unlines (dropEvens commits)))
+        MergeSucceeded _ commits -> do
+          unless (null commits) do
+            (Text.putStr . Text.unlines)
+              ( "Synchronized with " <> target <> ":" :
+                "" :
+                map ("  " <>) commits
+              )
           -- TODO pop stash
           pure ()
-        MergeBubbled ->
-          (Text.putStr . Text.unlines)
-            [ "Sync succeeded. Please either:",
-              "  1. Run \ESC[1mmit commit\ESC[22m.",
-              "  2. Run \ESC[1mgit merge --abort\ESC[22m." -- TODO mit abort
-            ]
 
 data DiffResult
   = Differences
@@ -153,19 +133,35 @@ gitDiff = do
 
 data MergeResult
   = MergeFailed [Text]
-  | MergeBubbled
-  | MergeFastForwarded
+  | MergeSucceeded Text [Text]
 
 gitMerge :: Text -> IO MergeResult
-gitMerge branch =
-  git ["merge", "--ff", "--no-commit", "--quiet", branch] >>= \case
+gitMerge branch = do
+  Stdout head <- git ["rev-parse", "HEAD"]
+  git ["merge", "--ff", "--quiet", branch] >>= \case
     ExitFailure _ -> do
       Stdout conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
       pure (MergeFailed conflicts)
-    ExitSuccess ->
-      git ["rev-parse", "--quiet", "--verify", "MERGE_HEAD"] >>= \case
-        ExitFailure _ -> pure MergeFastForwarded
-        ExitSuccess -> pure MergeBubbled
+    ExitSuccess -> do
+      Stdout head2 <- git ["rev-parse", "HEAD"]
+      -- --first-parent seems desirable for topic branches
+      Stdout commits <-
+        git
+          [ "rev-list",
+            "--color=always",
+            "--date=human",
+            "--format=format:%C(bold black)%h%C(reset) %C(bold white)%s%C(reset) – %C(italic white)%an%C(reset) %C(italic yellow)%ad%C(reset)",
+            "--max-count=10",
+            "--max-parents=1", -- don't show merge commits
+            head <> ".." <> head2
+          ]
+      pure (MergeSucceeded head (dropEvens commits))
+  where
+    -- git rev-list with a custom format prefixes every commit with a redundant line :|
+    dropEvens :: [a] -> [a]
+    dropEvens = \case
+      _ : x : xs -> x : dropEvens xs
+      xs -> xs
 
 debug :: Bool
 debug =
