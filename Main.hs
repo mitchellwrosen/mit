@@ -1,6 +1,6 @@
 module Main where
 
-import Control.Exception (throwIO)
+import Control.Exception (IOException, throwIO, try)
 import Control.Monad
 import Data.Char
 import Data.Maybe
@@ -17,6 +17,7 @@ import Text.Read (readMaybe)
 import Prelude hiding (head)
 
 -- FIXME careful about --patch for merges :/
+-- FIXME stash push -> stash create && reset --hard
 
 main :: IO ()
 main = do
@@ -47,6 +48,7 @@ main = do
               warnings
           )
   getArgs >>= \case
+    ["abort"] -> mitAbort
     ["clone", parseGitRepo . Text.pack -> Just (url, name)] -> do
       code <- git ["clone", url, "--separate-git-dir", name <> "/.git", name <> "/master"]
       when (code /= ExitSuccess) (throwIO code)
@@ -56,10 +58,24 @@ main = do
     _ ->
       (Text.putStr . Text.unlines)
         [ "Usage:",
+          "  mit abort",
           "  mit clone ≪repo≫",
           "  mit commit",
           "  mit sync [≪branch≫]"
         ]
+
+mitAbort :: IO ()
+mitAbort = do
+  Stdout head <- git ["rev-parse", "HEAD"]
+  Stdout gitdir <- git ["rev-parse", "--absolute-git-dir"]
+  try (Text.readFile (Text.unpack (gitdir <> "/" <> head))) >>= \case
+    Left (_ :: IOException) -> exitFailure
+    Right contents ->
+      case Text.words contents of
+        [previousHead, stash] -> do
+          () <- git ["reset", "--hard", previousHead]
+          git ["stash", "apply", "--quiet", stash]
+        _ -> exitFailure
 
 mitCommit :: IO ()
 mitCommit = do
@@ -90,13 +106,14 @@ mitCommit = do
                         <> ". Please run "
                         <> Text.bold "mit sync"
                         <> "."
-              gitMerge ("origin/" <> branch) >>= \case
+              Stdout head <- git ["rev-parse", "HEAD"]
+              gitMerge head ("origin/" <> branch) >>= \case
                 -- We can't even cleanly merge with upstream, so we're already forked. Might as well allow the commit
                 -- locally.
                 MergeFailed _conflicts -> do
                   () <- git ["merge", "--abort"]
                   fork
-                MergeSucceeded head commits -> do
+                MergeSucceeded commits -> do
                   git ["stash", "pop", "--quiet"] >>= \case
                     ExitFailure _ -> do
                       () <- git ["reset", "--hard", head]
@@ -113,15 +130,15 @@ mitCommit = do
 mitSync :: Maybe Text -> IO ()
 mitSync maybeBranch = do
   () <- git ["fetch", "--quiet", "origin"]
-  branch <-
-    case maybeBranch of
-      Nothing -> do
-        Stdout branch <- git ["branch", "--show-current"]
-        pure branch
-      Just branch -> do
-        -- TODO verify branch is a real target
-        pure branch
-  target <-
+  target <- do
+    branch <-
+      case maybeBranch of
+        Nothing -> do
+          Stdout branch <- git ["branch", "--show-current"]
+          pure branch
+        Just branch -> do
+          -- TODO verify branch is a real target
+          pure branch
     git ["show-ref", "--quiet", "--verify", "refs/remotes/origin/" <> branch] <&> \case
       ExitFailure _ ->
         branch
@@ -129,26 +146,43 @@ mitSync maybeBranch = do
 
   gitDiff >>= \case
     Differences -> do
-      () <- git ["stash", "push", "--quiet"]
-      gitMerge target >>= \case
+      Stdout stash <- git ["stash", "create"]
+      Stdout head <- git ["rev-parse", "HEAD"]
+      () <- git ["reset", "--hard", head]
+      gitMerge head target >>= \case
         MergeFailed _conflicts -> do
           () <- git ["merge", "--abort"]
-          () <- git ["stash", "pop", "--quiet"]
+          () <- git ["stash", "apply", "--quiet", stash]
           -- FIXME: handle this case
           Text.putStrLn "merge failed, so backed out"
-        MergeSucceeded head commits -> do
-          git ["stash", "pop", "--quiet"] >>= \case
+        MergeSucceeded commits -> do
+          git ["stash", "apply", "--quiet", stash] >>= \case
             ExitFailure _ -> do
-              () <- git ["reset", "--hard", head]
-              () <- git ["stash", "pop", "--quiet"]
-              -- FIXME handle this case
-              Text.putStrLn "merge succeeded, but stash pop failed, so backed out"
-            ExitSuccess -> do
+              -- Record a file for 'mit abort' to use, if invoked. Its name is the current HEAD, i.e. the commit we
+              -- advanced to after a successful merge, and its contents are the previous HEAD before attempting the
+              -- merge, and the commit that the changes to the working tree were stored in with 'git stash create'.
+              Stdout head2 <- git ["rev-parse", "HEAD"]
+              Stdout gitdir <- git ["rev-parse", "--absolute-git-dir"]
+              Text.writeFile (Text.unpack (gitdir <> "/" <> head2)) (head <> " " <> stash)
+
+              Stdout conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
+              -- TODO have 'mit commit' drop the stash
+              Text.putStr . Text.unlines $
+                "Synchronized with " <> Text.italic target <> ", but there are now conflicts in the following files:" :
+                "" :
+                map ("  " <>) conflicts
+                  ++ [ "",
+                       "If you would prefer not to resolve the conflicts at this time, please run "
+                         <> Text.bold "mit abort"
+                         <> "."
+                     ]
+            ExitSuccess ->
               unless (null commits) do
                 (Text.putStr . Text.unlines)
                   ("Synchronized with " <> Text.italic target <> ":" : "" : map ("  " <>) commits)
     NoDifferences -> do
-      gitMerge target >>= \case
+      Stdout head <- git ["rev-parse", "HEAD"]
+      gitMerge head target >>= \case
         MergeFailed conflicts -> do
           (Text.putStr . Text.unlines)
             ( "Failed to synchronize with " <> Text.italic target <> ". There are conflicts in the following files:" :
@@ -162,7 +196,7 @@ mitSync maybeBranch = do
                    ]
             )
           exitFailure
-        MergeSucceeded _ commits -> do
+        MergeSucceeded commits -> do
           unless (null commits) do
             (Text.putStr . Text.unlines)
               ("Synchronized with " <> Text.italic target <> ":" : "" : map ("  " <>) commits)
@@ -202,11 +236,10 @@ gitDiff = do
 
 data MergeResult
   = MergeFailed [Text]
-  | MergeSucceeded Text [Text]
+  | MergeSucceeded [Text]
 
-gitMerge :: Text -> IO MergeResult
-gitMerge branch = do
-  Stdout head <- git ["rev-parse", "HEAD"]
+gitMerge :: Text -> Text -> IO MergeResult
+gitMerge head branch = do
   git ["merge", "--ff", "--quiet", branch] >>= \case
     ExitFailure _ -> do
       Stdout conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
@@ -224,7 +257,7 @@ gitMerge branch = do
             "--max-parents=1", -- don't show merge commits
             head <> ".." <> head2
           ]
-      pure (MergeSucceeded head (dropEvens commits))
+      pure (MergeSucceeded (dropEvens commits))
   where
     -- git rev-list with a custom format prefixes every commit with a redundant line :|
     dropEvens :: [a] -> [a]
