@@ -21,7 +21,8 @@ main =
       code <- git ["clone", url, "--separate-git-dir", name <> "/.git", name <> "/master"]
       when (code /= ExitSuccess) (throwIO code)
     ["commit"] -> mitCommit
-    ["merge", branch] -> mitMerge (Text.pack branch)
+    ["merge"] -> mitMerge Nothing
+    ["merge", branch] -> mitMerge (Just (Text.pack branch))
     _ ->
       (Text.putStr . Text.unlines)
         [ "Usage:",
@@ -78,14 +79,20 @@ mitCommit = do
                   Text.putStrLn "bubbled, then backed out" -- TODO handle this case
     NoDifferences -> exitFailure
 
-mitMerge :: Text -> IO ()
-mitMerge branch =
+mitMerge :: Maybe Text -> IO ()
+mitMerge maybeBranch =
   gitDiff >>= \case
     -- for now: just require a clean worktree
     -- FIXME stash and stuff
     Differences -> die "worktree dirty"
     NoDifferences -> do
       () <- git ["fetch", "--quiet", "origin"]
+      branch <-
+        case maybeBranch of
+          Nothing -> do
+            Stdout branch <- git ["branch", "--show-current"]
+            pure branch
+          Just branch -> pure branch
       target <-
         git ["show-ref", "--quiet", "--verify", "refs/remotes/origin/" <> branch] <&> \case
           ExitFailure _ -> branch
