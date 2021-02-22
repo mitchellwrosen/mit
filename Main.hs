@@ -38,14 +38,14 @@ mitCommit = do
       getBranchRemote branch >>= \case
         -- New branch: push and set upstream
         Nothing -> do
-          git2 ["commit", "--all", "--quiet"]
+          git2 ["commit", "--patch", "--quiet"]
           git ["push", "--set-upstream"]
         Just remote -> do
           () <- git ["fetch", remote]
           upstream <- getBranchUpstream branch
           git ["rev-list", remote <> "/" <> upstream, Text.cons '^' branch] >>= \case
             Stdout [] -> do
-              git2 ["commit", "--all", "--quiet"]
+              git2 ["commit", "--patch", "--quiet"]
               -- TODO handle race condition where the push fails with non-fast-forward anyway?
               -- TODO pop stash after? (what stash?)
               git ["push", "--quiet", remote, branch <> ":" <> upstream]
@@ -56,7 +56,7 @@ mitCommit = do
               let fork :: IO ()
                   fork = do
                     () <- git ["stash", "pop", "--quiet"]
-                    git2 ["commit", "--all", "--quiet"]
+                    git2 ["commit", "--patch", "--quiet"]
                     Text.putStrLn $
                       "Diverged from " <> remote <> "/" <> upstream <> ". Please run \ESC[1mmit sync\ESC[22m."
               gitMerge (remote <> "/" <> upstream) >>= \case
