@@ -53,18 +53,27 @@ mitCommit = do
               -- FIXME I think this fails on git prior to 2.30.1, if there are any new files
               () <- git ["stash", "push", "--quiet"]
               Stdout head <- git ["rev-parse", "HEAD"]
+              let fork :: IO ()
+                  fork = do
+                    () <- git ["stash", "pop", "--quiet"]
+                    git2 ["commit", "--all", "--quiet"]
+                    Text.putStrLn $
+                      "Diverged from " <> remote <> "/" <> upstream <> ". Please run \ESC[1mmit sync\ESC[22m."
               gitMerge (remote <> "/" <> upstream) >>= \case
                 -- We can't even cleanly merge with upstream, so we're already forked. Might as well allow the commit
                 -- locally.
                 MergeFailed _conflicts -> do
                   () <- git ["merge", "--abort"]
-                  () <- git ["stash", "pop", "--quiet"]
-                  git2 ["commit", "--all", "--quiet"]
-                  Text.putStrLn "warning: forked!" -- TODO recommend what to do next
+                  fork
                 MergeFastForwarded -> do
-                  () <- git ["reset", "--hard", head]
-                  () <- git ["stash", "pop", "--quiet"]
-                  Text.putStrLn "fast-forwarded, then backed out" -- TODO handle this case
+                  git ["stash", "pop", "--quiet"] >>= \case
+                    ExitFailure _ -> do
+                      () <- git ["reset", "--hard", head]
+                      fork
+                    ExitSuccess ->
+                      Text.putStrLn $
+                        "Synchronized with " <> remote <> "/" <> upstream <> ". If everything still looks good, please "
+                          <> "run \ESC[1mmit commit\ESC[22m."
                 MergeBubbled -> do
                   () <- git ["reset", "--hard", head]
                   () <- git ["stash", "pop", "--quiet"]
@@ -102,8 +111,8 @@ mitMerge branch =
                 ++ [ "",
                      "Please either:",
                      "",
-                     "  1. Resolve the conflicts, then run \033[1mmit commit\033[0m.",
-                     "  2. Run \033[1mgit merge --abort\033[0m." -- TODO mit abort
+                     "  1. Resolve the conflicts, then run \ESC[1mmit commit\ESC[22m.",
+                     "  2. Run \ESC[1mgit merge --abort\ESC[22m." -- TODO mit abort
                    ]
             )
           exitFailure
@@ -113,8 +122,8 @@ mitMerge branch =
         MergeBubbled ->
           (Text.putStr . Text.unlines)
             [ "Merge succeeded. Please either:",
-              "  1. Run \033[1mmit commit\033[0m.",
-              "  2. Run \033[1mgit merge --abort\033[0m." -- TODO mit abort
+              "  1. Run \ESC[1mmit commit\ESC[22m.",
+              "  2. Run \ESC[1mgit merge --abort\ESC[22m." -- TODO mit abort
             ]
 
 data DiffResult
