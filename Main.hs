@@ -70,18 +70,23 @@ main = do
           ]
 
 mitAbort :: IO ()
-mitAbort = do
-  Stdout head <- git ["rev-parse", "HEAD"]
-  Stdout gitdir <- git ["rev-parse", "--absolute-git-dir"]
-  try (Text.readFile (Text.unpack (gitdir <> "/mit-" <> head))) >>= \case
-    Left (_ :: IOException) -> exitFailure
-    Right contents ->
-      case Text.words contents of
-        [previousHead, stash] -> do
-          () <- git ["reset", "--hard", "--quiet", previousHead]
-          () <- git ["stash", "apply", "--quiet", stash]
-          removeFile (Text.unpack (gitdir <> "/mit-" <> head)) `catch` \(_ :: IOException) -> pure ()
-        _ -> exitFailure
+mitAbort =
+  -- Depending on what's happened in the scary, mutable outside world, a "mit abort" could be resolved by a plain ol'
+  -- git abort, or some fancy reset thing. So, just try one, then the other.
+  git ["merge", "--abort"] >>= \case
+    ExitFailure _ -> do
+      Stdout head <- git ["rev-parse", "HEAD"]
+      Stdout gitdir <- git ["rev-parse", "--absolute-git-dir"]
+      try (Text.readFile (Text.unpack (gitdir <> "/mit-" <> head))) >>= \case
+        Left (_ :: IOException) -> exitFailure
+        Right contents ->
+          case Text.words contents of
+            [previousHead, stash] -> do
+              () <- git ["reset", "--hard", "--quiet", previousHead]
+              () <- git ["stash", "apply", "--quiet", stash]
+              removeFile (Text.unpack (gitdir <> "/mit-" <> head)) `catch` \(_ :: IOException) -> pure ()
+            _ -> exitFailure
+    ExitSuccess -> pure ()
 
 mitCommit :: IO ()
 mitCommit = do
@@ -221,9 +226,9 @@ mitSync maybeBranch = do
               map (("  " <>) . Text.red) conflicts
                 ++ [ "",
                      "If you would prefer not to resolve the conflicts at this time, please run",
-                     Text.bold (Text.blue "git merge --abort")
-                       <> ", which will revert the working tree to the state it was in",
-                     "prior to running "
+                     Text.bold (Text.blue "mit abort")
+                       <> ", which will revert the working tree to the state it was in prior to",
+                     "running "
                        <> Text.bold (Text.blue "mit sync")
                        <> ".",
                      "",
