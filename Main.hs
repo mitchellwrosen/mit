@@ -51,13 +51,13 @@ mitCommit = do
             Stdout _ -> do
               -- FIXME I think this fails on git prior to 2.30.1, if there are any new files
               () <- git ["stash", "push", "--quiet"]
-              Stdout head <- git ["rev-parse", "HEAD"]
               let fork :: IO ()
                   fork = do
                     () <- git ["stash", "pop", "--quiet"]
                     git2 ["commit", "--patch", "--quiet"]
                     Text.putStrLn $
                       "Diverged from origin/" <> branch <> ". Please run \ESC[1mmit sync\ESC[22m."
+              Stdout head <- git ["rev-parse", "HEAD"]
               gitMerge ("origin/" <> branch) >>= \case
                 -- We can't even cleanly merge with upstream, so we're already forked. Might as well allow the commit
                 -- locally.
@@ -97,6 +97,7 @@ mitSync maybeBranch =
         git ["show-ref", "--quiet", "--verify", "refs/remotes/origin/" <> branch] <&> \case
           ExitFailure _ -> branch
           ExitSuccess -> "origin/" <> branch
+      Stdout head <- git ["rev-parse", "HEAD"]
       gitMerge target >>= \case
         MergeFailed conflicts -> do
           (Text.putStr . Text.unlines)
@@ -112,6 +113,9 @@ mitSync maybeBranch =
             )
           exitFailure
         MergeFastForwarded -> do
+          Stdout head2 <- git ["rev-parse", "HEAD"]
+          Stdout commits <- git ["rev-list", head2, Text.cons '^' head]
+          unless (null commits) (Text.putStr (Text.unlines commits))
           -- TODO pop stash
           pure ()
         MergeBubbled ->
