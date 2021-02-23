@@ -89,6 +89,8 @@ mitUndo = do
           deleteUndoFile head
         _ -> exitFailure
 
+-- FIXME double-check undo file of HEAD prior to successful commit is deleted
+-- (rather, set to revert if push succeeds, otherwise updated to latest)
 mitCommit :: IO ()
 mitCommit = do
   git ["merge", "--quiet", "HEAD"] >>= \case
@@ -119,8 +121,7 @@ mitCommit = do
           -- FIXME report status and make 'mit undo' work
           git ["push", "--quiet", "--set-upstream", "origin", branch <> ":" <> branch]
     True -> do
-      Stdout stash <- git ["stash", "create"]
-      () <- git ["reset", "--hard", "--quiet", head]
+      stash <- gitCreateStash
       let -- Handle the case that our commit conflicts with upstream, possibly because we were *already* forked.
           -- We want to make our commit locally, then merge in the conflicts and commit that, then report on what just
           -- happened. From there, the user can undo the whole operation, or else address the conflict markers and
@@ -133,24 +134,23 @@ mitCommit = do
               ExitFailure _ -> exitFailure
               ExitSuccess -> do
                 Stdout head2 <- git ["rev-parse", "HEAD"]
-                gitMerge head2 upstream >>= \case
+                gitMerge upstream >>= \case
                   MergeFailed conflicts -> do
-                    () <- git ["add", "--all"]
-                    -- TODO better commit message than the default
-                    () <- git ["commit", "--no-edit", "--quiet"]
                     head3 <- recordUndoFile head (Just stash)
                     commits2 <- prettyCommitsBetween head2 (head3 <> "^2")
                     putLines (syncMessage upstream commits2 conflicts)
                   -- Impossible: we just observed a conflict when popping the stash. Then we backed out, applied the
                   -- stash to pre-merge HEAD, and merged again to get the same conflicts, only with the uncommitted
                   -- changes actually committed.
-                  MergeSucceeded _ -> undefined
-      gitMerge head upstream >>= \case
-        MergeFailed _conflicts -> do
+                  MergeSucceeded -> undefined
+      git ["merge", "--ff", "--quiet", upstream] >>= \case
+        ExitFailure _ -> do
           () <- git ["merge", "--abort"]
           () <- git ["stash", "apply", "--quiet", stash]
           commitThenMergeInConflicts
-        MergeSucceeded commits -> do
+        ExitSuccess -> do
+          Stdout head2 <- git ["rev-parse", "HEAD"]
+          commits <- prettyCommitsBetween head head2
           gitApplyStash stash >>= \case
             [] -> do
               git2 ["commit", "--patch", "--quiet"] >>= \case
@@ -158,7 +158,7 @@ mitCommit = do
                   _ <- recordUndoFile head (Just stash)
                   putLines (syncMessage upstream commits [])
                 ExitSuccess -> do
-                  head2 <- recordUndoFile head (Just stash)
+                  head3 <- recordUndoFile head (Just stash)
                   -- FIXME add "commit" to summary
                   result <- git ["push", "--quiet", "--set-upstream", "origin", branch <> ":" <> branch]
                   -- delay this until after the push because it looks weird to get feedback, then hang for a sec
@@ -166,7 +166,7 @@ mitCommit = do
                   case result of
                     ExitFailure _ -> pure ()
                     -- FIXME set new "undo" to revert somehow
-                    ExitSuccess -> deleteUndoFile head2
+                    ExitSuccess -> deleteUndoFile head3
             _conflicts -> do
               () <- git ["reset", "--hard", "--quiet", head]
               () <- git ["stash", "apply", "--quiet", stash]
@@ -197,36 +197,33 @@ mitSync maybeBranch = do
     Differences -> do
       Stdout head <- git ["rev-parse", "HEAD"]
       unless (head == targetHash) do
-        Stdout stash <- git ["stash", "create"]
-        () <- git ["reset", "--hard", "--quiet", head]
-        gitMerge head target >>= \case
+        stash <- gitCreateStash
+        gitMerge target >>= \case
           MergeFailed mergeConflicts -> do
-            () <- git ["add", "--all"]
-            -- TODO better commit message than the default
-            () <- git ["commit", "--no-edit", "--quiet"]
             head2 <- recordUndoFile head (Just stash)
             commits <- prettyCommitsBetween head (head2 <> "^2")
             stashConflicts <- gitApplyStash stash
             putLines (syncMessage target commits (List.nub (stashConflicts ++ mergeConflicts)))
             exitFailure
-          MergeSucceeded commits -> do
+          MergeSucceeded -> do
+            Stdout head2 <- git ["rev-parse", "HEAD"]
+            commits <- prettyCommitsBetween head head2
             _ <- recordUndoFile head (Just stash)
             conflicts <- gitApplyStash stash
             putLines (syncMessage target commits conflicts)
     NoDifferences -> do
       Stdout head <- git ["rev-parse", "HEAD"]
       unless (head == targetHash) do
-        gitMerge head target >>= \case
+        gitMerge target >>= \case
           -- FIXME: nicer "git status" story here. the fact that there are conflict markers isn't obvious
           MergeFailed conflicts -> do
-            () <- git ["add", "--all"]
-            -- TODO better commit message than the default
-            () <- git ["commit", "--no-edit", "--quiet"]
             head2 <- recordUndoFile head Nothing
             commits <- prettyCommitsBetween head (head2 <> "^2")
             putLines (syncMessage target commits conflicts)
             exitFailure
-          MergeSucceeded commits -> do
+          MergeSucceeded -> do
+            Stdout head2 <- git ["rev-parse", "HEAD"]
+            commits <- prettyCommitsBetween head head2
             _ <- recordUndoFile head Nothing
             putLines (syncMessage target commits [])
 
@@ -311,6 +308,13 @@ gitApplyStash stash = do
       pure conflicts
     ExitSuccess -> pure []
 
+-- | Create a stash and blow away local changes (like 'git stash push')
+gitCreateStash :: IO Text
+gitCreateStash = do
+  Stdout stash <- git ["stash", "create"]
+  () <- git ["reset", "--hard", "--quiet", "HEAD"]
+  pure stash
+
 data DiffResult
   = Differences
   | NoDifferences
@@ -338,17 +342,19 @@ fetchedRef =
 
 data MergeResult
   = MergeFailed [Text]
-  | MergeSucceeded [Text] -- FIXME remove [Text]
+  | MergeSucceeded
 
-gitMerge :: Text -> Text -> IO MergeResult
-gitMerge head target = do
+-- FIXME document
+gitMerge :: Text -> IO MergeResult
+gitMerge target = do
   git ["merge", "--ff", "--quiet", target] >>= \case
     ExitFailure _ -> do
       Stdout conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
+      () <- git ["add", "--all"]
+      -- TODO better commit message than the default
+      () <- git ["commit", "--no-edit", "--quiet"]
       pure (MergeFailed conflicts)
-    ExitSuccess -> do
-      Stdout head2 <- git ["rev-parse", "HEAD"]
-      MergeSucceeded <$> prettyCommitsBetween head head2
+    ExitSuccess -> pure MergeSucceeded
 
 prettyCommitsBetween :: Text -> Text -> IO [Text]
 prettyCommitsBetween commit1 commit2 =
