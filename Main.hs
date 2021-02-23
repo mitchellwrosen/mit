@@ -186,9 +186,8 @@ mitSync maybeBranch = do
               Text.writeFile (Text.unpack (gitdir <> "/mit-" <> head2)) (head <> " " <> stash)
 
               Stdout conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
-              -- TODO have 'mit commit' drop the stash
               Text.putStr . Text.unlines $
-                "Synchronized with " <> Text.italic target <> ":" :
+                "Synchronized with " <> Text.italic target <> "." :
                 "" :
                 map ("  " <>) commits
                   ++ ( "" :
@@ -212,7 +211,7 @@ mitSync maybeBranch = do
             ExitSuccess ->
               unless (null commits) do
                 (Text.putStr . Text.unlines)
-                  ("Synchronized with " <> Text.italic target <> ":" : "" : map ("  " <>) commits)
+                  ("Synchronized with " <> Text.italic target <> "." : "" : map ("  " <>) commits)
     NoDifferences -> do
       Stdout head <- git ["rev-parse", "HEAD"]
       gitMerge head target >>= \case
@@ -238,12 +237,10 @@ mitSync maybeBranch = do
                    ]
             )
           exitFailure
-        MergeSucceeded commits -> do
+        MergeSucceeded commits ->
           unless (null commits) do
             (Text.putStr . Text.unlines)
-              ("Synchronized with " <> Text.italic target <> ":" : "" : map ("  " <>) commits)
-          -- TODO pop stash
-          pure ()
+              ("Synchronized with " <> Text.italic target <> "." : "" : map ("  " <>) commits)
 
 data DiffResult
   = Differences
