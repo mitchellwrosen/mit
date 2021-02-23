@@ -177,8 +177,6 @@ mitCommit = do
                     ExitFailure _ -> putLines (syncMessage upstream commits Nothing [])
                     ExitSuccess -> do
                       Stdout head3 <- git ["rev-parse", "HEAD"]
-                      -- FIXME not revert one, but two
-                      -- or, if FF, hmm
                       recordUndoFile branch64 [Revert head3, Apply stash]
                       putLines (syncMessage upstream commits Nothing [])
             _conflicts -> do
