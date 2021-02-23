@@ -26,21 +26,20 @@ main :: IO ()
 main = do
   warnIfBuggyGit
   getArgs >>= \case
-    ["abort"] -> mitAbort
     ["clone", parseGitRepo . Text.pack -> Just (url, name)] -> do
       code <- git ["clone", url, "--separate-git-dir", name <> "/.git", name <> "/master"]
       when (code /= ExitSuccess) (exitWith code)
     ["commit"] -> mitCommit
     ["sync"] -> mitSync Nothing
     ["sync", branch] -> mitSync (Just (Text.pack branch))
-    ["undo"] -> mitAbort
+    ["undo"] -> mitUndo
     _ ->
       putLines
         [ "Usage:",
-          "  mit abort",
           "  mit clone ≪repo≫",
           "  mit commit",
-          "  mit sync [≪branch≫]"
+          "  mit sync [≪branch≫]",
+          "  mit undo"
         ]
   where
     warnIfBuggyGit :: IO ()
@@ -49,12 +48,12 @@ main = do
       case foldr (\(ver, warn) acc -> if version < ver then (ver, warn) : acc else acc) [] validations of
         [] -> pure ()
         warnings ->
-          (Text.putStrLn . Text.unlines)
-            ( "Warning: your version of " <> Text.bold "git" <> " is buggy." :
-              map
-                (\(ver, warn) -> "  ∙ Prior to " <> Text.bold ("git version " <> showGitVersion ver <> ", " <> warn))
-                warnings
-            )
+          putLines $
+            map
+              ( \(ver, warn) ->
+                  Text.yellow ("Prior to " <> Text.bold "git" <> " version " <> showGitVersion ver <> ", " <> warn)
+              )
+              warnings
       where
         validations :: [(GitVersion, Text)]
         validations =
@@ -72,25 +71,22 @@ main = do
             )
           ]
 
--- FIXME rename undo
-mitAbort :: IO ()
-mitAbort =
-  -- Depending on what's happened in the scary, mutable outside world, a "mit abort" could be resolved by a plain ol'
-  -- git abort, or some fancy reset thing. So, just try one, then the other.
-  git ["merge", "--abort"] >>= \case
-    ExitFailure _ -> do
-      Stdout head <- git ["rev-parse", "HEAD"]
-      Stdout gitdir <- git ["rev-parse", "--absolute-git-dir"]
-      try (Text.readFile (Text.unpack (gitdir <> "/mit-" <> head))) >>= \case
-        Left (_ :: IOException) -> exitFailure
-        Right contents ->
-          case Text.words contents of
-            [previousHead, stash] -> do
-              () <- git ["reset", "--hard", "--quiet", previousHead]
-              () <- git ["stash", "apply", "--quiet", stash]
-              removeFile (Text.unpack (gitdir <> "/mit-" <> head)) `catch` \(_ :: IOException) -> pure ()
-            _ -> exitFailure
-    ExitSuccess -> pure ()
+mitUndo :: IO ()
+mitUndo = do
+  Stdout head <- git ["rev-parse", "HEAD"]
+  Stdout gitdir <- git ["rev-parse", "--absolute-git-dir"]
+  try (Text.readFile (Text.unpack (gitdir <> "/mit-" <> head))) >>= \case
+    Left (_ :: IOException) -> exitFailure
+    Right contents ->
+      case Text.words contents of
+        [previousHead] -> do
+          () <- git ["reset", "--hard", "--quiet", previousHead]
+          removeFile (Text.unpack (gitdir <> "/mit-" <> head)) `catch` \(_ :: IOException) -> pure ()
+        [previousHead, stash] -> do
+          () <- git ["reset", "--hard", "--quiet", previousHead]
+          () <- git ["stash", "apply", "--quiet", stash]
+          removeFile (Text.unpack (gitdir <> "/mit-" <> head)) `catch` \(_ :: IOException) -> pure ()
+        _ -> exitFailure
 
 mitCommit :: IO ()
 mitCommit = do
@@ -191,7 +187,7 @@ mitSync maybeBranch = do
       unless (head == targetHash) do
         Stdout stash <- git ["stash", "create"]
         () <- git ["reset", "--hard", "--quiet", head]
-        gitMerge head targetHash >>= \case
+        gitMerge head target >>= \case
           MergeFailed _conflicts -> do
             () <- git ["merge", "--abort"]
             () <- git ["stash", "apply", "--quiet", stash]
@@ -200,7 +196,7 @@ mitSync maybeBranch = do
           MergeSucceeded commits -> do
             git ["stash", "apply", "--quiet", stash] >>= \case
               ExitFailure _ -> do
-                -- Record a file for 'mit abort' to use, if invoked. Its name is the current HEAD, i.e. the commit we
+                -- Record a file for 'mit undo' to use, if invoked. Its name is the current HEAD, i.e. the commit we
                 -- advanced to after a successful merge, and its contents are the previous HEAD before attempting the
                 -- merge, and the commit that the changes to the working tree were stored in with 'git stash create'.
                 Stdout head2 <- git ["rev-parse", "HEAD"]
@@ -212,21 +208,33 @@ mitSync maybeBranch = do
                   syncMessage target commits
                     ++ [""]
                     ++ conflictsMessage conflicts
-                    ++ ["", "Run " <> Text.bold (Text.blue "mit undo") <> " to undo this change."]
+                    ++ ["", undoMessage]
                 git ["reset", "--quiet"] -- unmerged (weird) -> unstaged (normal)
               ExitSuccess -> unless (null commits) (putLines (syncMessage target commits))
     NoDifferences -> do
       Stdout head <- git ["rev-parse", "HEAD"]
       unless (head == targetHash) do
-        gitMerge head targetHash >>= \case
+        gitMerge head target >>= \case
+          -- FIXME: nicer "git status" story here. the fact that there are conflict markers isn't obvious
           MergeFailed conflicts -> do
             () <- git ["add", "--all"]
             -- TODO better commit message than the default
             () <- git ["commit", "--no-edit", "--quiet"]
+
+            -- Record a file for 'mit undo' to use, if invoked. Its name is the current HEAD, i.e. the commit
+            -- with conflict markers we just made, and its contents are the previous HEAD before attempting the
+            -- merge.
             Stdout head2 <- git ["rev-parse", "HEAD"]
+            Stdout gitdir <- git ["rev-parse", "--absolute-git-dir"]
+            Text.writeFile (Text.unpack (gitdir <> "/mit-" <> head2)) head
+
             commits <- prettyCommitsBetween head head2
-            -- TODO allow you to 'mit undo' from here
-            putLines (syncMessage target commits ++ [""] ++ conflictsMessage conflicts)
+            putLines $
+              -- FIXME one helper for this?
+              syncMessage target commits
+                ++ [""]
+                ++ conflictsMessage conflicts
+                ++ ["", undoMessage]
             exitFailure
           MergeSucceeded commits -> unless (null commits) (putLines (syncMessage target commits))
 
@@ -240,6 +248,7 @@ syncMessage :: Text -> [Text] -> [Text]
 syncMessage target commits =
   "Synchronized with " <> Text.italic target <> "." : "" : map ("  " <>) commits
 
+-- FIXME delete
 syncFailedMessage :: Text -> [Text] -> [Text]
 syncFailedMessage target conflicts =
   "Failed to synchronize with " <> Text.italic target <> "." :
@@ -252,6 +261,10 @@ syncFailedMessage target conflicts =
            <> Text.bold (Text.blue "mit commit")
            <> "."
        ]
+
+undoMessage :: Text
+undoMessage =
+  "Run " <> Text.bold (Text.blue "mit undo") <> " to undo this change."
 
 data DiffResult
   = Differences
