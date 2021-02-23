@@ -1,6 +1,6 @@
 module Main where
 
-import Control.Exception (IOException, catch, throwIO, try)
+import Control.Exception (AsyncException (UserInterrupt), IOException, catch, throwIO, try)
 import Control.Monad
 import Data.Char
 import Data.IORef
@@ -10,7 +10,7 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.ANSI qualified as Text
 import Data.Text.IO qualified as Text
-import System.Directory (removeFile)
+import System.Directory (removeFile, renameFile)
 import System.Environment (getArgs, lookupEnv)
 import System.Exit (ExitCode (..), exitFailure, exitSuccess, exitWith)
 import System.IO (Handle, hIsEOF)
@@ -19,12 +19,11 @@ import System.Process
 import Text.Read (readMaybe)
 import Prelude hiding (head)
 
--- FIXME careful about --patch for merges :/
--- FIXME stash push -> stash create && reset --hard
 -- FIXME show commit summary
 
 main :: IO ()
 main = do
+  -- TODO fail if not in git repo
   warnIfBuggyGit
   getArgs >>= \case
     ["clone", parseGitRepo . Text.pack -> Just (url, name)] -> do
@@ -72,22 +71,22 @@ main = do
             )
           ]
 
+-- FIXME output what we just undid
 mitUndo :: IO ()
 mitUndo = do
   Stdout head <- git ["rev-parse", "HEAD"]
-  Stdout gitdir <- git ["rev-parse", "--absolute-git-dir"]
-  try (Text.readFile (Text.unpack (gitdir <> "/mit-" <> head))) >>= \case
+  let file = undofile head
+  try (Text.readFile file) >>= \case
     Left (_ :: IOException) -> exitFailure
     Right contents ->
       case Text.words contents of
         [previousHead] -> do
           () <- git ["reset", "--hard", "--quiet", previousHead]
-          -- FIXME share code with deleteUndoFile
-          removeFile (Text.unpack (gitdir <> "/mit-" <> head)) `catch` \(_ :: IOException) -> pure ()
+          deleteUndoFile head
         [previousHead, stash] -> do
           () <- git ["reset", "--hard", "--quiet", previousHead]
           () <- git ["stash", "apply", "--quiet", stash]
-          removeFile (Text.unpack (gitdir <> "/mit-" <> head)) `catch` \(_ :: IOException) -> pure ()
+          deleteUndoFile head
         _ -> exitFailure
 
 mitCommit :: IO ()
@@ -101,65 +100,79 @@ mitCommit = do
     NoDifferences -> exitFailure
   gitFetch
   Stdout branch <- git ["branch", "--show-current"]
-  git ["show-ref", "--quiet", "--verify", "refs/remotes/origin/" <> branch] >>= \case
-    ExitFailure _ -> do
-      Stdout head <- git ["rev-parse", "HEAD"]
-      git2 ["commit", "--patch", "--quiet"]
-      deleteUndoFile head
-      git ["push", "--set-upstream", "origin"]
-    ExitSuccess ->
-      git ["rev-list", "--max-count", "1", branch <> "..origin/" <> branch] >>= \case
-        Stdout [] -> do
-          Stdout head <- git ["rev-parse", "HEAD"]
-          git2 ["commit", "--patch", "--quiet"]
-          deleteUndoFile head
-          git ["push", "--quiet", "origin", branch <> ":" <> branch]
-        Stdout _ -> do
-          () <- git ["stash", "push", "--quiet"]
-          Stdout head <- git ["rev-parse", "HEAD"]
-          gitMerge head ("origin/" <> branch) >>= \case
-            MergeFailed _conflicts -> do
-              () <- git ["merge", "--abort"]
-              () <- git ["stash", "pop", "--quiet"]
-              git2 ["commit", "--patch", "--quiet"]
-              deleteUndoFile head
-              Stdout head2 <- git ["rev-parse", "HEAD"]
-              -- TODO dont bother if head == target
-              gitMerge head2 ("origin/" <> branch) >>= \case
-                -- exit code 0, because the commit worked
-                MergeFailed conflicts ->
-                  putLines (syncFailedMessage ("origin/" <> branch) conflicts)
-                -- This is an unexpected but technically possible case (I think). Merging with upstream failed at
-                -- first, but then succeeded after committing locally.
-                MergeSucceeded commits -> do
-                  -- TODO support undo here
-                  putLines (syncMessage ("origin/" <> branch) commits [])
-                  git ["push", "--quiet", "origin", branch <> ":" <> branch]
-            MergeSucceeded commits -> do
-              git ["stash", "pop", "--quiet"] >>= \case
+  let upstream :: Text
+      upstream =
+        "origin/" <> branch
+  let isUpstreamAhead :: IO Bool
+      isUpstreamAhead = do
+        git ["show-ref", "--quiet", "--verify", "refs/remotes/" <> upstream] >>= \case
+          ExitFailure _ -> pure False
+          ExitSuccess -> do
+            Stdout commits <- git ["rev-list", "--max-count", "1", branch <> ".." <> upstream]
+            pure (not (null (commits :: [Text])))
+  Stdout head <- git ["rev-parse", "HEAD"]
+  isUpstreamAhead >>= \case
+    False -> do
+      git2 ["commit", "--patch", "--quiet"] >>= \case
+        ExitFailure _ -> exitFailure
+        ExitSuccess -> do
+          -- FIXME report status and make 'mit undo' work
+          git ["push", "--quiet", "--set-upstream", "origin", branch <> ":" <> branch]
+    True -> do
+      Stdout stash <- git ["stash", "create"]
+      () <- git ["reset", "--hard", "--quiet", head]
+      let -- Handle the case that our commit conflicts with upstream, possibly because we were *already* forked.
+          -- We want to make our commit locally, then merge in the conflicts and commit that, then report on what just
+          -- happened. From there, the user can undo the whole operation, or else address the conflict markers and
+          -- commit again.
+          --
+          -- FIXME: if commit is bailed, report on the conflicts that we know exist?
+          commitThenMergeInConflicts :: IO ()
+          commitThenMergeInConflicts = do
+            git2 ["commit", "--patch", "--quiet"] >>= \case
+              ExitFailure _ -> exitFailure
+              ExitSuccess -> do
+                Stdout head2 <- git ["rev-parse", "HEAD"]
+                gitMerge head2 upstream >>= \case
+                  MergeFailed conflicts -> do
+                    () <- git ["add", "--all"]
+                    -- TODO better commit message than the default
+                    () <- git ["commit", "--no-edit", "--quiet"]
+                    head3 <- recordUndoFile head (Just stash)
+                    commits2 <- prettyCommitsBetween head2 (head3 <> "^2")
+                    putLines (syncMessage upstream commits2 conflicts)
+                  -- Impossible: we just observed a conflict when popping the stash. Then we backed out, applied the
+                  -- stash to pre-merge HEAD, and merged again to get the same conflicts, only with the uncommitted
+                  -- changes actually committed.
+                  MergeSucceeded _ -> undefined
+      gitMerge head upstream >>= \case
+        MergeFailed _conflicts -> do
+          () <- git ["merge", "--abort"]
+          () <- git ["stash", "apply", "--quiet", stash]
+          commitThenMergeInConflicts
+        MergeSucceeded commits -> do
+          gitApplyStash stash >>= \case
+            [] -> do
+              git2 ["commit", "--patch", "--quiet"] >>= \case
                 ExitFailure _ -> do
-                  () <- git ["reset", "--hard", "--quiet", head]
-                  () <- git ["stash", "pop", "--quiet"]
-                  git2 ["commit", "--patch", "--quiet"]
-                  deleteUndoFile head
-                  Stdout head2 <- git ["rev-parse", "HEAD"]
-                  -- TODO dont bother if head == target
-                  gitMerge head2 ("origin/" <> branch) >>= \case
-                    -- exit code 0, because the commit worked
-                    MergeFailed conflicts ->
-                      putLines (syncFailedMessage ("origin/" <> branch) conflicts)
-                    -- impossible: we just observed conflicts with this commit and upstream
-                    MergeSucceeded _ -> undefined
-                ExitSuccess ->
-                  putLines $
-                    -- TODO support undo here
-                    syncMessage ("origin/" <> branch) commits []
-                      ++ [ "",
-                           "If everything still looks good, please run "
-                             <> Text.bold (Text.blue "mit commit")
-                             <> "."
-                         ]
+                  _ <- recordUndoFile head (Just stash)
+                  putLines (syncMessage upstream commits [])
+                ExitSuccess -> do
+                  head2 <- recordUndoFile head (Just stash)
+                  -- FIXME add "commit" to summary
+                  result <- git ["push", "--quiet", "--set-upstream", "origin", branch <> ":" <> branch]
+                  -- delay this until after the push because it looks weird to get feedback, then hang for a sec
+                  putLines (syncMessage upstream commits [])
+                  case result of
+                    ExitFailure _ -> pure ()
+                    -- FIXME set new "undo" to revert somehow
+                    ExitSuccess -> deleteUndoFile head2
+            _conflicts -> do
+              () <- git ["reset", "--hard", "--quiet", head]
+              () <- git ["stash", "apply", "--quiet", stash]
+              commitThenMergeInConflicts
 
+-- FIXME: check if 'mit sync' pushes unpublished changes. seems like it should.
 mitSync :: Maybe Text -> IO ()
 mitSync maybeBranch = do
   git ["merge", "--quiet", "HEAD"] >>= \case
@@ -192,23 +205,14 @@ mitSync maybeBranch = do
             -- TODO better commit message than the default
             () <- git ["commit", "--no-edit", "--quiet"]
             head2 <- recordUndoFile head (Just stash)
-            commits <- prettyCommitsBetween head head2
-            git ["stash", "apply", "--quiet", stash] >>= \case
-              ExitFailure _ -> do
-                Stdout stashConflicts <- git ["diff", "--name-only", "--diff-filter=U"]
-                putLines (syncMessage target commits (List.nub (stashConflicts ++ mergeConflicts)))
-                git ["reset", "--quiet"] -- unmerged (weird) -> unstaged (normal)
-              ExitSuccess ->
-                putLines (syncMessage target commits mergeConflicts)
+            commits <- prettyCommitsBetween head (head2 <> "^2")
+            stashConflicts <- gitApplyStash stash
+            putLines (syncMessage target commits (List.nub (stashConflicts ++ mergeConflicts)))
             exitFailure
           MergeSucceeded commits -> do
             _ <- recordUndoFile head (Just stash)
-            git ["stash", "apply", "--quiet", stash] >>= \case
-              ExitFailure _ -> do
-                Stdout conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
-                putLines (syncMessage target commits conflicts)
-                git ["reset", "--quiet"] -- unmerged (weird) -> unstaged (normal)
-              ExitSuccess -> putLines (syncMessage target commits [])
+            conflicts <- gitApplyStash stash
+            putLines (syncMessage target commits conflicts)
     NoDifferences -> do
       Stdout head <- git ["rev-parse", "HEAD"]
       unless (head == targetHash) do
@@ -219,7 +223,7 @@ mitSync maybeBranch = do
             -- TODO better commit message than the default
             () <- git ["commit", "--no-edit", "--quiet"]
             head2 <- recordUndoFile head Nothing
-            commits <- prettyCommitsBetween head head2
+            commits <- prettyCommitsBetween head (head2 <> "^2")
             putLines (syncMessage target commits conflicts)
             exitFailure
           MergeSucceeded commits -> do
@@ -227,17 +231,30 @@ mitSync maybeBranch = do
             putLines (syncMessage target commits [])
 
 deleteUndoFile :: Text -> IO ()
-deleteUndoFile head = do
-  Stdout gitdir <- git ["rev-parse", "--absolute-git-dir"]
-  removeFile (Text.unpack (gitdir <> "/mit-" <> head)) `catch` \(_ :: IOException) -> pure ()
+deleteUndoFile head =
+  removeFile (undofile head) `catch` \(_ :: IOException) -> pure ()
+
+renameUndoFile :: Text -> Text -> IO ()
+renameUndoFile previousHead head =
+  renameFile (undofile previousHead) (undofile head) `catch` \(_ :: IOException) -> pure ()
+
+gitdir :: Text
+gitdir =
+  unsafePerformIO do
+    Stdout dir <- git ["rev-parse", "--absolute-git-dir"]
+    pure dir
+{-# NOINLINE gitdir #-}
+
+undofile :: Text -> FilePath
+undofile head =
+  Text.unpack (gitdir <> "/mit-" <> head)
 
 -- Record a file for 'mit undo' to use, if invoked. Its name is 'mit-' plus the current HEAD, and its
 -- previous HEAD to undo to, plus an optional stash to apply after that.
 recordUndoFile :: Text -> Maybe Text -> IO Text
 recordUndoFile previousHead maybeStash = do
   Stdout head <- git ["rev-parse", "HEAD"]
-  Stdout gitdir <- git ["rev-parse", "--absolute-git-dir"]
-  Text.writeFile (Text.unpack (gitdir <> "/mit-" <> head)) contents
+  Text.writeFile (undofile head) contents
   pure head
   where
     contents :: Text
@@ -282,6 +299,17 @@ syncFailedMessage target conflicts =
            <> Text.bold (Text.blue "mit commit")
            <> "."
        ]
+
+-- | Apply stash, return conflicts.
+-- FIXME return action that returns conflicts instead, since they aren't always used
+gitApplyStash :: Text -> IO [Text]
+gitApplyStash stash = do
+  git ["stash", "apply", "--quiet", stash] >>= \case
+    ExitFailure _ -> do
+      Stdout conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
+      () <- git ["reset", "--quiet"] -- unmerged (weird) -> unstaged (normal)
+      pure conflicts
+    ExitSuccess -> pure []
 
 data DiffResult
   = Differences
@@ -452,26 +480,16 @@ git args = do
         <> " : "
         <> Text.pack (show (stdoutLines, stderrLines, exitCode))
   fromProcessOutput stdoutLines stderrLines exitCode
-  where
-    drainTextHandle :: Handle -> IO [Text]
-    drainTextHandle handle = do
-      let loop acc =
-            hIsEOF handle >>= \case
-              False -> do
-                line <- Text.hGetLine handle
-                loop (line : acc)
-              True -> pure (reverse acc)
-      loop []
 
 -- Yucky interactive/inherity variant (so 'git commit' can open an editor).
-git2 :: [Text] -> IO ()
+git2 :: [Text] -> IO ExitCode
 git2 args = do
   when debug do
     let quote :: Text -> Text
         quote s =
           if Text.any isSpace s then "'" <> Text.replace "'" "\\'" s <> "'" else s
     Text.putStrLn (Text.brightBlack (Text.unwords ("git" : map quote args)))
-  (Nothing, Nothing, Nothing, processHandle) <-
+  (Nothing, Nothing, Just stderrHandle, processHandle) <-
     createProcess
       CreateProcess
         { child_group = Nothing,
@@ -483,7 +501,7 @@ git2 args = do
           delegate_ctlc = True,
           env = Nothing,
           new_session = False,
-          std_err = Inherit,
+          std_err = CreatePipe,
           std_in = Inherit,
           std_out = Inherit,
           -- windows-only
@@ -491,16 +509,31 @@ git2 args = do
           detach_console = False,
           use_process_jobs = False
         }
-  exitCode <- waitForProcess processHandle
+  exitCode <-
+    waitForProcess processHandle `catch` \case
+      UserInterrupt -> pure (ExitFailure (-130))
+      exception -> throwIO exception
+  stderrLines <- drainTextHandle stderrHandle
   when debug do
-    Text.putStrLn (Text.brightBlack (Text.unwords ("git" : map quoteText args) <> " : " <> Text.pack (show exitCode)))
-  when (exitCode /= ExitSuccess) (exitWith exitCode)
+    Text.putStrLn . Text.brightBlack $
+      Text.unwords ("git" : map quoteText args) <> " : " <> Text.pack (show (stderrLines, exitCode))
+  pure exitCode
 
 --
 
 (<&>) :: Functor f => f a -> (a -> b) -> f b
 (<&>) =
   flip fmap
+
+drainTextHandle :: Handle -> IO [Text]
+drainTextHandle handle = do
+  let loop acc =
+        hIsEOF handle >>= \case
+          False -> do
+            line <- Text.hGetLine handle
+            loop (line : acc)
+          True -> pure (reverse acc)
+  loop []
 
 putLines :: [Text] -> IO ()
 putLines =

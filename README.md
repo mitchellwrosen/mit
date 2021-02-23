@@ -27,9 +27,10 @@ developer whose workflow is often a simple series of `git commit`s followed by a
 occasional `git pull` whenever collaborating, this is indeed the most noticeable difference.
 
 (Incidentally, implementing this correctly is what eventually led me to write this script. I think we can all imagine
-how to write a `git` alias or two that can perform some sort of `git add && git commit && git push`, but what if the
-new commit conflicts with upstream? Or what if the local branch had *already* diverged from upstream, because we had
-previously made a couple commits while offline? Oh yeah, and what if we're offline? We'll need some more `git` aliases).
+how to write a `git` alias or two that can perform some sort of `git add && git commit && git push`, but what if
+upstream is ahead? And if it is, what if the new commit conflicts? Or what if the local branch had *already* forked,
+because we had previously made a couple commits while offline? Oh what if we're offline right now? We'll need some more
+`git` aliases).
 
 But the default commit behavior of the tools already suggest very different philosophies: while `git` encourages
 developers to work in isolation, and hide their mistakes and missteps from each other until the history can be rewritten
