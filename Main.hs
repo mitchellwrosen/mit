@@ -16,7 +16,7 @@ import Data.Text.Encoding.Base64 qualified as Text
 import Data.Text.IO qualified as Text
 import System.Directory (removeFile)
 import System.Environment (getArgs, lookupEnv)
-import System.Exit (ExitCode (..), exitFailure, exitSuccess, exitWith)
+import System.Exit (ExitCode (..), exitFailure, exitWith)
 import System.IO (Handle, hIsEOF)
 import System.IO.Unsafe (unsafePerformIO)
 import System.Process
@@ -30,12 +30,12 @@ main = do
   -- TODO fail if not in git repo
   warnIfBuggyGit
   getArgs >>= \case
-    ["clone", parseGitRepo . Text.pack -> Just (url, name)] -> do
-      code <- git ["clone", url, "--separate-git-dir", name <> "/.git", name <> "/master"]
-      when (code /= ExitSuccess) (exitWith code)
+    ["clone", parseGitRepo . Text.pack -> Just (url, name)] ->
+      git ["clone", url, "--separate-git-dir", name <> "/.git", name <> "/master"] >>= \case
+        ExitFailure _ -> exitFailure
+        ExitSuccess -> pure ()
     ["commit"] -> mitCommit
-    ["sync"] -> mitSync Nothing
-    ["sync", branch] -> mitSync (Just (Text.pack branch))
+    ["sync"] -> mitSync
     ["undo"] -> mitUndo
     _ ->
       putLines
@@ -78,7 +78,7 @@ main = do
 -- FIXME output what we just undid
 mitUndo :: IO ()
 mitUndo = do
-  Stdout branch <- git ["branch", "--show-current"]
+  branch <- gitCurrentBranch
   let branch64 = Text.encodeBase64 branch
   let file = undofile branch64
   try (Text.readFile file) >>= \case
@@ -87,24 +87,23 @@ mitUndo = do
       case parseUndos contents of
         Nothing -> throwIO (userError ("Corrupt undo file: " ++ file))
         Just undos -> do
-          for_ @_ @_ @_ @() undos \case
-            Apply commit -> git ["stash", "apply", "--quiet", commit]
-            Reset commit -> git ["reset", "--hard", "--quiet", commit]
-            Revert commit -> git ["revert", commit]
+          for_ undos \case
+            Apply commit -> git_ ["stash", "apply", "--quiet", commit]
+            Reset commit -> git_ ["reset", "--hard", "--quiet", commit]
+            Revert commit -> git_ ["revert", commit]
           -- TODO if we reverted, we also want to push
           deleteUndoFile branch64
 
 mitCommit :: IO ()
 mitCommit = do
-  git ["merge", "--quiet", "HEAD"] >>= \case
-    ExitFailure _ -> exitFailure -- FIXME better feedback, or perhaps just do the commit.
-    ExitSuccess -> pure ()
+  -- FIXME better feedback, or perhaps just do the commit...?
+  whenM gitMergeInProgress exitFailure
   gitDiff >>= \case
     Differences -> pure ()
     -- TODO do some sort of "mit status" here?
     NoDifferences -> exitFailure
   gitFetch
-  Stdout branch <- git ["branch", "--show-current"]
+  branch <- gitCurrentBranch
   let branch64 :: Text
       branch64 =
         Text.encodeBase64 branch
@@ -116,21 +115,21 @@ mitCommit = do
         git ["show-ref", "--quiet", "--verify", "refs/remotes/" <> upstream] >>= \case
           ExitFailure _ -> pure False
           ExitSuccess -> do
-            Stdout commits <- git ["rev-list", "--max-count", "1", branch <> ".." <> upstream]
+            commits <- git ["rev-list", "--max-count", "1", branch <> ".." <> upstream]
             pure (not (null (commits :: [Text])))
-  Stdout head <- git ["rev-parse", "HEAD"]
+  head <- git ["rev-parse", "HEAD"]
   isUpstreamAhead >>= \case
     False -> do
-      Stdout stash <- git ["stash", "create"]
+      stash <- git ["stash", "create"]
       git2 ["commit", "--patch", "--quiet"] >>= \case
         ExitFailure _ -> exitFailure
         ExitSuccess -> do
           recordUndoFile branch64 [Reset head, Apply stash]
           -- FIXME report status/feedback on push fail
-          git ["push", "--quiet", "--set-upstream", "origin", branch <> ":" <> branch] >>= \case
-            ExitFailure _ -> pure ()
+          gitPush branch >>= \case
+            ExitFailure _ -> pure () -- FIXME report this
             ExitSuccess -> do
-              Stdout head2 <- git ["rev-parse", "HEAD"]
+              head2 <- git ["rev-parse", "HEAD"]
               recordUndoFile branch64 [Revert head2, Apply stash]
     True -> do
       stash <- gitStash
@@ -145,11 +144,11 @@ mitCommit = do
             git2 ["commit", "--patch", "--quiet"] >>= \case
               ExitFailure _ -> exitFailure
               ExitSuccess -> do
-                Stdout head2 <- git ["rev-parse", "HEAD"]
+                head2 <- git ["rev-parse", "HEAD"]
                 gitMerge upstream >>= \case
                   MergeFailed conflicts -> do
                     recordUndoFile branch64 [Reset head, Apply stash]
-                    Stdout head3 <- git ["rev-parse", "HEAD"]
+                    head3 <- git ["rev-parse", "HEAD"]
                     commits2 <- prettyCommitsBetween head2 (head3 <> "^2")
                     putLines (syncMessage upstream commits2 Nothing conflicts)
                   -- Impossible: we just observed a conflict when popping the stash. Then we backed out, applied the
@@ -158,11 +157,11 @@ mitCommit = do
                   MergeSucceeded -> undefined
       git ["merge", "--ff", "--quiet", upstream] >>= \case
         ExitFailure _ -> do
-          () <- git ["merge", "--abort"]
-          () <- git ["stash", "apply", "--quiet", stash]
+          git_ ["merge", "--abort"]
+          git_ ["stash", "apply", "--quiet", stash]
           commitThenMergeInConflicts
         ExitSuccess -> do
-          Stdout head2 <- git ["rev-parse", "HEAD"]
+          head2 <- git ["rev-parse", "HEAD"]
           commits <- prettyCommitsBetween head head2
           gitApplyStash stash >>= \case
             [] -> do
@@ -173,75 +172,90 @@ mitCommit = do
                 ExitSuccess -> do
                   recordUndoFile branch64 [Reset head, Apply stash]
                   -- FIXME add "commit" to summary
-                  git ["push", "--quiet", "--set-upstream", "origin", branch <> ":" <> branch] >>= \case
+                  gitPush branch >>= \case
                     ExitFailure _ -> putLines (syncMessage upstream commits Nothing [])
                     ExitSuccess -> do
-                      Stdout head3 <- git ["rev-parse", "HEAD"]
+                      head3 <- git ["rev-parse", "HEAD"]
                       recordUndoFile branch64 [Revert head3, Apply stash]
                       putLines (syncMessage upstream commits Nothing [])
             _conflicts -> do
-              () <- git ["reset", "--hard", "--quiet", head]
-              () <- git ["stash", "apply", "--quiet", stash]
+              git_ ["reset", "--hard", "--quiet", head]
+              git_ ["stash", "apply", "--quiet", stash]
               commitThenMergeInConflicts
 
--- FIXME: check if 'mit sync' pushes unpublished changes. seems like it should.
-mitSync :: Maybe Text -> IO ()
-mitSync maybeTargetBranch = do
-  git ["merge", "--quiet", "HEAD"] >>= \case
-    ExitFailure _ -> exitFailure
-    ExitSuccess -> pure ()
+-- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
+-- FIXME syncing can commit, so look over this and delete undo files where appropriate
+mitSync :: IO ()
+mitSync = do
+  -- FIXME better feedback, or perhaps just do the commit...?
+  whenM gitMergeInProgress exitFailure
   gitFetch
-  Stdout branch <- git ["branch", "--show-current"]
+  branch <- gitCurrentBranch
   let branch64 :: Text
       branch64 =
         Text.encodeBase64 branch
-  (target, targetHash) <- do
-    targetBranch <-
-      case maybeTargetBranch of
-        Nothing -> pure branch
-        Just targetBranch -> pure targetBranch
-    git ["rev-parse", "refs/remotes/origin/" <> branch] >>= \case
-      Left _ -> do
-        when (isNothing maybeTargetBranch) exitSuccess -- sync with self
-        git ["rev-parse", targetBranch] >>= \case
-          Left _ -> exitFailure -- sync with non-existent
-          Right (Stdout targetHash) -> pure (targetBranch, targetHash)
-      Right (Stdout targetHash) -> pure ("origin/" <> targetBranch, targetHash)
-  gitDiff >>= \case
-    Differences -> do
-      Stdout head <- git ["rev-parse", "HEAD"]
-      unless (head == targetHash) do
-        stash <- gitStash
-        gitMerge target >>= \case
-          MergeFailed mergeConflicts -> do
-            recordUndoFile branch64 [Reset head, Apply stash]
-            Stdout head2 <- git ["rev-parse", "HEAD"]
-            commits <- prettyCommitsBetween head (head2 <> "^2")
-            stashConflicts <- gitApplyStash stash
-            putLines (syncMessage target commits Nothing (List.nub (stashConflicts ++ mergeConflicts)))
-            exitFailure
-          MergeSucceeded -> do
-            Stdout head2 <- git ["rev-parse", "HEAD"]
-            commits <- prettyCommitsBetween head head2
-            recordUndoFile branch64 [Reset head, Apply stash]
-            conflicts <- gitApplyStash stash
-            putLines (syncMessage target commits Nothing conflicts)
-    NoDifferences -> do
-      Stdout head <- git ["rev-parse", "HEAD"]
-      unless (head == targetHash) do
-        gitMerge target >>= \case
-          -- FIXME: nicer "git status" story here. the fact that there are conflict markers isn't obvious
-          MergeFailed conflicts -> do
-            recordUndoFile branch64 [Reset head]
-            Stdout head2 <- git ["rev-parse", "HEAD"]
-            commits <- prettyCommitsBetween head (head2 <> "^2")
-            putLines (syncMessage target commits Nothing conflicts)
-            exitFailure
-          MergeSucceeded -> do
-            Stdout head2 <- git ["rev-parse", "HEAD"]
-            commits <- prettyCommitsBetween head head2
-            recordUndoFile branch64 [Reset head]
-            putLines (syncMessage target commits Nothing [])
+  let upstream :: Text
+      upstream =
+        "origin/" <> branch
+  git ["rev-parse", "refs/remotes/" <> upstream] >>= \case
+    Left _ -> do
+      gitPush branch >>= \case
+        ExitFailure _ -> pure () -- FIXME print something here
+        ExitSuccess -> pure () -- FIXME print something here
+    Right upstreamHash -> do
+      head <- git ["rev-parse", "HEAD"]
+      gitDiff >>= \case
+        -- FIXME handle pushes here
+        Differences -> do
+          unless (head == upstreamHash) do
+            stash <- gitStash
+            gitMerge upstream >>= \case
+              MergeFailed mergeConflicts -> do
+                recordUndoFile branch64 [Reset head, Apply stash]
+                head2 <- git ["rev-parse", "HEAD"]
+                commits <- prettyCommitsBetween head (head2 <> "^2")
+                stashConflicts <- gitApplyStash stash
+                putLines (syncMessage upstream commits Nothing (List.nub (stashConflicts ++ mergeConflicts)))
+                exitFailure
+              MergeSucceeded -> do
+                head2 <- git ["rev-parse", "HEAD"]
+                commits <- prettyCommitsBetween head head2
+                recordUndoFile branch64 [Reset head, Apply stash]
+                conflicts <- gitApplyStash stash
+                putLines (syncMessage upstream commits Nothing conflicts)
+        NoDifferences -> do
+          existCommitsBetween head upstreamHash >>= \case
+            False ->
+              existCommitsBetween upstreamHash head >>= \case
+                False -> pure () -- FIXME print something here
+                True ->
+                  gitPush branch >>= \case
+                    ExitFailure _ -> exitFailure -- FIXME print something here
+                    ExitSuccess -> pure () -- FIXME print something here
+            True -> do
+              gitMerge upstream >>= \case
+                -- FIXME: nicer "git status" story here. the fact that there are conflict markers isn't obvious
+                MergeFailed conflicts -> do
+                  recordUndoFile branch64 [Reset head]
+                  head2 <- git ["rev-parse", "HEAD"]
+                  commits <- prettyCommitsBetween head (head2 <> "^2")
+                  putLines (syncMessage upstream commits Nothing conflicts)
+                  exitFailure
+                MergeSucceeded -> do
+                  recordUndoFile branch64 [Reset head]
+                  head2 <- git ["rev-parse", "HEAD"]
+                  commits <- prettyCommitsBetween head head2
+                  existCommitsBetween upstreamHash head >>= \case
+                    False -> putLines (syncMessage upstream commits Nothing [])
+                    True ->
+                      gitPush branch >>= \case
+                        ExitFailure _ -> do
+                          -- FIXME say pushing failed
+                          putLines (syncMessage upstream commits Nothing [])
+                        ExitSuccess -> do
+                          deleteUndoFile branch64
+                          -- FIXME don't say we can undo
+                          putLines (syncMessage upstream commits Nothing [])
 
 deleteUndoFile :: Text -> IO ()
 deleteUndoFile branch64 =
@@ -249,9 +263,7 @@ deleteUndoFile branch64 =
 
 gitdir :: Text
 gitdir =
-  unsafePerformIO do
-    Stdout dir <- git ["rev-parse", "--absolute-git-dir"]
-    pure dir
+  unsafePerformIO (git ["rev-parse", "--absolute-git-dir"])
 {-# NOINLINE gitdir #-}
 
 undofile :: Text -> FilePath
@@ -330,16 +342,21 @@ gitApplyStash :: Text -> IO [Text]
 gitApplyStash stash = do
   git ["stash", "apply", "--quiet", stash] >>= \case
     ExitFailure _ -> do
-      Stdout conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
-      () <- git ["reset", "--quiet"] -- unmerged (weird) -> unstaged (normal)
+      conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
+      git_ ["reset", "--quiet"] -- unmerged (weird) -> unstaged (normal)
       pure conflicts
     ExitSuccess -> pure []
+
+-- | Get the current branch.
+gitCurrentBranch :: IO Text
+gitCurrentBranch =
+  git ["branch", "--show-current"]
 
 -- | Create a stash and blow away local changes (like 'git stash push')
 gitStash :: IO Text
 gitStash = do
-  Stdout stash <- git ["stash", "create"]
-  () <- git ["reset", "--hard", "--quiet", "HEAD"]
+  stash <- git ["stash", "create"]
+  git_ ["reset", "--hard", "--quiet", "HEAD"]
   pure stash
 
 data DiffResult
@@ -348,8 +365,8 @@ data DiffResult
 
 gitDiff :: IO DiffResult
 gitDiff = do
-  () <- git ["reset", "--quiet"]
-  () <- git ["add", "--all", "--intent-to-add"]
+  git_ ["reset", "--quiet"]
+  git_ ["add", "--all", "--intent-to-add"]
   git ["diff", "--quiet"] <&> \case
     ExitFailure _ -> Differences
     ExitSuccess -> NoDifferences
@@ -359,7 +376,7 @@ gitFetch :: IO ()
 gitFetch = do
   fetched <- readIORef fetchedRef
   unless fetched do
-    () <- git ["fetch", "--quiet", "origin"]
+    git_ ["fetch", "--quiet", "origin"]
     writeIORef fetchedRef True
 
 fetchedRef :: IORef Bool
@@ -376,19 +393,34 @@ gitMerge :: Text -> IO MergeResult
 gitMerge target = do
   git ["merge", "--ff", "--quiet", target] >>= \case
     ExitFailure _ -> do
-      Stdout conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
-      () <- git ["add", "--all"]
+      conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
+      git_ ["add", "--all"]
       -- TODO better commit message than the default
-      () <- git ["commit", "--no-edit", "--quiet"]
+      git_ ["commit", "--no-edit", "--quiet"]
       pure (MergeFailed conflicts)
     ExitSuccess -> pure MergeSucceeded
+
+gitMergeInProgress :: IO Bool
+gitMergeInProgress =
+  git ["merge", "--quiet", "HEAD"] <&> \case
+    ExitFailure _ -> True
+    ExitSuccess -> False
+
+gitPush :: Text -> IO ExitCode
+gitPush branch =
+  git ["push", "--quiet", "--set-upstream", "origin", branch <> ":" <> branch]
+
+existCommitsBetween :: Text -> Text -> IO Bool
+existCommitsBetween commit1 commit2 = do
+  commits <- git ["rev-list", "--max-count", "1", commit1 <> ".." <> commit2]
+  pure (not (null @[] commits))
 
 prettyCommitsBetween :: Text -> Text -> IO [Text]
 prettyCommitsBetween commit1 commit2 =
   if commit1 == commit2
     then pure []
     else do
-      Stdout commits <-
+      commits <-
         -- --first-parent seems desirable for topic branches
         git
           [ "rev-list",
@@ -412,7 +444,7 @@ data GitVersion
 
 gitVersion :: IO GitVersion
 gitVersion = do
-  Stdout v0 <- git ["--version"]
+  v0 <- git ["--version"]
   fromMaybe (throwIO (userError ("Could not parse git version from: " <> Text.unpack v0))) do
     ["git", "version", v1] <- Just (Text.words v0)
     [sx, sy, sz] <- Just (Text.split (== '.') v1)
@@ -443,12 +475,6 @@ parseGitRepo url = do
 
 -- Some ad-hoc process return value overloading, for cleaner syntax
 
-newtype Stdout a
-  = Stdout a
-
-newtype Stderr a
-  = Stderr a
-
 class ProcessOutput a where
   fromProcessOutput :: [Text] -> [Text] -> ExitCode -> IO a
 
@@ -459,26 +485,26 @@ instance ProcessOutput () where
 instance ProcessOutput ExitCode where
   fromProcessOutput _ _ = pure
 
-instance ProcessOutput (Stdout Text) where
+instance ProcessOutput Text where
   fromProcessOutput out _ code = do
     when (code /= ExitSuccess) (exitWith code)
     case out of
       [] -> throwIO (userError "no stdout")
-      line : _ -> pure (Stdout line)
+      line : _ -> pure line
 
-instance a ~ Text => ProcessOutput (Stdout [a]) where
+instance a ~ Text => ProcessOutput [a] where
   fromProcessOutput out _ code = do
     when (code /= ExitSuccess) (exitWith code)
-    pure (Stdout out)
+    pure out
 
-instance a ~ ExitCode => ProcessOutput (Either a (Stdout Text)) where
+instance a ~ ExitCode => ProcessOutput (Either a Text) where
   fromProcessOutput out _ code =
     case code of
       ExitFailure _ -> pure (Left code)
       ExitSuccess ->
         case out of
           [] -> throwIO (userError "no stdout")
-          line : _ -> pure (Right (Stdout line))
+          line : _ -> pure (Right line)
 
 --
 
@@ -513,6 +539,10 @@ git args = do
         <> " : "
         <> Text.pack (show (stdoutLines, stderrLines, exitCode))
   fromProcessOutput stdoutLines stderrLines exitCode
+
+git_ :: [Text] -> IO ()
+git_ =
+  git
 
 -- Yucky interactive/inherity variant (so 'git commit' can open an editor).
 git2 :: [Text] -> IO ExitCode
@@ -575,3 +605,9 @@ putLines =
 quoteText :: Text -> Text
 quoteText s =
   if Text.any isSpace s then "'" <> Text.replace "'" "\\'" s <> "'" else s
+
+whenM :: Monad m => m Bool -> m () -> m ()
+whenM mx action =
+  mx >>= \case
+    False -> pure ()
+    True -> action
