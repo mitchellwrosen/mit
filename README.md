@@ -1,38 +1,72 @@
 # mit
 
 Whenever working with other developers on a feature branch, `git`'s default behaviors can become tiresome. It is easy to
-forget to push, or forget to pull, and end up causing unnecessary merge conflicts due to patches propagating too slowly
-from one machine to another.
+forget to push a commit, or forget to pull in the morning, and end up eventually causing unnecessary delay or even
+merge conflicts due to patches generally propagating too slowly from one developer to another.
 
 And even when working alone, `git`'s UX is notoriously poor, partially because it is so heavily used, and thus committed
-to maintaining backwards compatibility with previously released versions, but partially because it was designed first
-and foremost for the Linux kernel developer community, whose needs are unique, and distinct from most other software
-projects, which are built and maintained by much smaller groups of people, all in close communication.
+to maintaining backwards compatibility, but partially because it was designed first and foremost for the Linux kernel
+developer community, whose needs are unique, and distinct from most other software projects, which are built and
+maintained by much smaller groups of people in close communication.
 
-Essentially, `git`'s "porcelain" commands often feel low-level enough to be considered "plumbing". Enter Mitchell's
-opinionated and cleverly-named `git` wrapper, which codifies some of Mitchell's strong but loosely-held opinions on how
-`git` should be used in small- to medium-sized teams, since that's all he has experience with.
+Additionally, certain workflows and features are unintuitive, or feel discouraged. Worktrees, for example, are a
+fantastic alternative to switching branches in-place, but they remain obscured by a clunky API and strange relationship
+to other `git` abstractions, like branches.
+
+Essentially, `git`'s "porcelain" commands often feel low-level enough to be considered "plumbing", and using `git`
+directly at the command-line often feels like writing assembly code. Certainly in 2021, and probably for the next decade
+or more, it is a tool well-worth mastering, despite its flaws. Yet, all users could benefit from a much higher-level and
+streamlined interface. Enter Mitchell's opinionated and cleverly-named `git` wrapper, which codifies some of Mitchell's
+strong but loosely-held beliefs about on how `git` should be used effectively, at least in in small- to medium-sized
+teams. Beyond a certain throughput, all popular version control systems start to break down and require complicated,
+supplemental server-side tooling.
+
+In one sentence, this tool can be approximated as, "like `git`, but automatically pushes whenever you commit". To a
+developer whose workflow is often a simple series of `git commit`s followed by a `git push`, and perhaps even an
+occasional `git pull` whenever collaborating, this is indeed the most noticeable difference.
+
+But the default workflows of the tools already suggest very different philosophies: while `git` encourages developers to
+work in isolation, and hide their mistakes and missteps from each other until the history can be rewritten to show only
+pristine activity, `mit` says: it's okay. Just do some work, snapshot it, and publish it. If you break the build, you
+can fix it in the next commit. No one needs to run those tests right now, anyway.
+
+Whenever `mit` encounters a merge bubble with conflict markers, it makes a commit right away, and reports which files
+are "in conflict" (but not according to `git`). This, too, is meant to record an accurate history of what actually
+happened, and encourage collaboration by allowing a developer to prepare a patch that shows only how the conflicts
+between one commit and another were resolved. With `git`'s default behavior of disallowing a merge to conclude until
+all conflicts are marked as resolved, the developer, unless delinquent, is forced to work in isolation, and worse,
+cannot easily communicate his or her work to others, as resolved merge conflicts are indistinguishable from all of the
+innocuous noise that typically occupies a merge bubble.
+
+But regardless of whatever development philosophy `mit` implicates, it should be pleasant to use. That means it should
+handle edge-cases well, communicate relevant information at the right times, and not require anyone who isn't interested
+in becoming a power user to read any sort of manual.
+
+Below, in no particular order, is a set of rules and guidelines that, in one way or another, have influcened (or will
+influence) some feature of `mit`.
 
 * The history of a feature branch should record how it was developed, not mutated and prettified or the fact. Commits to
-  a feature branch should not be amended nor rebased.
+  a feature branch should not regularly need to be amended or rebased.
 * Commits to a feature branch do not individually need to pass any test suites or other CI checks. They are nothing more
   than individual units of work that are ready to be shared with other developers working on the same feature branch.
+* Merge commits with conflicts should always be immediately committed as such. Deleting conflict markers should always
+  happen in a follow-on commit.
 * Commits to a feature branch should be published as soon as possible, to reduce the likelihood of a fork in history.
 * Forks in a feature branch's history should be resolved as soon as possible.
-* When a feature branch is merged into a mainline development branch, its commits may be squashed, so the development
-  branch remains bisectable.
-* There is no need to use the git index. When you're ready to commit changes, just prepare the patch
-  interactively.
+* There is no need to use the git index. When you're ready to commit changes, just prepare the patch interactively.
 * There is no need to switch branches in-place. If you want to work on different features in parallel, use worktrees
   instead.
 * There is little need to use the git stash.
-* Each repo should only have a single remote repository called "origin", and each local branch should track its
-  corresponding branch on "origin".
 * Untracked files that are not meant to be committed should just be `.gitignore`d away.
+* When a feature branch is merged into a mainline development branch, its commits may be squashed, so the development
+  branch remains bisectable.
+* Each repository should only have a single remote repository called "origin", and each local branch should track a
+  corresponding branch of the same name.
+* Undoing a change should just work.
 
-All that said, this is just a `git` wrapper that exposes high-level commands that are inspired by the philosophy above.
-I encourage you to try running it with the `debug=` environment variable to see the actual commands that are invoked,
-steal some ideas, and write your own tool.
+All that said, at the moment this is just a personal `git` wrapper tool, with one user. I encourage you to try running
+it with the `debug=` environment variable to see the actual commands that are invoked, steal some ideas, write your own
+tool, and tweak its behavior to your taste.
 
 #### mit clone ≪repo≫
 
@@ -46,7 +80,9 @@ worktrees. Running `mit clone git@github.com:mitchellwrosen/mit.git` will create
 
 #### mit commit
 
-Commit and push the working tree.
+Commit any uncommitted changes, and synchronize the current branch with its remote counterpart.
+
+FIXME the details below are inaccurate, as everything is changing. Everything. Okay, not everything.
 
 In detail:
 
@@ -100,7 +136,9 @@ files and start tracking red ones).
 "merge bubble" will not necessarily be created, because fast-forward merges are preferred. So some other verb seems
 appropriate.
 
-A sort of implicit `mit sync` occurs whenever recording changes with `mit commit`.
+A `mit sync` effectively occurs whenever recording changes with `mit commit`.
+
+FIXME the details below are inaccurate, as everything is changing. Everything. Okay, not everything.
 
 In detail:
 
