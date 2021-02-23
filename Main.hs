@@ -4,6 +4,7 @@ import Control.Exception (IOException, catch, throwIO, try)
 import Control.Monad
 import Data.Char
 import Data.IORef
+import Data.List qualified as List
 import Data.Maybe
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -91,11 +92,11 @@ mitUndo = do
 mitCommit :: IO ()
 mitCommit = do
   git ["merge", "--quiet", "HEAD"] >>= \case
-    ExitFailure _ -> exitFailure
+    ExitFailure _ -> exitFailure -- FIXME better feedback, or perhaps just do the commit.
     ExitSuccess -> pure ()
   gitDiff >>= \case
     Differences -> pure ()
-    -- TODO do some sort of "mit status" here
+    -- TODO do some sort of "mit status" here?
     NoDifferences -> exitFailure
   gitFetch
   Stdout branch <- git ["branch", "--show-current"]
@@ -117,7 +118,6 @@ mitCommit = do
         Stdout _ -> do
           () <- git ["stash", "push", "--quiet"]
           Stdout head <- git ["rev-parse", "HEAD"]
-          -- TODO dont bother if head == target
           gitMerge head ("origin/" <> branch) >>= \case
             MergeFailed _conflicts -> do
               () <- git ["merge", "--abort"]
@@ -134,7 +134,7 @@ mitCommit = do
                 -- This is an unexpected but technically possible case (I think). Merging with upstream failed at
                 -- first, but then succeeded after committing locally.
                 MergeSucceeded commits -> do
-                  putLines (syncMessage ("origin/" <> branch) commits)
+                  putLines (syncMessage ("origin/" <> branch) commits [])
                   git ["push", "--quiet", "origin", branch <> ":" <> branch]
             MergeSucceeded commits -> do
               git ["stash", "pop", "--quiet"] >>= \case
@@ -154,7 +154,7 @@ mitCommit = do
                     MergeSucceeded _ -> undefined
                 ExitSuccess ->
                   putLines $
-                    syncMessage ("origin/" <> branch) commits
+                    syncMessage ("origin/" <> branch) commits []
                       ++ [ "",
                            "If everything still looks good, please run "
                              <> Text.bold (Text.blue "mit commit")
@@ -188,29 +188,29 @@ mitSync maybeBranch = do
         Stdout stash <- git ["stash", "create"]
         () <- git ["reset", "--hard", "--quiet", head]
         gitMerge head target >>= \case
-          MergeFailed _conflicts -> do
-            () <- git ["merge", "--abort"]
-            () <- git ["stash", "apply", "--quiet", stash]
-            -- FIXME: handle this case
-            Text.putStrLn "merge failed, so backed out"
-          MergeSucceeded commits -> do
+          MergeFailed mergeConflicts -> do
+            () <- git ["add", "--all"]
+            -- TODO better commit message than the default
+            () <- git ["commit", "--no-edit", "--quiet"]
+            head2 <- recordUndoFile head (Just stash)
+            commits <- prettyCommitsBetween head head2
             git ["stash", "apply", "--quiet", stash] >>= \case
               ExitFailure _ -> do
-                -- Record a file for 'mit undo' to use, if invoked. Its name is the current HEAD, i.e. the commit we
-                -- advanced to after a successful merge, and its contents are the previous HEAD before attempting the
-                -- merge, and the commit that the changes to the working tree were stored in with 'git stash create'.
-                Stdout head2 <- git ["rev-parse", "HEAD"]
-                Stdout gitdir <- git ["rev-parse", "--absolute-git-dir"]
-                Text.writeFile (Text.unpack (gitdir <> "/mit-" <> head2)) (head <> " " <> stash)
-
-                Stdout conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
+                Stdout stashConflicts <- git ["diff", "--name-only", "--diff-filter=U"]
                 putLines $
-                  syncMessage target commits
-                    ++ [""]
-                    ++ conflictsMessage conflicts
-                    ++ ["", undoMessage]
+                  syncMessage target commits (List.nub (stashConflicts ++ mergeConflicts)) ++ ["", undoMessage]
                 git ["reset", "--quiet"] -- unmerged (weird) -> unstaged (normal)
-              ExitSuccess -> unless (null commits) (putLines (syncMessage target commits))
+              ExitSuccess ->
+                putLines (syncMessage target commits mergeConflicts ++ ["", undoMessage])
+            exitFailure
+          MergeSucceeded commits -> do
+            _ <- recordUndoFile head (Just stash)
+            git ["stash", "apply", "--quiet", stash] >>= \case
+              ExitFailure _ -> do
+                Stdout conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
+                putLines (syncMessage target commits conflicts ++ ["", undoMessage])
+                git ["reset", "--quiet"] -- unmerged (weird) -> unstaged (normal)
+              ExitSuccess -> putLines (syncMessage target commits [] ++ ["", undoMessage])
     NoDifferences -> do
       Stdout head <- git ["rev-parse", "HEAD"]
       unless (head == targetHash) do
@@ -220,33 +220,48 @@ mitSync maybeBranch = do
             () <- git ["add", "--all"]
             -- TODO better commit message than the default
             () <- git ["commit", "--no-edit", "--quiet"]
-
-            -- Record a file for 'mit undo' to use, if invoked. Its name is the current HEAD, i.e. the commit
-            -- with conflict markers we just made, and its contents are the previous HEAD before attempting the
-            -- merge.
-            Stdout head2 <- git ["rev-parse", "HEAD"]
-            Stdout gitdir <- git ["rev-parse", "--absolute-git-dir"]
-            Text.writeFile (Text.unpack (gitdir <> "/mit-" <> head2)) head
-
+            head2 <- recordUndoFile head Nothing
             commits <- prettyCommitsBetween head head2
-            putLines $
-              -- FIXME one helper for this?
-              syncMessage target commits
-                ++ [""]
-                ++ conflictsMessage conflicts
-                ++ ["", undoMessage]
+            putLines (syncMessage target commits conflicts ++ ["", undoMessage])
             exitFailure
-          MergeSucceeded commits -> unless (null commits) (putLines (syncMessage target commits))
+          MergeSucceeded commits ->
+            -- FIXME allow undo here
+            putLines (syncMessage target commits [])
 
-conflictsMessage :: [Text] -> [Text]
-conflictsMessage conflicts =
-  "The following files have conflicts." :
-  "" :
-  map (("  " <>) . Text.red) conflicts
+-- Record a file for 'mit undo' to use, if invoked. Its name is 'mit-' plus the current HEAD, and its
+-- previous HEAD to undo to, plus an optional stash to apply after that.
+recordUndoFile :: Text -> Maybe Text -> IO Text
+recordUndoFile previousHead maybeStash = do
+  Stdout head <- git ["rev-parse", "HEAD"]
+  Stdout gitdir <- git ["rev-parse", "--absolute-git-dir"]
+  Text.writeFile (Text.unpack (gitdir <> "/mit-" <> head)) contents
+  pure head
+  where
+    contents :: Text
+    contents =
+      previousHead <> maybe "" (" " <>) maybeStash
 
-syncMessage :: Text -> [Text] -> [Text]
-syncMessage target commits =
-  "Synchronized with " <> Text.italic target <> "." : "" : map ("  " <>) commits
+syncMessage :: Text -> [Text] -> [Text] -> [Text]
+syncMessage target commits conflicts =
+  appendConflictsMessage commitsMessage
+  where
+    commitsMessage :: [Text]
+    commitsMessage =
+      "Synchronized with " <> Text.italic target <> "." :
+      "" :
+      map ("  " <>) commits
+    appendConflictsMessage :: [Text] -> [Text]
+    appendConflictsMessage =
+      if null conflicts
+        then id
+        else
+          ( ++
+              ( "" :
+                "The following files have conflicts." :
+                "" :
+                map (("  " <>) . Text.red) conflicts
+              )
+          )
 
 -- FIXME delete
 syncFailedMessage :: Text -> [Text] -> [Text]
