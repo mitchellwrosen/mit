@@ -5,6 +5,7 @@ version: 0
 executable mit
   build-depends:
     base,
+    base64,
     directory,
     process,
     text,
@@ -18,6 +19,7 @@ executable mit
     ImportQualifiedPost
     OverloadedStrings
     ScopedTypeVariables
+    TypeApplications
     ViewPatterns
   default-language: Haskell2010
   ghc-options:

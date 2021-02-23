@@ -1,16 +1,20 @@
 module Main where
 
+import Control.Category ((>>>))
 import Control.Exception (AsyncException (UserInterrupt), IOException, catch, throwIO, try)
 import Control.Monad
 import Data.Char
+import Data.Foldable (for_)
+import Data.Function
 import Data.IORef
 import Data.List qualified as List
 import Data.Maybe
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.ANSI qualified as Text
+import Data.Text.Encoding.Base64 qualified as Text
 import Data.Text.IO qualified as Text
-import System.Directory (removeFile, renameFile)
+import System.Directory (removeFile)
 import System.Environment (getArgs, lookupEnv)
 import System.Exit (ExitCode (..), exitFailure, exitSuccess, exitWith)
 import System.IO (Handle, hIsEOF)
@@ -74,23 +78,22 @@ main = do
 -- FIXME output what we just undid
 mitUndo :: IO ()
 mitUndo = do
-  Stdout head <- git ["rev-parse", "HEAD"]
-  let file = undofile head
+  Stdout branch <- git ["branch", "--show-current"]
+  let branch64 = Text.encodeBase64 branch
+  let file = undofile branch64
   try (Text.readFile file) >>= \case
     Left (_ :: IOException) -> exitFailure
     Right contents ->
-      case Text.words contents of
-        [previousHead] -> do
-          () <- git ["reset", "--hard", "--quiet", previousHead]
-          deleteUndoFile head
-        [previousHead, stash] -> do
-          () <- git ["reset", "--hard", "--quiet", previousHead]
-          () <- git ["stash", "apply", "--quiet", stash]
-          deleteUndoFile head
-        _ -> exitFailure
+      case parseUndos contents of
+        Nothing -> throwIO (userError ("Corrupt undo file: " ++ file))
+        Just undos -> do
+          for_ @_ @_ @_ @() undos \case
+            Apply commit -> git ["stash", "apply", "--quiet", commit]
+            Reset commit -> git ["reset", "--hard", "--quiet", commit]
+            Revert commit -> git ["revert", commit]
+          -- TODO if we reverted, we also want to push
+          deleteUndoFile branch64
 
--- FIXME double-check undo file of HEAD prior to successful commit is deleted
--- (rather, set to revert if push succeeds, otherwise updated to latest)
 mitCommit :: IO ()
 mitCommit = do
   git ["merge", "--quiet", "HEAD"] >>= \case
@@ -102,6 +105,9 @@ mitCommit = do
     NoDifferences -> exitFailure
   gitFetch
   Stdout branch <- git ["branch", "--show-current"]
+  let branch64 :: Text
+      branch64 =
+        Text.encodeBase64 branch
   let upstream :: Text
       upstream =
         "origin/" <> branch
@@ -115,13 +121,19 @@ mitCommit = do
   Stdout head <- git ["rev-parse", "HEAD"]
   isUpstreamAhead >>= \case
     False -> do
+      Stdout stash <- git ["stash", "create"]
       git2 ["commit", "--patch", "--quiet"] >>= \case
         ExitFailure _ -> exitFailure
         ExitSuccess -> do
-          -- FIXME report status and make 'mit undo' work
-          git ["push", "--quiet", "--set-upstream", "origin", branch <> ":" <> branch]
+          recordUndoFile branch64 [Reset head, Apply stash]
+          -- FIXME report status/feedback on push fail
+          git ["push", "--quiet", "--set-upstream", "origin", branch <> ":" <> branch] >>= \case
+            ExitFailure _ -> pure ()
+            ExitSuccess -> do
+              Stdout head2 <- git ["rev-parse", "HEAD"]
+              recordUndoFile branch64 [Revert head2, Apply stash]
     True -> do
-      stash <- gitCreateStash
+      stash <- gitStash
       let -- Handle the case that our commit conflicts with upstream, possibly because we were *already* forked.
           -- We want to make our commit locally, then merge in the conflicts and commit that, then report on what just
           -- happened. From there, the user can undo the whole operation, or else address the conflict markers and
@@ -136,9 +148,10 @@ mitCommit = do
                 Stdout head2 <- git ["rev-parse", "HEAD"]
                 gitMerge upstream >>= \case
                   MergeFailed conflicts -> do
-                    head3 <- recordUndoFile head (Just stash)
+                    recordUndoFile branch64 [Reset head, Apply stash]
+                    Stdout head3 <- git ["rev-parse", "HEAD"]
                     commits2 <- prettyCommitsBetween head2 (head3 <> "^2")
-                    putLines (syncMessage upstream commits2 conflicts)
+                    putLines (syncMessage upstream commits2 Nothing conflicts)
                   -- Impossible: we just observed a conflict when popping the stash. Then we backed out, applied the
                   -- stash to pre-merge HEAD, and merged again to get the same conflicts, only with the uncommitted
                   -- changes actually committed.
@@ -155,18 +168,19 @@ mitCommit = do
             [] -> do
               git2 ["commit", "--patch", "--quiet"] >>= \case
                 ExitFailure _ -> do
-                  _ <- recordUndoFile head (Just stash)
-                  putLines (syncMessage upstream commits [])
+                  recordUndoFile branch64 [Reset head, Apply stash]
+                  putLines (syncMessage upstream commits Nothing [])
                 ExitSuccess -> do
-                  head3 <- recordUndoFile head (Just stash)
+                  recordUndoFile branch64 [Reset head, Apply stash]
                   -- FIXME add "commit" to summary
-                  result <- git ["push", "--quiet", "--set-upstream", "origin", branch <> ":" <> branch]
-                  -- delay this until after the push because it looks weird to get feedback, then hang for a sec
-                  putLines (syncMessage upstream commits [])
-                  case result of
-                    ExitFailure _ -> pure ()
-                    -- FIXME set new "undo" to revert somehow
-                    ExitSuccess -> deleteUndoFile head3
+                  git ["push", "--quiet", "--set-upstream", "origin", branch <> ":" <> branch] >>= \case
+                    ExitFailure _ -> putLines (syncMessage upstream commits Nothing [])
+                    ExitSuccess -> do
+                      Stdout head3 <- git ["rev-parse", "HEAD"]
+                      -- FIXME not revert one, but two
+                      -- or, if FF, hmm
+                      recordUndoFile branch64 [Revert head3, Apply stash]
+                      putLines (syncMessage upstream commits Nothing [])
             _conflicts -> do
               () <- git ["reset", "--hard", "--quiet", head]
               () <- git ["stash", "apply", "--quiet", stash]
@@ -174,66 +188,66 @@ mitCommit = do
 
 -- FIXME: check if 'mit sync' pushes unpublished changes. seems like it should.
 mitSync :: Maybe Text -> IO ()
-mitSync maybeBranch = do
+mitSync maybeTargetBranch = do
   git ["merge", "--quiet", "HEAD"] >>= \case
     ExitFailure _ -> exitFailure
     ExitSuccess -> pure ()
   gitFetch
-  (target, targetHash :: Text) <- do
-    branch <-
-      case maybeBranch of
-        Nothing -> do
-          Stdout branch <- git ["branch", "--show-current"]
-          pure branch
-        Just branch -> pure branch
+  Stdout branch <- git ["branch", "--show-current"]
+  let branch64 :: Text
+      branch64 =
+        Text.encodeBase64 branch
+  (target, targetHash) <- do
+    targetBranch <-
+      case maybeTargetBranch of
+        Nothing -> pure branch
+        Just targetBranch -> pure targetBranch
     git ["rev-parse", "refs/remotes/origin/" <> branch] >>= \case
       Left _ -> do
-        when (isNothing maybeBranch) exitSuccess -- sync with self
-        git ["rev-parse", branch] >>= \case
+        when (isNothing maybeTargetBranch) exitSuccess -- sync with self
+        git ["rev-parse", targetBranch] >>= \case
           Left _ -> exitFailure -- sync with non-existent
-          Right (Stdout targetHash) -> pure (branch, targetHash)
-      Right (Stdout targetHash) -> pure ("origin/" <> branch, targetHash)
+          Right (Stdout targetHash) -> pure (targetBranch, targetHash)
+      Right (Stdout targetHash) -> pure ("origin/" <> targetBranch, targetHash)
   gitDiff >>= \case
     Differences -> do
       Stdout head <- git ["rev-parse", "HEAD"]
       unless (head == targetHash) do
-        stash <- gitCreateStash
+        stash <- gitStash
         gitMerge target >>= \case
           MergeFailed mergeConflicts -> do
-            head2 <- recordUndoFile head (Just stash)
+            recordUndoFile branch64 [Reset head, Apply stash]
+            Stdout head2 <- git ["rev-parse", "HEAD"]
             commits <- prettyCommitsBetween head (head2 <> "^2")
             stashConflicts <- gitApplyStash stash
-            putLines (syncMessage target commits (List.nub (stashConflicts ++ mergeConflicts)))
+            putLines (syncMessage target commits Nothing (List.nub (stashConflicts ++ mergeConflicts)))
             exitFailure
           MergeSucceeded -> do
             Stdout head2 <- git ["rev-parse", "HEAD"]
             commits <- prettyCommitsBetween head head2
-            _ <- recordUndoFile head (Just stash)
+            recordUndoFile branch64 [Reset head, Apply stash]
             conflicts <- gitApplyStash stash
-            putLines (syncMessage target commits conflicts)
+            putLines (syncMessage target commits Nothing conflicts)
     NoDifferences -> do
       Stdout head <- git ["rev-parse", "HEAD"]
       unless (head == targetHash) do
         gitMerge target >>= \case
           -- FIXME: nicer "git status" story here. the fact that there are conflict markers isn't obvious
           MergeFailed conflicts -> do
-            head2 <- recordUndoFile head Nothing
+            recordUndoFile branch64 [Reset head]
+            Stdout head2 <- git ["rev-parse", "HEAD"]
             commits <- prettyCommitsBetween head (head2 <> "^2")
-            putLines (syncMessage target commits conflicts)
+            putLines (syncMessage target commits Nothing conflicts)
             exitFailure
           MergeSucceeded -> do
             Stdout head2 <- git ["rev-parse", "HEAD"]
             commits <- prettyCommitsBetween head head2
-            _ <- recordUndoFile head Nothing
-            putLines (syncMessage target commits [])
+            recordUndoFile branch64 [Reset head]
+            putLines (syncMessage target commits Nothing [])
 
 deleteUndoFile :: Text -> IO ()
-deleteUndoFile head =
-  removeFile (undofile head) `catch` \(_ :: IOException) -> pure ()
-
-renameUndoFile :: Text -> Text -> IO ()
-renameUndoFile previousHead head =
-  renameFile (undofile previousHead) (undofile head) `catch` \(_ :: IOException) -> pure ()
+deleteUndoFile branch64 =
+  removeFile (undofile branch64) `catch` \(_ :: IOException) -> pure ()
 
 gitdir :: Text
 gitdir =
@@ -243,30 +257,59 @@ gitdir =
 {-# NOINLINE gitdir #-}
 
 undofile :: Text -> FilePath
-undofile head =
-  Text.unpack (gitdir <> "/mit-" <> head)
+undofile branch64 =
+  Text.unpack (gitdir <> "/mit-" <> branch64)
 
--- Record a file for 'mit undo' to use, if invoked. Its name is 'mit-' plus the current HEAD, and its
--- previous HEAD to undo to, plus an optional stash to apply after that.
-recordUndoFile :: Text -> Maybe Text -> IO Text
-recordUndoFile previousHead maybeStash = do
-  Stdout head <- git ["rev-parse", "HEAD"]
-  Text.writeFile (undofile head) contents
-  pure head
-  where
-    contents :: Text
-    contents =
-      previousHead <> maybe "" (" " <>) maybeStash
+data Undo
+  = Apply Text -- apply stash
+  | Reset Text -- reset to commit
+  | Revert Text -- revert commit
 
-syncMessage :: Text -> [Text] -> [Text] -> [Text]
-syncMessage target commits conflicts =
-  appendConflictsMessage commitsMessage ++ ["", undoMessage]
+showUndos :: [Undo] -> Text
+showUndos =
+  Text.intercalate "," . map showUndo
   where
-    commitsMessage :: [Text]
-    commitsMessage =
+    showUndo :: Undo -> Text
+    showUndo = \case
+      Apply commit -> "apply " <> commit
+      Reset commit -> "reset " <> commit
+      Revert commit -> "revert " <> commit
+
+parseUndos :: Text -> Maybe [Undo]
+parseUndos =
+  Text.split (== ',') >>> traverse parseUndo
+  where
+    parseUndo :: Text -> Maybe Undo
+    parseUndo =
+      Text.words >>> \case
+        ["apply", commit] -> Just (Apply commit)
+        ["reset", commit] -> Just (Reset commit)
+        ["revert", commit] -> Just (Revert commit)
+        _ -> Nothing
+
+-- Record a file for 'mit undo' to use, if invoked.
+recordUndoFile :: Text -> [Undo] -> IO ()
+recordUndoFile branch64 undos = do
+  Text.writeFile (undofile branch64) (showUndos undos)
+
+-- FIXME rename
+syncMessage :: Text -> [Text] -> Maybe Text -> [Text] -> [Text]
+syncMessage target remoteCommits maybeCommit conflicts =
+  remoteCommitsMessage
+    & appendCommitMessage
+    & appendConflictsMessage
+    & (++ ["", undoMessage])
+  where
+    remoteCommitsMessage :: [Text]
+    remoteCommitsMessage =
       "Synchronized with " <> Text.italic target <> "." :
       "" :
-      map ("  " <>) commits
+      map ("  " <>) remoteCommits
+    appendCommitMessage :: [Text] -> [Text]
+    appendCommitMessage =
+      case maybeCommit of
+        Nothing -> id
+        Just commit -> (++ ["", "Made a cool commit: " <> commit])
     appendConflictsMessage :: [Text] -> [Text]
     appendConflictsMessage =
       if null conflicts
@@ -283,20 +326,6 @@ syncMessage target commits conflicts =
     undoMessage =
       "Run " <> Text.bold (Text.blue "mit undo") <> " to undo this change."
 
--- FIXME delete
-syncFailedMessage :: Text -> [Text] -> [Text]
-syncFailedMessage target conflicts =
-  "Failed to synchronize with " <> Text.italic target <> "." :
-  "" :
-  map (("  " <>) . Text.red) conflicts
-    ++ [ "",
-         "If you would prefer not to resolve the conflicts at this time, please run",
-         Text.bold (Text.blue "mit abort")
-           <> ". Otherwise, please resolve the conflicts, then run "
-           <> Text.bold (Text.blue "mit commit")
-           <> "."
-       ]
-
 -- | Apply stash, return conflicts.
 -- FIXME return action that returns conflicts instead, since they aren't always used
 gitApplyStash :: Text -> IO [Text]
@@ -309,8 +338,8 @@ gitApplyStash stash = do
     ExitSuccess -> pure []
 
 -- | Create a stash and blow away local changes (like 'git stash push')
-gitCreateStash :: IO Text
-gitCreateStash = do
+gitStash :: IO Text
+gitStash = do
   Stdout stash <- git ["stash", "create"]
   () <- git ["reset", "--hard", "--quiet", "HEAD"]
   pure stash
