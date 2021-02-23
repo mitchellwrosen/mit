@@ -134,6 +134,7 @@ mitCommit = do
                 -- This is an unexpected but technically possible case (I think). Merging with upstream failed at
                 -- first, but then succeeded after committing locally.
                 MergeSucceeded commits -> do
+                  -- TODO support undo here
                   putLines (syncMessage ("origin/" <> branch) commits [])
                   git ["push", "--quiet", "origin", branch <> ":" <> branch]
             MergeSucceeded commits -> do
@@ -154,6 +155,7 @@ mitCommit = do
                     MergeSucceeded _ -> undefined
                 ExitSuccess ->
                   putLines $
+                    -- TODO support undo here
                     syncMessage ("origin/" <> branch) commits []
                       ++ [ "",
                            "If everything still looks good, please run "
@@ -197,20 +199,19 @@ mitSync maybeBranch = do
             git ["stash", "apply", "--quiet", stash] >>= \case
               ExitFailure _ -> do
                 Stdout stashConflicts <- git ["diff", "--name-only", "--diff-filter=U"]
-                putLines $
-                  syncMessage target commits (List.nub (stashConflicts ++ mergeConflicts)) ++ ["", undoMessage]
+                putLines (syncMessage target commits (List.nub (stashConflicts ++ mergeConflicts)))
                 git ["reset", "--quiet"] -- unmerged (weird) -> unstaged (normal)
               ExitSuccess ->
-                putLines (syncMessage target commits mergeConflicts ++ ["", undoMessage])
+                putLines (syncMessage target commits mergeConflicts)
             exitFailure
           MergeSucceeded commits -> do
             _ <- recordUndoFile head (Just stash)
             git ["stash", "apply", "--quiet", stash] >>= \case
               ExitFailure _ -> do
                 Stdout conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
-                putLines (syncMessage target commits conflicts ++ ["", undoMessage])
+                putLines (syncMessage target commits conflicts)
                 git ["reset", "--quiet"] -- unmerged (weird) -> unstaged (normal)
-              ExitSuccess -> putLines (syncMessage target commits [] ++ ["", undoMessage])
+              ExitSuccess -> putLines (syncMessage target commits [])
     NoDifferences -> do
       Stdout head <- git ["rev-parse", "HEAD"]
       unless (head == targetHash) do
@@ -222,10 +223,10 @@ mitSync maybeBranch = do
             () <- git ["commit", "--no-edit", "--quiet"]
             head2 <- recordUndoFile head Nothing
             commits <- prettyCommitsBetween head head2
-            putLines (syncMessage target commits conflicts ++ ["", undoMessage])
+            putLines (syncMessage target commits conflicts)
             exitFailure
-          MergeSucceeded commits ->
-            -- FIXME allow undo here
+          MergeSucceeded commits -> do
+            _ <- recordUndoFile head Nothing
             putLines (syncMessage target commits [])
 
 -- Record a file for 'mit undo' to use, if invoked. Its name is 'mit-' plus the current HEAD, and its
@@ -243,7 +244,7 @@ recordUndoFile previousHead maybeStash = do
 
 syncMessage :: Text -> [Text] -> [Text] -> [Text]
 syncMessage target commits conflicts =
-  appendConflictsMessage commitsMessage
+  appendConflictsMessage commitsMessage ++ ["", undoMessage]
   where
     commitsMessage :: [Text]
     commitsMessage =
@@ -262,6 +263,9 @@ syncMessage target commits conflicts =
                 map (("  " <>) . Text.red) conflicts
               )
           )
+    undoMessage :: Text
+    undoMessage =
+      "Run " <> Text.bold (Text.blue "mit undo") <> " to undo this change."
 
 -- FIXME delete
 syncFailedMessage :: Text -> [Text] -> [Text]
@@ -276,10 +280,6 @@ syncFailedMessage target conflicts =
            <> Text.bold (Text.blue "mit commit")
            <> "."
        ]
-
-undoMessage :: Text
-undoMessage =
-  "Run " <> Text.bold (Text.blue "mit undo") <> " to undo this change."
 
 data DiffResult
   = Differences
