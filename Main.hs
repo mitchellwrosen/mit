@@ -333,7 +333,6 @@ prettyCommitsBetween commit1 commit2 =
             "--date=human",
             "--format=format:%C(bold black)%h%C(reset) %C(bold white)%s%C(reset) – %C(italic white)%an%C(reset) %C(italic yellow)%ad%C(reset)",
             "--max-count=10",
-            "--max-parents=1", -- don't show merge commits
             commit1 <> ".." <> commit2
           ]
       pure (dropEvens commits)
