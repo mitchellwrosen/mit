@@ -1,0 +1,1 @@
+--command "cabal repl -O0" --restart mit.cabal
