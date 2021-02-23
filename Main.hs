@@ -82,6 +82,7 @@ mitUndo = do
       case Text.words contents of
         [previousHead] -> do
           () <- git ["reset", "--hard", "--quiet", previousHead]
+          -- FIXME share code with deleteUndoFile
           removeFile (Text.unpack (gitdir <> "/mit-" <> head)) `catch` \(_ :: IOException) -> pure ()
         [previousHead, stash] -> do
           () <- git ["reset", "--hard", "--quiet", previousHead]
@@ -104,16 +105,14 @@ mitCommit = do
     ExitFailure _ -> do
       Stdout head <- git ["rev-parse", "HEAD"]
       git2 ["commit", "--patch", "--quiet"]
-      Stdout gitdir <- git ["rev-parse", "--absolute-git-dir"]
-      removeFile (Text.unpack (gitdir <> "/mit-" <> head)) `catch` \(_ :: IOException) -> pure ()
+      deleteUndoFile head
       git ["push", "--set-upstream", "origin"]
     ExitSuccess ->
       git ["rev-list", "--max-count", "1", branch <> "..origin/" <> branch] >>= \case
         Stdout [] -> do
           Stdout head <- git ["rev-parse", "HEAD"]
           git2 ["commit", "--patch", "--quiet"]
-          Stdout gitdir <- git ["rev-parse", "--absolute-git-dir"]
-          removeFile (Text.unpack (gitdir <> "/mit-" <> head)) `catch` \(_ :: IOException) -> pure ()
+          deleteUndoFile head
           git ["push", "--quiet", "origin", branch <> ":" <> branch]
         Stdout _ -> do
           () <- git ["stash", "push", "--quiet"]
@@ -123,8 +122,7 @@ mitCommit = do
               () <- git ["merge", "--abort"]
               () <- git ["stash", "pop", "--quiet"]
               git2 ["commit", "--patch", "--quiet"]
-              Stdout gitdir <- git ["rev-parse", "--absolute-git-dir"]
-              removeFile (Text.unpack (gitdir <> "/mit-" <> head)) `catch` \(_ :: IOException) -> pure ()
+              deleteUndoFile head
               Stdout head2 <- git ["rev-parse", "HEAD"]
               -- TODO dont bother if head == target
               gitMerge head2 ("origin/" <> branch) >>= \case
@@ -143,8 +141,7 @@ mitCommit = do
                   () <- git ["reset", "--hard", "--quiet", head]
                   () <- git ["stash", "pop", "--quiet"]
                   git2 ["commit", "--patch", "--quiet"]
-                  Stdout gitdir <- git ["rev-parse", "--absolute-git-dir"]
-                  removeFile (Text.unpack (gitdir <> "/mit-" <> head)) `catch` \(_ :: IOException) -> pure ()
+                  deleteUndoFile head
                   Stdout head2 <- git ["rev-parse", "HEAD"]
                   -- TODO dont bother if head == target
                   gitMerge head2 ("origin/" <> branch) >>= \case
@@ -228,6 +225,11 @@ mitSync maybeBranch = do
           MergeSucceeded commits -> do
             _ <- recordUndoFile head Nothing
             putLines (syncMessage target commits [])
+
+deleteUndoFile :: Text -> IO ()
+deleteUndoFile head = do
+  Stdout gitdir <- git ["rev-parse", "--absolute-git-dir"]
+  removeFile (Text.unpack (gitdir <> "/mit-" <> head)) `catch` \(_ :: IOException) -> pure ()
 
 -- Record a file for 'mit undo' to use, if invoked. Its name is 'mit-' plus the current HEAD, and its
 -- previous HEAD to undo to, plus an optional stash to apply after that.
@@ -421,11 +423,6 @@ instance a ~ ExitCode => ProcessOutput (Either a (Stdout Text)) where
 
 git :: ProcessOutput a => [Text] -> IO a
 git args = do
-  when debug do
-    let quote :: Text -> Text
-        quote s =
-          if Text.any isSpace s then "'" <> Text.replace "'" "\\'" s <> "'" else s
-    Text.putStrLn (Text.unwords ("git" : map quote args))
   (Nothing, Just stdoutHandle, Just stderrHandle, processHandle) <-
     createProcess
       CreateProcess
@@ -449,7 +446,11 @@ git args = do
   exitCode <- waitForProcess processHandle
   stdoutLines <- drainTextHandle stdoutHandle
   stderrLines <- drainTextHandle stderrHandle
-  when debug (print (stdoutLines, stderrLines, exitCode))
+  when debug do
+    Text.putStrLn . Text.brightBlack $
+      Text.unwords ("git" : map quoteText args)
+        <> " : "
+        <> Text.pack (show (stdoutLines, stderrLines, exitCode))
   fromProcessOutput stdoutLines stderrLines exitCode
   where
     drainTextHandle :: Handle -> IO [Text]
@@ -469,7 +470,7 @@ git2 args = do
     let quote :: Text -> Text
         quote s =
           if Text.any isSpace s then "'" <> Text.replace "'" "\\'" s <> "'" else s
-    Text.putStrLn (Text.unwords ("git" : map quote args))
+    Text.putStrLn (Text.brightBlack (Text.unwords ("git" : map quote args)))
   (Nothing, Nothing, Nothing, processHandle) <-
     createProcess
       CreateProcess
@@ -491,15 +492,20 @@ git2 args = do
           use_process_jobs = False
         }
   exitCode <- waitForProcess processHandle
-  when debug (print exitCode)
+  when debug do
+    Text.putStrLn (Text.brightBlack (Text.unwords ("git" : map quoteText args) <> " : " <> Text.pack (show exitCode)))
   when (exitCode /= ExitSuccess) (exitWith exitCode)
 
 --
+
+(<&>) :: Functor f => f a -> (a -> b) -> f b
+(<&>) =
+  flip fmap
 
 putLines :: [Text] -> IO ()
 putLines =
   Text.putStr . Text.unlines
 
-(<&>) :: Functor f => f a -> (a -> b) -> f b
-(<&>) =
-  flip fmap
+quoteText :: Text -> Text
+quoteText s =
+  if Text.any isSpace s then "'" <> Text.replace "'" "\\'" s <> "'" else s

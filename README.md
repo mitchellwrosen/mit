@@ -1,8 +1,9 @@
 # mit
 
-Whenever working with other developers on a feature branch, `git`'s default behaviors can become tiresome. It is easy to
-forget to push a commit, or forget to pull in the morning, and end up eventually causing unnecessary delay or even
-merge conflicts due to patches generally propagating too slowly from one developer to another.
+Let's see, where to even begin? Whenever working with other developers on a feature branch, `git`'s default behaviors
+can become tiresome. It is easy to forget to push a commit, or forget to pull in the morning, and end up eventually
+causing unnecessary delay or even merge conflicts due to patches generally propagating too slowly from one developer to
+another.
 
 And even when working alone, `git`'s UX is notoriously poor, partially because it is so heavily used, and thus committed
 to maintaining backwards compatibility, but partially because it was designed first and foremost for the Linux kernel
@@ -25,16 +26,21 @@ In one sentence, this tool can be approximated as, "like `git`, but automaticall
 developer whose workflow is often a simple series of `git commit`s followed by a `git push`, and perhaps even an
 occasional `git pull` whenever collaborating, this is indeed the most noticeable difference.
 
-But the default workflows of the tools already suggest very different philosophies: while `git` encourages developers to
-work in isolation, and hide their mistakes and missteps from each other until the history can be rewritten to show only
-pristine activity, `mit` says: it's okay. Just do some work, snapshot it, and publish it. If you break the build, you
-can fix it in the next commit. No one needs to run those tests right now, anyway.
+(Incidentally, implementing this correctly is what eventually led me to write this script. I think we can all imagine
+how to write a `git` alias or two that can perform some sort of `git add && git commit && git push`, but what if the
+new commit conflicts with upstream? Or what if the local branch had *already* diverged from upstream, because we had
+previously made a couple commits while offline? Oh yeah, and what if we're offline? We'll need some more `git` aliases).
 
-Whenever `mit` encounters a merge bubble with conflict markers, it makes a commit right away, and reports which files
-are "in conflict" (but not according to `git`). This, too, is meant to record an accurate history of what actually
-happened, and encourage collaboration by allowing a developer to prepare a patch that shows only how the conflicts
-between one commit and another were resolved. With `git`'s default behavior of disallowing a merge to conclude until
-all conflicts are marked as resolved, the developer, unless delinquent, is forced to work in isolation, and worse,
+But the default commit behavior of the tools already suggest very different philosophies: while `git` encourages
+developers to work in isolation, and hide their mistakes and missteps from each other until the history can be rewritten
+to show only pristine activity, `mit` says: it's okay. Just do some work, snapshot it, and publish it. If you break the
+build, you can fix it in the next commit. No one needs to run those tests right now, anyway.
+
+Another example: whenever `mit` encounters a merge bubble with conflict markers, it makes a commit right away, and
+reports which files are "in conflict" (but not according to `git`). This, too, is meant to record an accurate history of
+what actually happened, and encourage collaboration by allowing a developer to prepare a patch that shows only how the
+conflicts between one commit and another were resolved. With `git`'s default behavior of disallowing a merge to conclude
+until all conflicts are marked as resolved, the developer, unless delinquent, is forced to work in isolation, and worse,
 cannot easily communicate his or her work to others, as resolved merge conflicts are indistinguishable from all of the
 innocuous noise that typically occupies a merge bubble.
 
