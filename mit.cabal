@@ -15,8 +15,9 @@ executable mit
     DerivingStrategies
     FlexibleInstances
     GADTs
-    LambdaCase
     ImportQualifiedPost
+    LambdaCase
+    NamedFieldPuns
     OverloadedStrings
     ScopedTypeVariables
     TypeApplications
