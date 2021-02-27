@@ -176,21 +176,12 @@ mitCommit = do
                   Nothing -> git ["rev-list", "HEAD"]
                   Just upstreamHead -> prettyCommitsBetween upstreamHead "HEAD"
 
-              canUndo :: Bool <-
-                case localCommits of
-                  [_] -> do
-                    -- FIXME this call wouldn't be necessary if we don't pretty-print local commits right away
-                    head <- git ["rev-parse", "HEAD"]
-                    recordUndoFile context.branch64 [Revert head, Apply stash]
-                    pure True
-                  _ -> do
-                    deleteUndoFile context.branch64
-                    pure False
+              recordUndoFile context.branch64 [Reset context.head, Apply stash]
 
               putSummary
                 Summary
                   { branch = context.branch,
-                    canUndo,
+                    canUndo = True,
                     conflicts = mergeConflicts,
                     localCommits,
                     mergeConflicts = conflicts1,
@@ -220,7 +211,6 @@ mitCommit = do
                     deleteUndoFile context.branch64
                     pure False
                   ExitSuccess -> do
-                    -- FIXME share code with above
                     case localCommits of
                       [_] -> do
                         -- FIXME this call wouldn't be necessary if we don't pretty-print local commits right away
