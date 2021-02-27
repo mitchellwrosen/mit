@@ -1,5 +1,6 @@
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE TypeApplications #-}
+{-# OPTIONS_GHC -fplugin=RecordDotPreprocessor #-}
 
 module Main where
 
@@ -103,97 +104,166 @@ mitCommit :: IO ()
 mitCommit = do
   -- FIXME better feedback, or perhaps just do the commit...?
   whenM gitMergeInProgress exitFailure
+
+  context :: Context <-
+    makeContext
+
   gitDiff >>= \case
-    Differences -> pure ()
-    -- TODO do some sort of "mit status" here?
-    NoDifferences -> exitFailure
-  gitFetch
-  branch <- gitCurrentBranch
-  let branch64 :: Text
-      branch64 =
-        Text.encodeBase64 branch
-  let upstream :: Text
-      upstream =
-        "origin/" <> branch
-  let isUpstreamAhead :: IO Bool
-      isUpstreamAhead = do
-        git ["show-ref", "--quiet", "--verify", "refs/remotes/" <> upstream] >>= \case
-          ExitFailure _ -> pure False
-          ExitSuccess -> do
-            commits <- git ["rev-list", "--max-count", "1", branch <> ".." <> upstream]
-            pure (not (null (commits :: [Text])))
-  head <- git ["rev-parse", "HEAD"]
-  isUpstreamAhead >>= \case
-    False -> do
-      stash <- git ["stash", "create"]
-      git2 ["commit", "--patch", "--quiet"] >>= \case
-        ExitFailure _ -> exitFailure
-        ExitSuccess -> do
-          recordUndoFile branch64 [Reset head, Apply stash]
-          -- FIXME report status/feedback on push fail
-          gitPush branch >>= \case
-            ExitFailure _ -> pure () -- FIXME report this
-            ExitSuccess -> do
-              head2 <- git ["rev-parse", "HEAD"]
-              recordUndoFile branch64 [Revert head2, Apply stash]
-    True -> do
-      stash <- gitStash
-      let -- Handle the case that our commit conflicts with upstream, possibly because we were *already* forked.
-          -- We want to make our commit locally, then merge in the conflicts and commit that, then report on what just
-          -- happened. From there, the user can undo the whole operation, or else address the conflict markers and
-          -- commit again.
-          --
-          -- FIXME: if commit is bailed, report on the conflicts that we know exist?
-          commitThenMergeInConflicts :: IO ()
-          commitThenMergeInConflicts = do
-            git2 ["commit", "--patch", "--quiet"] >>= \case
-              ExitFailure _ -> exitFailure
-              ExitSuccess -> do
-                head2 <- git ["rev-parse", "HEAD"]
-                gitMerge upstream >>= \case
-                  MergeFailed conflicts -> do
-                    recordUndoFile branch64 [Reset head, Apply stash]
-                    head3 <- git ["rev-parse", "HEAD"]
-                    commits2 <- prettyCommitsBetween head2 (head3 <> "^2")
-                    putLines (syncMessage upstream commits2 Nothing conflicts)
-                  -- Impossible: we just observed a conflict when popping the stash. Then we backed out, applied the
-                  -- stash to pre-merge HEAD, and merged again to get the same conflicts, only with the uncommitted
-                  -- changes actually committed.
-                  MergeSucceeded -> undefined
-      git ["merge", "--ff", "--quiet", upstream] >>= \case
-        ExitFailure _ -> do
-          git_ ["merge", "--abort"]
+    Differences -> do
+      stash :: Text <-
+        git ["stash", "create"]
+
+      -- FIXME kinda clean this up
+      (conflicts1, conflicts2) <-
+        case context.remoteCommits of
+          [] -> pure (False, False)
+          _ -> do
+            git_ ["reset", "--hard", "--quiet", "HEAD"]
+            git ["merge", "--ff", "--quiet", context.upstream] >>= \case
+              ExitFailure _ -> do
+                git_ ["merge", "--abort"]
+                pure (True, False)
+              ExitSuccess ->
+                git ["stash", "apply", "--quiet", stash] >>= \case
+                  ExitFailure _ -> do
+                    git_ ["reset", "--hard", "--quiet", context.head]
+                    pure (False, True)
+                  ExitSuccess -> pure (False, False)
+
+      -- FIXME flatten this out, share much more code with the else-branch
+      if conflicts1 || conflicts2
+        then do
           git_ ["stash", "apply", "--quiet", stash]
-          commitThenMergeInConflicts
-        ExitSuccess -> do
-          head2 <- git ["rev-parse", "HEAD"]
-          commits <- prettyCommitsBetween head head2
-          gitApplyStash stash >>= \case
-            [] -> do
-              git2 ["commit", "--patch", "--quiet"] >>= \case
-                ExitFailure _ -> do
-                  recordUndoFile branch64 [Reset head, Apply stash]
-                  putLines (syncMessage upstream commits Nothing [])
-                ExitSuccess -> do
-                  recordUndoFile branch64 [Reset head, Apply stash]
-                  -- FIXME add "commit" to summary
-                  gitPush branch >>= \case
-                    ExitFailure _ -> putLines (syncMessage upstream commits Nothing [])
-                    ExitSuccess -> do
-                      head3 <- git ["rev-parse", "HEAD"]
-                      recordUndoFile branch64 [Revert head3, Apply stash]
-                      putLines (syncMessage upstream commits Nothing [])
-            _conflicts -> do
-              git_ ["reset", "--hard", "--quiet", head]
-              git_ ["stash", "apply", "--quiet", stash]
-              commitThenMergeInConflicts
+          git2 ["commit", "--patch", "--quiet"] >>= \case
+            ExitFailure _ -> do
+              git_ ["reset", "--hard", "--quiet", "HEAD"]
 
--- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
-mitSync :: IO ()
-mitSync = do
-  -- FIXME better feedback, or perhaps just do the commit...?
-  whenM gitMergeInProgress exitFailure
+              mergeConflicts :: [Text] <-
+                gitMerge context.upstream <&> \case
+                  MergeFailed mergeConflicts -> mergeConflicts
+                  MergeSucceeded -> []
 
+              localCommits :: [Text] <-
+                case context.maybeUpstreamHead of
+                  Nothing -> git ["rev-list", "HEAD"]
+                  Just upstreamHead -> prettyCommitsBetween upstreamHead "HEAD"
+
+              stashConflicts :: [Text] <-
+                gitApplyStash stash
+
+              recordUndoFile context.branch64 [Reset context.head, Apply stash]
+
+              putSummary
+                Summary
+                  { branch = context.branch,
+                    canUndo = True,
+                    conflicts = List.nub (stashConflicts ++ mergeConflicts),
+                    localCommits,
+                    mergeConflicts = not (null mergeConflicts),
+                    pushResult = Nothing,
+                    remoteCommits = context.remoteCommits,
+                    upstream = context.upstream
+                  }
+            ExitSuccess -> do
+              mergeConflicts :: [Text] <-
+                gitMerge context.upstream <&> \case
+                  MergeFailed mergeConflicts -> mergeConflicts
+                  -- impossible, we just got conflicts!
+                  MergeSucceeded -> undefined
+
+              localCommits :: [Text] <-
+                case context.maybeUpstreamHead of
+                  Nothing -> git ["rev-list", "HEAD"]
+                  Just upstreamHead -> prettyCommitsBetween upstreamHead "HEAD"
+
+              canUndo :: Bool <-
+                case localCommits of
+                  [_] -> do
+                    -- FIXME this call wouldn't be necessary if we don't pretty-print local commits right away
+                    head <- git ["rev-parse", "HEAD"]
+                    recordUndoFile context.branch64 [Revert head, Apply stash]
+                    pure True
+                  _ -> do
+                    deleteUndoFile context.branch64
+                    pure False
+
+              putSummary
+                Summary
+                  { branch = context.branch,
+                    canUndo,
+                    conflicts = mergeConflicts,
+                    localCommits,
+                    mergeConflicts = conflicts1,
+                    pushResult = Nothing,
+                    remoteCommits = context.remoteCommits,
+                    upstream = context.upstream
+                  }
+        else do
+          commitResult :: ExitCode <-
+            git2 ["commit", "--patch", "--quiet"]
+
+          localCommits :: [Text] <-
+            case context.maybeUpstreamHead of
+              Nothing -> git ["rev-list", "HEAD"]
+              Just upstreamHead -> prettyCommitsBetween upstreamHead "HEAD"
+
+          pushResult :: Maybe ExitCode <-
+            if not context.fetchFailed && not (null localCommits)
+              then Just <$> gitPush context.branch
+              else pure Nothing
+
+          canUndo :: Bool <-
+            case pushResult of
+              Just ExitSuccess ->
+                case commitResult of
+                  ExitFailure _ -> do
+                    deleteUndoFile context.branch64
+                    pure False
+                  ExitSuccess -> do
+                    -- FIXME share code with above
+                    case localCommits of
+                      [_] -> do
+                        -- FIXME this call wouldn't be necessary if we don't pretty-print local commits right away
+                        head <- git ["rev-parse", "HEAD"]
+                        recordUndoFile context.branch64 [Revert head, Apply stash]
+                        pure True
+                      _ -> do
+                        deleteUndoFile context.branch64
+                        pure False
+              _ -> do
+                recordUndoFile context.branch64 [Reset context.head, Apply stash]
+                pure True
+
+          putSummary
+            Summary
+              { branch = context.branch,
+                canUndo,
+                conflicts = [],
+                localCommits,
+                mergeConflicts = False,
+                pushResult,
+                remoteCommits = context.remoteCommits,
+                upstream = context.upstream
+              }
+
+    -- Degenerate case: if we didn't even stash anything, there's nothing to commit. We just treat 'mit commit' like
+    -- 'mit sync' in this case, rather than bail out early (since we've already fetched upstream and stuff, might as
+    -- well do something useful).
+    NoDifferences -> mitSyncWith context
+
+-- FIXME add mkCommitsAhead
+data Context = Context
+  { branch :: Text,
+    branch64 :: Text,
+    fetchFailed :: Bool,
+    head :: Text,
+    maybeUpstreamHead :: Maybe Text,
+    remoteCommits :: [Text],
+    upstream :: Text
+  }
+
+makeContext :: IO Context
+makeContext = do
   branch :: Text <-
     gitCurrentBranch
 
@@ -218,35 +288,52 @@ mitSync = do
       Left _ -> Nothing
       Right upstreamHead -> Just upstreamHead
 
-  commitsToMerge :: [Text] <-
+  remoteCommits :: [Text] <-
     case maybeUpstreamHead of
       Nothing -> pure []
       Just upstreamHead -> prettyCommitsBetween head upstreamHead
 
+  pure
+    Context
+      { branch,
+        branch64,
+        fetchFailed,
+        head,
+        maybeUpstreamHead,
+        remoteCommits,
+        upstream
+      }
+
+-- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
+mitSync :: IO ()
+mitSync = do
+  -- FIXME better feedback, or perhaps just do the commit...?
+  whenM gitMergeInProgress exitFailure
+
+  context :: Context <-
+    makeContext
+
+  mitSyncWith context
+
+mitSyncWith :: Context -> IO ()
+mitSyncWith context = do
   maybeStash :: Maybe Text <-
-    case commitsToMerge of
+    case context.remoteCommits of
       [] -> pure Nothing
-      _ ->
-        gitDiff >>= \case
-          Differences -> Just <$> gitStash
-          NoDifferences -> pure Nothing
+      _ -> Just <$> gitStash
 
   mergeConflicts :: Maybe [Text] <-
-    case commitsToMerge of
+    case context.remoteCommits of
       [] -> pure Nothing
       _ ->
-        gitMerge upstream <&> \case
+        gitMerge context.upstream <&> \case
           MergeFailed conflicts -> Just conflicts
           MergeSucceeded -> Just []
 
-  commitsAhead :: [Text] <-
-    case maybeUpstreamHead of
+  localCommits :: [Text] <-
+    case context.maybeUpstreamHead of
       Nothing -> git ["rev-list", "HEAD"]
-      Just upstreamHead ->
-        prettyCommitsBetween
-          upstreamHead
-          -- catch the merge bubble
-          (if isNothing mergeConflicts then head else "HEAD")
+      Just upstreamHead -> prettyCommitsBetween upstreamHead "HEAD"
 
   stashConflicts :: [Text] <-
     case maybeStash of
@@ -258,49 +345,72 @@ mitSync = do
         List.nub (stashConflicts ++ fromMaybe [] mergeConflicts)
 
   pushResult :: Maybe ExitCode <-
-    if not fetchFailed && not (null commitsAhead) && null conflicts
-      then Just <$> gitPush branch
+    if not context.fetchFailed && not (null localCommits) && null conflicts
+      then Just <$> gitPush context.branch
       else pure Nothing
 
   canUndo :: Bool <-
     case pushResult of
-      -- During a 'mit sync', if we pushed, we do not want to allow undo by reverting the commit(s), because it'd be
-      -- difficult to undo the undo (sometimes it requires reverting the revert, or some other fanciness that is for
-      -- sure possible with git, but which we don't have a good UX for).
-      --
-      -- The difference with 'mit commit' is when you revert a commit you just pushed, you at least have the local
-      -- changes in your working tree, to easily be committed again. These can just be re-applied with a second
-      -- identical commit, i.e. 'mit commit && mit undo && mit commit' works fine.
       Just ExitSuccess -> do
-        deleteUndoFile branch64
+        deleteUndoFile context.branch64
         pure False
       _ -> do
         head2 <- git ["rev-parse", "HEAD"]
-        if head == head2
+        if context.head == head2
           then pure False -- head didn't move; nothing to undo
           else do
-            recordUndoFile branch64 (Reset head : maybeToList (Apply <$> maybeStash))
+            recordUndoFile context.branch64 (Reset context.head : maybeToList (Apply <$> maybeStash))
             pure True
 
-  -- FIXME show some graph of where local/remote is at
+  putSummary
+    Summary
+      { branch = context.branch,
+        canUndo,
+        conflicts,
+        localCommits,
+        mergeConflicts = maybe False (not . null) mergeConflicts,
+        pushResult,
+        remoteCommits = context.remoteCommits,
+        upstream = context.upstream
+      }
 
+data Summary = Summary
+  { branch :: Text,
+    canUndo :: Bool,
+    conflicts :: [Text],
+    localCommits :: [Text],
+    mergeConflicts :: Bool,
+    pushResult :: Maybe ExitCode,
+    remoteCommits :: [Text],
+    upstream :: Text
+  }
+
+-- FIXME show some graph of where local/remote is at
+putSummary :: Summary -> IO ()
+putSummary summary = do
   putLines . concatMap ("" :) . catMaybes $
     [ do
-        guard (not (null commitsToMerge))
-        let colorize = if null (fromMaybe [] mergeConflicts) then Text.green else Text.red
-        Just (colorize (Text.italic ("  " <> branch <> " ← " <> upstream)) : map ("  " <>) commitsToMerge),
+        guard (not (null summary.remoteCommits))
+        let colorize = if summary.mergeConflicts then Text.red else Text.green
+        Just
+          ( colorize (Text.italic ("  " <> summary.upstream <> " → " <> summary.branch)) :
+            map ("  " <>) summary.remoteCommits
+          ),
       do
-        guard (not (null commitsAhead))
+        guard (not (null summary.localCommits))
         let colorize =
-              case pushResult of
+              case summary.pushResult of
                 Just ExitSuccess -> Text.green
                 _ -> Text.red
-        Just (colorize (Text.italic ("  " <> branch <> " → " <> upstream)) : map ("  " <>) commitsAhead),
+        Just
+          ( colorize (Text.italic ("  " <> summary.branch <> " → " <> summary.upstream)) :
+            map ("  " <>) summary.localCommits
+          ),
       do
-        guard (not (null conflicts))
-        Just ("  The following files have conflicts." : map (("    " <>) . Text.red) conflicts),
+        guard (not (null summary.conflicts))
+        Just ("  The following files have conflicts." : map (("    " <>) . Text.red) summary.conflicts),
       do
-        guard canUndo
+        guard summary.canUndo
         Just ["  Run " <> Text.bold (Text.blue "mit undo") <> " to undo this change."]
     ]
 
@@ -348,25 +458,6 @@ parseUndos =
 recordUndoFile :: Text -> [Undo] -> IO ()
 recordUndoFile branch64 undos = do
   Text.writeFile (undofile branch64) (showUndos undos)
-
-data Summary = Summary
-  { localCommitsApplied :: [Text], -- applied but not published
-    localCommitsPublished :: [Text], -- applied but not published
-    remoteCommitsApplied :: [Text]
-  }
-
--- FIXME prettify
-summaryMessage :: Summary -> [Text]
-summaryMessage Summary {localCommitsApplied, localCommitsPublished, remoteCommitsApplied} =
-  concat
-    [ "local commits applied" : localCommitsApplied,
-      "local commits published" : localCommitsPublished,
-      "remote commits applied" : remoteCommitsApplied
-    ]
-
-putSummary :: Summary -> IO ()
-putSummary =
-  putLines . summaryMessage
 
 -- FIXME rename
 syncMessage :: Text -> [Text] -> Maybe Text -> [Text] -> [Text]

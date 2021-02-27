@@ -8,19 +8,25 @@ executable mit
     base64,
     directory,
     process,
+    record-dot-preprocessor,
+    record-hasfield,
     text,
     text-ansi,
   default-extensions:
     BlockArguments
+    DataKinds
     DerivingStrategies
+    DuplicateRecordFields
     FlexibleInstances
     GADTs
     ImportQualifiedPost
     LambdaCase
+    MultiParamTypeClasses
     NamedFieldPuns
     OverloadedStrings
     ScopedTypeVariables
     TypeApplications
+    UndecidableInstances
     ViewPatterns
   default-language: Haskell2010
   ghc-options:
