@@ -83,25 +83,6 @@ main = do
             )
           ]
 
--- FIXME output what we just undid
-mitUndo :: IO ()
-mitUndo = do
-  branch <- gitCurrentBranch
-  let branch64 = Text.encodeBase64 branch
-  let file = undofile branch64
-  try (Text.readFile file) >>= \case
-    Left (_ :: IOException) -> exitFailure
-    Right contents ->
-      case parseUndos contents of
-        Nothing -> throwIO (userError ("Corrupt undo file: " ++ file))
-        Just undos -> do
-          for_ undos \case
-            Apply commit -> git_ ["stash", "apply", "--quiet", commit]
-            Reset commit -> git_ ["reset", "--hard", "--quiet", commit]
-            Revert commit -> git_ ["revert", commit]
-          -- TODO if we reverted, we also want to push
-          deleteUndoFile branch64
-
 mitCommit :: IO ()
 mitCommit = do
   whenM gitMergeInProgress exitFailure
@@ -238,64 +219,6 @@ mitCommitWith context = do
             upstream = context.upstream
           }
 
--- FIXME add mkCommitsAhead
-data Context = Context
-  { branch :: Text,
-    branch64 :: Text,
-    dirty :: DiffResult,
-    fetchFailed :: Bool,
-    head :: Text,
-    maybeUpstreamHead :: Maybe Text,
-    remoteCommits :: [Text],
-    upstream :: Text
-  }
-
-makeContext :: IO Context
-makeContext = do
-  branch :: Text <-
-    gitCurrentBranch
-
-  let branch64 :: Text
-      branch64 =
-        Text.encodeBase64 branch
-
-  let upstream :: Text
-      upstream =
-        "origin/" <> branch
-
-  head :: Text <-
-    git ["rev-parse", "HEAD"]
-
-  fetchFailed :: Bool <-
-    git ["fetch", "--quiet", "origin"] <&> \case
-      ExitFailure _ -> True
-      ExitSuccess -> False
-
-  maybeUpstreamHead :: Maybe Text <-
-    git ["rev-parse", "refs/remotes/" <> upstream] <&> \case
-      Left _ -> Nothing
-      Right upstreamHead -> Just upstreamHead
-
-  remoteCommits :: [Text] <-
-    case maybeUpstreamHead of
-      Nothing -> pure []
-      Just upstreamHead -> prettyCommitsBetween head upstreamHead
-
-  dirty :: DiffResult <-
-    gitDiff
-
-  pure
-    Context
-      { branch,
-        branch64,
-        dirty,
-        fetchFailed,
-        head,
-        maybeUpstreamHead,
-        remoteCommits,
-        upstream
-      }
-
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
 mitSync :: IO ()
 mitSync = do
@@ -357,6 +280,83 @@ mitSyncWith context = do
         pushResult,
         remoteCommits = context.remoteCommits,
         upstream = context.upstream
+      }
+
+-- FIXME output what we just undid
+mitUndo :: IO ()
+mitUndo = do
+  branch <- gitCurrentBranch
+  let branch64 = Text.encodeBase64 branch
+  let file = undofile branch64
+  try (Text.readFile file) >>= \case
+    Left (_ :: IOException) -> exitFailure
+    Right contents ->
+      case parseUndos contents of
+        Nothing -> throwIO (userError ("Corrupt undo file: " ++ file))
+        Just undos -> do
+          for_ undos \case
+            Apply commit -> git_ ["stash", "apply", "--quiet", commit]
+            Reset commit -> git_ ["reset", "--hard", "--quiet", commit]
+            Revert commit -> git_ ["revert", commit]
+          -- TODO if we reverted, we also want to push
+          deleteUndoFile branch64
+
+-- FIXME add mkCommitsAhead
+data Context = Context
+  { branch :: Text,
+    branch64 :: Text,
+    dirty :: DiffResult,
+    fetchFailed :: Bool,
+    head :: Text,
+    maybeUpstreamHead :: Maybe Text,
+    remoteCommits :: [Text],
+    upstream :: Text
+  }
+
+makeContext :: IO Context
+makeContext = do
+  branch :: Text <-
+    gitCurrentBranch
+
+  let branch64 :: Text
+      branch64 =
+        Text.encodeBase64 branch
+
+  let upstream :: Text
+      upstream =
+        "origin/" <> branch
+
+  head :: Text <-
+    git ["rev-parse", "HEAD"]
+
+  fetchFailed :: Bool <-
+    git ["fetch", "--quiet", "origin"] <&> \case
+      ExitFailure _ -> True
+      ExitSuccess -> False
+
+  maybeUpstreamHead :: Maybe Text <-
+    git ["rev-parse", "refs/remotes/" <> upstream] <&> \case
+      Left _ -> Nothing
+      Right upstreamHead -> Just upstreamHead
+
+  remoteCommits :: [Text] <-
+    case maybeUpstreamHead of
+      Nothing -> pure []
+      Just upstreamHead -> prettyCommitsBetween head upstreamHead
+
+  dirty :: DiffResult <-
+    gitDiff
+
+  pure
+    Context
+      { branch,
+        branch64,
+        dirty,
+        fetchFailed,
+        head,
+        maybeUpstreamHead,
+        remoteCommits,
+        upstream
       }
 
 data Summary = Summary
