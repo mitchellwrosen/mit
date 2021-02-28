@@ -122,119 +122,80 @@ mitCommitWith context = do
         git ["merge", "--ff", "--quiet", context.upstream] >>= \case
           ExitFailure _ -> do
             git_ ["merge", "--abort"]
+            git_ ["stash", "apply", "--quiet", stash]
             pure (True, False)
           ExitSuccess ->
             git ["stash", "apply", "--quiet", stash] >>= \case
               ExitFailure _ -> do
                 git_ ["reset", "--hard", "--quiet", context.head]
+                git_ ["stash", "apply", "--quiet", stash]
                 pure (False, True)
               ExitSuccess -> pure (False, False)
 
-  -- FIXME flatten this out, share much more code with the else-branch
-  if conflicts1 || conflicts2
-    then do
-      git_ ["stash", "apply", "--quiet", stash]
-      git2 ["commit", "--patch", "--quiet"] >>= \case
-        ExitFailure _ -> do
-          git_ ["reset", "--hard", "--quiet", "HEAD"]
+  commitResult :: ExitCode <-
+    git2 ["commit", "--patch", "--quiet"]
 
-          mergeConflicts :: [Text] <-
-            gitMerge context.upstream
+  mergeConflicts :: [Text] <-
+    case (conflicts1 || conflicts2, commitResult) of
+      (True, ExitFailure _) -> do
+        git_ ["reset", "--hard", "--quiet", "HEAD"]
+        gitMerge context.upstream
+      (True, ExitSuccess) -> gitMerge context.upstream -- invariant: this will be non-empty
+      (False, _) -> pure []
 
-          localCommits :: [Text] <-
-            case context.maybeUpstreamHead of
-              Nothing -> git ["rev-list", "HEAD"]
-              Just upstreamHead -> prettyCommitsBetween upstreamHead "HEAD"
+  localCommits :: [Text] <-
+    case context.maybeUpstreamHead of
+      Nothing -> git ["rev-list", "HEAD"]
+      Just upstreamHead -> prettyCommitsBetween upstreamHead "HEAD"
 
-          stashConflicts :: [Text] <-
-            gitApplyStash stash
+  stashConflicts :: [Text] <-
+    case (conflicts1 || conflicts2, commitResult) of
+      (True, ExitFailure _) -> gitApplyStash stash
+      _ -> pure []
 
-          recordUndoFile context.branch64 [Reset context.head, Apply stash]
+  pushResult :: Maybe ExitCode <-
+    if not (conflicts1 || conflicts2) && not context.fetchFailed && not (null localCommits)
+      then Just <$> gitPush context.branch
+      else pure Nothing
 
-          putSummary
-            Summary
-              { branch = context.branch,
-                canUndo = True,
-                conflicts = List.nub (stashConflicts ++ mergeConflicts),
-                localCommits,
-                mergeConflicts = not (null mergeConflicts),
-                pushResult = Nothing,
-                remoteCommits = context.remoteCommits,
-                upstream = context.upstream
-              }
-        ExitSuccess -> do
-          -- Invariant: this will be non-empty
-          mergeConflicts :: [Text] <-
-            gitMerge context.upstream
-
-          localCommits :: [Text] <-
-            case context.maybeUpstreamHead of
-              Nothing -> git ["rev-list", "HEAD"]
-              Just upstreamHead -> prettyCommitsBetween upstreamHead "HEAD"
-
-          recordUndoFile context.branch64 [Reset context.head, Apply stash]
-
-          putSummary
-            Summary
-              { branch = context.branch,
-                canUndo = True,
-                conflicts = mergeConflicts,
-                localCommits,
-                mergeConflicts = conflicts1,
-                pushResult = Nothing,
-                remoteCommits = context.remoteCommits,
-                upstream = context.upstream
-              }
-    else do
-      commitResult :: ExitCode <-
-        git2 ["commit", "--patch", "--quiet"]
-
-      localCommits :: [Text] <-
-        case context.maybeUpstreamHead of
-          Nothing -> git ["rev-list", "HEAD"]
-          Just upstreamHead -> prettyCommitsBetween upstreamHead "HEAD"
-
-      pushResult :: Maybe ExitCode <-
-        if not context.fetchFailed && not (null localCommits)
-          then Just <$> gitPush context.branch
-          else pure Nothing
-
-      canUndo :: Bool <-
-        case pushResult of
-          Just ExitSuccess ->
-            case commitResult of
-              ExitFailure _ -> do
-                deleteUndoFile context.branch64
-                pure False
-              ExitSuccess -> do
-                case localCommits of
-                  [_] -> do
-                    -- FIXME this call wouldn't be necessary if we don't pretty-print local commits right away
-                    head <- git ["rev-parse", "HEAD"]
-                    recordUndoFile context.branch64 [Revert head, Apply stash]
-                    pure True
-                  _ -> do
-                    deleteUndoFile context.branch64
-                    pure False
-          _ -> do
+  canUndo :: Bool <-
+    case (pushResult, commitResult) of
+      (Just ExitSuccess, ExitFailure _) -> do
+        deleteUndoFile context.branch64
+        pure False
+      (Just ExitSuccess, ExitSuccess) -> do
+        case localCommits of
+          [_] -> do
+            -- FIXME this call wouldn't be necessary if we don't pretty-print local commits right away
             head <- git ["rev-parse", "HEAD"]
-            if head == context.head
-              then pure False
-              else do
-                recordUndoFile context.branch64 [Reset context.head, Apply stash]
-                pure True
+            recordUndoFile context.branch64 [Revert head, Apply stash]
+            pure True
+          _ -> do
+            deleteUndoFile context.branch64
+            pure False
+      _ -> do
+        head <- git ["rev-parse", "HEAD"]
+        if head == context.head
+          then pure False
+          else do
+            recordUndoFile context.branch64 [Reset context.head, Apply stash]
+            pure True
 
-      putSummary
-        Summary
-          { branch = context.branch,
-            canUndo,
-            conflicts = [],
-            localCommits,
-            mergeConflicts = False,
-            pushResult,
-            remoteCommits = context.remoteCommits,
-            upstream = context.upstream
-          }
+  putSummary
+    Summary
+      { branch = context.branch,
+        canUndo,
+        conflicts = List.nub (stashConflicts ++ mergeConflicts),
+        localCommits,
+        mergeConflicts =
+          case (conflicts1 || conflicts2, commitResult) of
+            (True, ExitFailure _) -> not (null mergeConflicts)
+            (True, ExitSuccess) -> conflicts1
+            (False, _) -> False,
+        pushResult,
+        remoteCommits = context.remoteCommits,
+        upstream = context.upstream
+      }
 
 -- FIXME add mkCommitsAhead
 data Context = Context
