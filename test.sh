@@ -105,4 +105,5 @@ mit undo >/dev/null || exit 1
 [ $(git rev-parse feature) = $(git rev-parse origin/feature^) ] || exit 1
 [ "$(git diff --shortstat)" = " 1 file changed, 1 insertion(+)" ] || exit 1
 
+cd ../..
 rm -rf scrap

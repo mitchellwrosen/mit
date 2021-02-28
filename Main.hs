@@ -31,6 +31,8 @@ import Prelude hiding (head)
 -- FIXME better feedback when exiting due to active merge, or perhaps just do the commit...?
 -- FIXME bail if active cherry-pick, active revert, active rebase, what else?
 
+-- FIXME pushing a new branch lists too many commits and doesn't format them
+
 main :: IO ()
 main = do
   -- TODO fail if not in git repo
