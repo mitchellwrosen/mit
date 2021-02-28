@@ -10,7 +10,6 @@ import Control.Monad
 import Data.Char
 import Data.Foldable (for_)
 import Data.Function
-import Data.IORef
 import Data.List qualified as List
 import Data.Maybe
 import Data.Text (Text)
@@ -27,9 +26,10 @@ import System.Process
 import Text.Read (readMaybe)
 import Prelude hiding (head)
 
--- FIXME show commit summary
 -- FIXME: nicer "git status" story. in particular the conflict markers in the commits after a merge are a bit
 -- ephemeral feeling
+-- FIXME better feedback when exiting due to active merge, or perhaps just do the commit...?
+-- FIXME bail if active cherry-pick, active revert, active rebase, what else?
 
 main :: IO ()
 main = do
@@ -102,17 +102,10 @@ mitUndo = do
 
 mitCommit :: IO ()
 mitCommit = do
-  -- FIXME better feedback, or perhaps just do the commit...?
   whenM gitMergeInProgress exitFailure
-
-  context :: Context <-
-    makeContext
-
+  context <- makeContext
   case context.dirty of
     Differences -> mitCommitWith context
-    -- Degenerate case: if we didn't even stash anything, there's nothing to commit. We just treat 'mit commit' like
-    -- 'mit sync' in this case, rather than bail out early (since we've already fetched upstream and stuff, might as
-    -- well do something useful).
     NoDifferences -> mitSyncWith context
 
 mitCommitWith :: Context -> IO ()
@@ -146,9 +139,7 @@ mitCommitWith context = do
           git_ ["reset", "--hard", "--quiet", "HEAD"]
 
           mergeConflicts :: [Text] <-
-            gitMerge context.upstream <&> \case
-              MergeFailed mergeConflicts -> mergeConflicts
-              MergeSucceeded -> []
+            gitMerge context.upstream
 
           localCommits :: [Text] <-
             case context.maybeUpstreamHead of
@@ -172,11 +163,9 @@ mitCommitWith context = do
                 upstream = context.upstream
               }
         ExitSuccess -> do
+          -- Invariant: this will be non-empty
           mergeConflicts :: [Text] <-
-            gitMerge context.upstream <&> \case
-              MergeFailed mergeConflicts -> mergeConflicts
-              -- impossible, we just got conflicts!
-              MergeSucceeded -> undefined
+            gitMerge context.upstream
 
           localCommits :: [Text] <-
             case context.maybeUpstreamHead of
@@ -308,28 +297,21 @@ makeContext = do
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
 mitSync :: IO ()
 mitSync = do
-  -- FIXME better feedback, or perhaps just do the commit...?
   whenM gitMergeInProgress exitFailure
-
-  context :: Context <-
-    makeContext
-
+  context <- makeContext
   mitSyncWith context
 
 mitSyncWith :: Context -> IO ()
 mitSyncWith context = do
   maybeStash :: Maybe Text <-
     case (context.remoteCommits, context.dirty) of
-      (_:_, Differences) -> Just <$> gitStash
+      (_ : _, Differences) -> Just <$> gitStash
       _ -> pure Nothing
 
   mergeConflicts :: Maybe [Text] <-
     case context.remoteCommits of
       [] -> pure Nothing
-      _ ->
-        gitMerge context.upstream <&> \case
-          MergeFailed conflicts -> Just conflicts
-          MergeSucceeded -> Just []
+      _ -> Just <$> gitMerge context.upstream
 
   localCommits :: [Text] <-
     case context.maybeUpstreamHead of
@@ -460,42 +442,7 @@ recordUndoFile :: Text -> [Undo] -> IO ()
 recordUndoFile branch64 undos = do
   Text.writeFile (undofile branch64) (showUndos undos)
 
--- FIXME rename
-syncMessage :: Text -> [Text] -> Maybe Text -> [Text] -> [Text]
-syncMessage target remoteCommits maybeCommit conflicts =
-  remoteCommitsMessage
-    & appendCommitMessage
-    & appendConflictsMessage
-    & (++ ["", undoMessage])
-  where
-    remoteCommitsMessage :: [Text]
-    remoteCommitsMessage =
-      "Synchronized with " <> Text.italic target <> "." :
-      "" :
-      map ("  " <>) remoteCommits
-    appendCommitMessage :: [Text] -> [Text]
-    appendCommitMessage =
-      case maybeCommit of
-        Nothing -> id
-        Just commit -> (++ ["", "Made a cool commit: " <> commit])
-    appendConflictsMessage :: [Text] -> [Text]
-    appendConflictsMessage =
-      if null conflicts
-        then id
-        else
-          ( ++
-              ( "" :
-                "The following files have conflicts." :
-                "" :
-                map (("  " <>) . Text.red) conflicts
-              )
-          )
-    undoMessage :: Text
-    undoMessage =
-      "Run " <> Text.bold (Text.blue "mit undo") <> " to undo this change."
-
 -- | Apply stash, return conflicts.
--- FIXME return action that returns conflicts instead, since they aren't always used
 gitApplyStash :: Text -> IO [Text]
 gitApplyStash stash = do
   git ["stash", "apply", "--quiet", stash] >>= \case
@@ -529,25 +476,8 @@ gitDiff = do
     ExitFailure _ -> Differences
     ExitSuccess -> NoDifferences
 
--- | git fetch origin, at most once per run.
-gitFetch :: IO ()
-gitFetch = do
-  fetched <- readIORef fetchedRef
-  unless fetched do
-    git_ ["fetch", "--quiet", "origin"]
-    writeIORef fetchedRef True
-
-fetchedRef :: IORef Bool
-fetchedRef =
-  unsafePerformIO (newIORef False)
-{-# NOINLINE fetchedRef #-}
-
-data MergeResult
-  = MergeFailed [Text]
-  | MergeSucceeded
-
--- FIXME document
-gitMerge :: Text -> IO MergeResult
+-- FIXME document what this does
+gitMerge :: Text -> IO [Text]
 gitMerge target = do
   git ["merge", "--ff", "--quiet", target] >>= \case
     ExitFailure _ -> do
@@ -555,8 +485,8 @@ gitMerge target = do
       git_ ["add", "--all"]
       -- TODO better commit message than the default
       git_ ["commit", "--no-edit", "--quiet"]
-      pure (MergeFailed conflicts)
-    ExitSuccess -> pure MergeSucceeded
+      pure conflicts
+    ExitSuccess -> pure []
 
 gitMergeInProgress :: IO Bool
 gitMergeInProgress =
@@ -574,11 +504,6 @@ data GitRevisionInfo = GitRevisionInfo
     hash :: Text,
     subject :: Text
   }
-
-existCommitsBetween :: Text -> Text -> IO Bool
-existCommitsBetween commit1 commit2 = do
-  commits <- git ["rev-list", "--max-count", "1", commit1 <> ".." <> commit2]
-  pure (not (null @[] commits))
 
 prettyCommitsBetween :: Text -> Text -> IO [Text]
 prettyCommitsBetween commit1 commit2 =
@@ -626,11 +551,6 @@ debug :: Bool
 debug =
   isJust (unsafePerformIO (lookupEnv "debug"))
 {-# NOINLINE debug #-}
-
-die :: Text -> IO a
-die message = do
-  Text.putStrLn message
-  exitFailure
 
 -- git@github.com:mitchellwrosen/mit.git -> Just ("git@github.com:mitchellwrosen/mit.git", "mit")
 parseGitRepo :: Text -> Maybe (Text, Text)
