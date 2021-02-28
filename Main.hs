@@ -48,7 +48,7 @@ main = do
         [ "Usage:",
           "  mit clone ≪repo≫",
           "  mit commit",
-          "  mit sync [≪branch≫]",
+          "  mit sync",
           "  mit undo"
         ]
   where
@@ -108,7 +108,7 @@ mitCommit = do
   context :: Context <-
     makeContext
 
-  gitDiff >>= \case
+  case context.dirty of
     Differences -> mitCommitWith context
     -- Degenerate case: if we didn't even stash anything, there's nothing to commit. We just treat 'mit commit' like
     -- 'mit sync' in this case, rather than bail out early (since we've already fetched upstream and stuff, might as
@@ -251,6 +251,7 @@ mitCommitWith context = do
 data Context = Context
   { branch :: Text,
     branch64 :: Text,
+    dirty :: DiffResult,
     fetchFailed :: Bool,
     head :: Text,
     maybeUpstreamHead :: Maybe Text,
@@ -289,10 +290,14 @@ makeContext = do
       Nothing -> pure []
       Just upstreamHead -> prettyCommitsBetween head upstreamHead
 
+  dirty :: DiffResult <-
+    gitDiff
+
   pure
     Context
       { branch,
         branch64,
+        dirty,
         fetchFailed,
         head,
         maybeUpstreamHead,
@@ -314,9 +319,9 @@ mitSync = do
 mitSyncWith :: Context -> IO ()
 mitSyncWith context = do
   maybeStash :: Maybe Text <-
-    case context.remoteCommits of
-      [] -> pure Nothing
-      _ -> Just <$> gitStash
+    case (context.remoteCommits, context.dirty) of
+      (_:_, Differences) -> Just <$> gitStash
+      _ -> pure Nothing
 
   mergeConflicts :: Maybe [Text] <-
     case context.remoteCommits of
