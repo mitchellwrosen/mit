@@ -228,8 +228,12 @@ mitCommitWith context = do
                     deleteUndoFile context.branch64
                     pure False
           _ -> do
-            recordUndoFile context.branch64 [Reset context.head, Apply stash]
-            pure True
+            head <- git ["rev-parse", "HEAD"]
+            if head == context.head
+              then pure False
+              else do
+                recordUndoFile context.branch64 [Reset context.head, Apply stash]
+                pure True
 
       putSummary
         Summary
