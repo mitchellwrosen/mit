@@ -368,7 +368,7 @@ makeContext = do
     git ["rev-parse", "HEAD"]
 
   fetchFailed :: Bool <-
-    git ["fetch", "--quiet", "origin"]
+    not <$> git ["fetch", "--quiet", "origin"]
 
   maybeUpstreamHead :: Maybe Text <-
     git ["rev-parse", "refs/remotes/" <> upstream] <&> \case

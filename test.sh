@@ -31,25 +31,21 @@ git switch --create feature >/dev/null 2>&1 || exit 1
 git branch --set-upstream-to origin/feature >/dev/null || exit 1
 git reset --hard origin/feature >/dev/null || exit 1
 
-#
 # * three  (feature, origin/feature)
 # |
 # * two
 # |
 # * one
-#
 echo "sync: local = remote, no changes"
 mit sync >/dev/null || exit 1
 [ $(git rev-parse feature) = $(git rev-parse origin/feature) ] || exit 1
 mit undo >/dev/null && exit 1
 
-#
 # + three  (feature, origin/feature)
 # |
 # * two
 # |
 # * one
-#
 echo "sync: local = remote, changes"
 echo three >> three.txt
 mit sync >/dev/null || exit 1
@@ -57,13 +53,11 @@ mit sync >/dev/null || exit 1
 [ "$(git diff --shortstat)" = " 1 file changed, 1 insertion(+)" ] || exit 1
 mit undo >/dev/null && exit 1
 
-#
 # * three  (origin/feature)
 # |
 # * two    (feature)
 # |
 # * one
-#
 echo "sync: local behind remote, no changes"
 git reset --hard origin/feature^ >/dev/null || exit 1
 mit sync >/dev/null || exit 1
@@ -71,13 +65,11 @@ mit sync >/dev/null || exit 1
 mit undo >/dev/null || exit 1
 [ $(git rev-parse feature) = $(git rev-parse origin/feature^) ] || exit 1
 
-#
 # * three  (origin/feature)
 # |
 # + two    (feature)
 # |
 # * one
-#
 echo "sync: local behind remote, nonconflicting changes"
 git reset --hard origin/feature^ >/dev/null || exit 1
 echo two >> two.txt
@@ -88,13 +80,11 @@ mit undo >/dev/null || exit 1
 [ $(git rev-parse feature) = $(git rev-parse origin/feature^) ] || exit 1
 [ "$(git diff --shortstat)" = " 1 file changed, 1 insertion(+)" ] || exit 1
 
-#
 # * three  (origin/feature)
 # |
 # + two    (feature)
 # |
 # * one
-#
 echo "sync: local behind remote, conflicting changes"
 git reset --hard origin/feature^ >/dev/null || exit 1
 echo four > three.txt
