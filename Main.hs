@@ -31,10 +31,11 @@ import Prelude hiding (head)
 -- ephemeral feeling
 -- FIXME better feedback when exiting due to active merge, or perhaps just do the commit...?
 -- FIXME bail if active cherry-pick, active revert, active rebase, what else?
-
 -- FIXME pushing a new branch lists too many commits and doesn't format them
+-- FIXME rev-list max 11, use ellipses after 10
 
 -- TODO mit init
+-- TODO tweak things to work with git < 2.30.1
 
 main :: IO ()
 main = do
@@ -42,8 +43,7 @@ main = do
   warnIfBuggyGit
   getArgs >>= \case
     ["branch", branch] -> mitBranch (Text.pack branch)
-    ["clone", parseGitRepo . Text.pack -> Just (url, name)] ->
-      git ["clone", url, "--separate-git-dir", name <> "/.git", name <> "/master"]
+    ["clone", parseGitRepo . Text.pack -> Just (url, name)] -> mitClone url name
     ["commit"] -> mitCommit
     ["sync"] -> mitSync
     ["undo"] -> mitUndo
@@ -122,6 +122,11 @@ mitBranch branch = do
           Text.putStrLn ("Branch " <> Text.bold branch <> " is already checked out in " <> Text.bold dir)
           exitFailure
 
+mitClone :: Text -> Text -> IO ()
+mitClone url name =
+  -- FIXME use 'git config --get init.defaultBranch
+  git ["clone", url, "--separate-git-dir", name <> "/.git", name <> "/master"]
+
 mitCommit :: IO ()
 mitCommit = do
   whenM gitMergeInProgress exitFailure
@@ -154,26 +159,26 @@ mitCommitWith context = do
                 pure (False, True)
               True -> pure (False, False)
 
-  commitResult :: ExitCode <-
+  commitResult :: Bool <-
     gitCommit
 
   mergeConflicts :: [Text] <-
-    case (conflicts1 || conflicts2, commitResult) of
-      (True, ExitFailure _) -> do
-        git_ ["reset", "--hard", "--quiet", "HEAD"]
-        gitMerge context.upstream
-      (True, ExitSuccess) -> gitMerge context.upstream -- invariant: this will be non-empty
-      (False, _) -> pure []
+    if conflicts1 || conflicts2
+      then
+        if commitResult
+          then gitMerge context.upstream -- invariant: this will be non-empty
+          else do
+            git_ ["reset", "--hard", "--quiet", "HEAD"]
+            gitMerge context.upstream
+      else pure []
 
   localCommits :: [Text] <-
-    case context.maybeUpstreamHead of
-      Nothing -> git ["rev-list", "HEAD"]
-      Just upstreamHead -> prettyCommitsBetween upstreamHead "HEAD"
+    context.getLocalCommits
 
   stashConflicts :: [Text] <-
-    case (conflicts1 || conflicts2, commitResult) of
-      (True, ExitFailure _) -> gitApplyStash stash
-      _ -> pure []
+    if (conflicts1 || conflicts2) && not commitResult
+      then gitApplyStash stash
+      else pure []
 
   pushResult :: Maybe ExitCode <-
     if not (conflicts1 || conflicts2) && not context.fetchFailed && not (null localCommits)
@@ -182,10 +187,10 @@ mitCommitWith context = do
 
   canUndo :: Bool <-
     case (pushResult, commitResult) of
-      (Just ExitSuccess, ExitFailure _) -> do
+      (Just ExitSuccess, False) -> do
         deleteUndoFile context.branch64
         pure False
-      (Just ExitSuccess, ExitSuccess) -> do
+      (Just ExitSuccess, True) -> do
         case localCommits of
           [_] -> do
             -- FIXME this call wouldn't be necessary if we don't pretty-print local commits right away
@@ -210,10 +215,11 @@ mitCommitWith context = do
         conflicts = List.nub (stashConflicts ++ mergeConflicts),
         localCommits,
         mergeConflicts =
-          case (conflicts1 || conflicts2, commitResult) of
-            (True, ExitFailure _) -> not (null mergeConflicts)
-            (True, ExitSuccess) -> conflicts1
-            (False, _) -> False,
+          (conflicts1 || conflicts2)
+            && ( if commitResult
+                   then conflicts1
+                   else not (null mergeConflicts)
+               ),
         pushResult,
         remoteCommits = context.remoteCommits,
         upstream = context.upstream
@@ -239,9 +245,7 @@ mitSyncWith context = do
       _ -> Just <$> gitMerge context.upstream
 
   localCommits :: [Text] <-
-    case context.maybeUpstreamHead of
-      Nothing -> git ["rev-list", "HEAD"]
-      Just upstreamHead -> prettyCommitsBetween upstreamHead "HEAD"
+    context.getLocalCommits
 
   stashConflicts :: [Text] <-
     case maybeStash of
@@ -313,6 +317,7 @@ data Context = Context
     branch64 :: Text,
     dirty :: DiffResult,
     fetchFailed :: Bool,
+    getLocalCommits :: IO [Text],
     head :: Text,
     maybeUpstreamHead :: Maybe Text,
     remoteCommits :: [Text],
@@ -324,13 +329,12 @@ makeContext = do
   branch :: Text <-
     gitCurrentBranch
 
-  let branch64 :: Text
-      branch64 =
-        Text.encodeBase64 branch
-
   let upstream :: Text
       upstream =
         "origin/" <> branch
+
+  dirty :: DiffResult <-
+    gitDiff
 
   head :: Text <-
     git ["rev-parse", "HEAD"]
@@ -343,20 +347,24 @@ makeContext = do
       Left _ -> Nothing
       Right upstreamHead -> Just upstreamHead
 
+  let getLocalCommits :: IO [Text]
+      getLocalCommits = undefined
+        case maybeUpstreamHead of
+          Nothing -> git ["rev-list", "HEAD"] -- FIXME
+          Just upstreamHead -> prettyCommitsBetween upstreamHead "HEAD"
+
   remoteCommits :: [Text] <-
     case maybeUpstreamHead of
       Nothing -> pure []
       Just upstreamHead -> prettyCommitsBetween head upstreamHead
 
-  dirty :: DiffResult <-
-    gitDiff
-
   pure
     Context
       { branch,
-        branch64,
+        branch64 = Text.encodeBase64 branch,
         dirty,
         fetchFailed,
+        getLocalCommits,
         head,
         maybeUpstreamHead,
         remoteCommits,
@@ -458,13 +466,16 @@ gitApplyStash stash = do
       pure conflicts
     True -> pure []
 
-gitCommit :: IO ExitCode
+gitCommit :: IO Bool
 gitCommit =
   queryTerminal 0 >>= \case
     False -> do
       message <- lookupEnv "MIT_COMMIT_MESSAGE"
       git ["commit", "--all", "--message", maybe "" Text.pack message, "--quiet"]
-    True -> git2 ["commit", "--patch", "--quiet"]
+    True ->
+      git2 ["commit", "--patch", "--quiet"] <&> \case
+        ExitFailure _ -> False
+        ExitSuccess -> True
 
 -- | Get the current branch.
 gitCurrentBranch :: IO Text
