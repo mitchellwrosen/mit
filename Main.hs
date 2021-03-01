@@ -127,7 +127,7 @@ mitCommit = do
   context <- makeContext
   case context.dirty of
     Differences -> mitCommitWith context
-    NoDifferences -> mitSyncWith context
+    NoDifferences -> mitSyncWith context -- n.b. not covered by tests (would be dupes of sync tests)
 
 mitCommitWith :: Context -> IO ()
 mitCommitWith context = do
