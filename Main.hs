@@ -22,6 +22,7 @@ import System.Environment (getArgs, lookupEnv)
 import System.Exit (ExitCode (..), exitFailure, exitWith)
 import System.IO (Handle, hIsEOF)
 import System.IO.Unsafe (unsafePerformIO)
+import System.Posix.Terminal (queryTerminal)
 import System.Process
 import Text.Read (readMaybe)
 import Prelude hiding (head)
@@ -155,7 +156,7 @@ mitCommitWith context = do
   if conflicts1 || conflicts2
     then do
       git_ ["stash", "apply", "--quiet", stash]
-      git2 ["commit", "--patch", "--quiet"] >>= \case
+      gitCommit >>= \case
         ExitFailure _ -> do
           git_ ["reset", "--hard", "--quiet", "HEAD"]
 
@@ -208,7 +209,7 @@ mitCommitWith context = do
               }
     else do
       commitResult :: ExitCode <-
-        git2 ["commit", "--patch", "--quiet"]
+        gitCommit
 
       localCommits :: [Text] <-
         case context.maybeUpstreamHead of
@@ -495,6 +496,14 @@ gitApplyStash stash = do
       git_ ["reset", "--quiet"] -- unmerged (weird) -> unstaged (normal)
       pure conflicts
     True -> pure []
+
+gitCommit :: IO ExitCode
+gitCommit =
+  queryTerminal 0 >>= \case
+    False -> do
+      message <- lookupEnv "MIT_COMMIT_MESSAGE"
+      git ["commit", "--all", "--message", maybe "" Text.pack message, "--quiet"]
+    True -> git2 ["commit", "--patch", "--quiet"]
 
 -- | Get the current branch.
 gitCurrentBranch :: IO Text

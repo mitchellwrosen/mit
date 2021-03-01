@@ -94,29 +94,49 @@ mit undo >/dev/null && exit 1
 git reset --hard HEAD^ >/dev/null || exit 1
 git push -f >/dev/null 2>&1 || exit 1
 
-echo "mit sync: local diverged from remote (no conflicts), no changes"
-echo "mit sync: local diverged from remote (no conflicts), changes (no conflicts)"
-echo "mit sync: local diverged from remote (no conflicts), changes (conflicts)"
-echo "mit sync: local diverged from remote (conflicts), no changes"
-echo "mit sync: local diverged from remote (conflicts), changes (no conflicts)"
-echo "mit sync: local diverged from remote (conflicts), changes (conflicts)"
+echo "TODO mit sync: local diverged from remote (no conflicts), no changes"
+echo "TODO mit sync: local diverged from remote (no conflicts), changes (no conflicts)"
+echo "TODO mit sync: local diverged from remote (no conflicts), changes (conflicts)"
+echo "TODO mit sync: local diverged from remote (conflicts), no changes"
+echo "TODO mit sync: local diverged from remote (conflicts), changes (no conflicts)"
+echo "TODO mit sync: local diverged from remote (conflicts), changes (conflicts)"
 
 echo "mit commit: local = remote"
+git reset --hard origin/feature >/dev/null || exit 1
+head="$(git rev-parse HEAD)"
+echo three >> three.txt
+MIT_COMMIT_MESSAGE="three" mit commit </dev/null >/dev/null || exit 1
+[ "$(git rev-parse feature)" = "$(git rev-parse origin/feature)" ] || exit 1
+[ "$head" = "$(git rev-parse feature^)" ] || exit 1
+mit undo >/dev/null || exit 1
+[ "$(git rev-parse feature)" = "$(git rev-parse origin/feature)" ] || exit 1
+[ "$head" = "$(git rev-parse feature^^)" ] || exit 1
+[ "$(git diff --shortstat)" = " 1 file changed, 1 insertion(+)" ] || exit 1
+git reset --hard HEAD^^ >/dev/null || exit 1
+git push -f >/dev/null 2>&1 || exit 1
+
 echo "mit commit: local = remote, commit aborted"
-echo "mit commit: local behind remote, commit doesnt conflict"
-echo "mit commit: local behind remote, commit doesnt conflict, commit aborted"
-echo "mit commit: local behind remote, commit conflicts"
-echo "mit commit: local behind remote, commit conflicts, commit aborted"
-echo "mit commit: local ahead of remote"
-echo "mit commit: local ahead of remote, commit aborted"
-echo "mit commit: local diverged from remote (no conflicts), commit doesnt conflict"
-echo "mit commit: local diverged from remote (no conflicts), commit doesnt conflict, commit aborted"
-echo "mit commit: local diverged from remote (no conflicts), commit conflicts"
-echo "mit commit: local diverged from remote (no conflicts), commit conflicts, commit aborted"
-echo "mit commit: local diverged from remote (conflicts), commit doesnt conflict"
-echo "mit commit: local diverged from remote (conflicts), commit doesnt conflict, commit aborted"
-echo "mit commit: local diverged from remote (conflicts), commit conflicts"
-echo "mit commit: local diverged from remote (conflicts), commit conflicts, commit aborted"
+git reset --hard origin/feature >/dev/null || exit 1
+head="$(git rev-parse HEAD)"
+echo three >> three.txt
+mit commit </dev/null >/dev/null || exit 1
+[ "$(git diff --shortstat)" = " 1 file changed, 1 insertion(+)" ] || exit 1
+mit undo >/dev/null && exit 1
+
+echo "TODO mit commit: local behind remote, commit doesnt conflict"
+echo "TODO mit commit: local behind remote, commit doesnt conflict, commit aborted"
+echo "TODO mit commit: local behind remote, commit conflicts"
+echo "TODO mit commit: local behind remote, commit conflicts, commit aborted"
+echo "TODO mit commit: local ahead of remote"
+echo "TODO mit commit: local ahead of remote, commit aborted"
+echo "TODO mit commit: local diverged from remote (no conflicts), commit doesnt conflict"
+echo "TODO mit commit: local diverged from remote (no conflicts), commit doesnt conflict, commit aborted"
+echo "TODO mit commit: local diverged from remote (no conflicts), commit conflicts"
+echo "TODO mit commit: local diverged from remote (no conflicts), commit conflicts, commit aborted"
+echo "TODO mit commit: local diverged from remote (conflicts), commit doesnt conflict"
+echo "TODO mit commit: local diverged from remote (conflicts), commit doesnt conflict, commit aborted"
+echo "TODO mit commit: local diverged from remote (conflicts), commit conflicts"
+echo "TODO mit commit: local diverged from remote (conflicts), commit conflicts, commit aborted"
 
 cd ../..
 rm -rf scrap
