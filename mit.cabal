@@ -12,6 +12,7 @@ executable mit
     record-hasfield,
     text,
     text-ansi,
+    unix,
   default-extensions:
     BlockArguments
     DataKinds

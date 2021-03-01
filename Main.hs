@@ -17,11 +17,12 @@ import Data.Text qualified as Text
 import Data.Text.ANSI qualified as Text
 import Data.Text.Encoding.Base64 qualified as Text
 import Data.Text.IO qualified as Text
-import System.Directory (removeFile)
+import System.Directory (doesDirectoryExist, removeFile, withCurrentDirectory)
 import System.Environment (getArgs, lookupEnv)
 import System.Exit (ExitCode (..), exitFailure, exitWith)
 import System.IO (Handle, hIsEOF)
 import System.IO.Unsafe (unsafePerformIO)
+import System.Posix.Terminal (queryTerminal)
 import System.Process
 import Text.Read (readMaybe)
 import Prelude hiding (head)
@@ -31,21 +32,27 @@ import Prelude hiding (head)
 -- FIXME better feedback when exiting due to active merge, or perhaps just do the commit...?
 -- FIXME bail if active cherry-pick, active revert, active rebase, what else?
 
+-- FIXME pushing a new branch lists too many commits and doesn't format them
+
+-- FIXME oops, clone is asymmetric, need .git dir in main branch apparently
+
+-- TODO mit init
+
 main :: IO ()
 main = do
   -- TODO fail if not in git repo
   warnIfBuggyGit
   getArgs >>= \case
+    ["branch", branch] -> mitBranch (Text.pack branch)
     ["clone", parseGitRepo . Text.pack -> Just (url, name)] ->
-      git ["clone", url, "--separate-git-dir", name <> "/.git", name <> "/master"] >>= \case
-        ExitFailure _ -> exitFailure
-        ExitSuccess -> pure ()
+      git ["clone", url, "--separate-git-dir", name <> "/.git", name <> "/master"]
     ["commit"] -> mitCommit
     ["sync"] -> mitSync
     ["undo"] -> mitUndo
     _ ->
       putLines
         [ "Usage:",
+          "  mit branch ≪branch≫",
           "  mit clone ≪repo≫",
           "  mit commit",
           "  mit sync",
@@ -81,24 +88,39 @@ main = do
             )
           ]
 
--- FIXME output what we just undid
-mitUndo :: IO ()
-mitUndo = do
-  branch <- gitCurrentBranch
-  let branch64 = Text.encodeBase64 branch
-  let file = undofile branch64
-  try (Text.readFile file) >>= \case
-    Left (_ :: IOException) -> exitFailure
-    Right contents ->
-      case parseUndos contents of
-        Nothing -> throwIO (userError ("Corrupt undo file: " ++ file))
-        Just undos -> do
-          for_ undos \case
-            Apply commit -> git_ ["stash", "apply", "--quiet", commit]
-            Reset commit -> git_ ["reset", "--hard", "--quiet", commit]
-            Revert commit -> git_ ["revert", commit]
-          -- TODO if we reverted, we also want to push
-          deleteUndoFile branch64
+mitBranch :: Text -> IO ()
+mitBranch branch = do
+  let upstream :: Text
+      upstream =
+        "origin/" <> branch
+
+  let worktreeDir :: Text
+      worktreeDir =
+        Text.dropWhileEnd (/= '/') gitdir <> branch
+
+  unlessM (doesDirectoryExist (Text.unpack worktreeDir)) do
+    worktrees :: [(Text, Text, Maybe Text)] <-
+      gitWorktreeList
+
+    case List.find (\(_, _, worktreeBranch) -> worktreeBranch == Just branch) worktrees of
+      Nothing -> do
+        git_ ["worktree", "add", "--detach", "--quiet", worktreeDir]
+
+        -- TODO handle case where a branch exists locally but not in a worktree
+        withCurrentDirectory (Text.unpack worktreeDir) do
+          git_ ["branch", "--no-track", branch]
+          git_ ["switch", "--quiet", branch]
+
+          _fetchResult :: ExitCode <-
+            git ["fetch", "--quiet", "origin"]
+
+          whenM (git ["rev-parse", "--quiet", "--verify", "refs/remotes/" <> upstream]) do
+            git_ ["reset", "--hard", "--quiet", upstream]
+            git_ ["branch", "--set-upstream-to", upstream]
+      Just (dir, _, _) ->
+        unless (worktreeDir == dir) do
+          Text.putStrLn ("Branch " <> Text.bold branch <> " is already checked out in " <> Text.bold dir)
+          exitFailure
 
 mitCommit :: IO ()
 mitCommit = do
@@ -106,7 +128,7 @@ mitCommit = do
   context <- makeContext
   case context.dirty of
     Differences -> mitCommitWith context
-    NoDifferences -> mitSyncWith context
+    NoDifferences -> mitSyncWith context -- n.b. not covered by tests (would be dupes of sync tests)
 
 mitCommitWith :: Context -> IO ()
 mitCommitWith context = do
@@ -120,18 +142,19 @@ mitCommitWith context = do
       _ -> do
         git_ ["reset", "--hard", "--quiet", "HEAD"]
         git ["merge", "--ff", "--quiet", context.upstream] >>= \case
-          ExitFailure _ -> do
+          False -> do
             git_ ["merge", "--abort"]
             git_ ["stash", "apply", "--quiet", stash]
             pure (True, False)
-          ExitSuccess ->
+          True ->
             git ["stash", "apply", "--quiet", stash] >>= \case
-              ExitFailure _ -> do
+              False -> do
                 git_ ["reset", "--hard", "--quiet", context.head]
                 git_ ["stash", "apply", "--quiet", stash]
                 pure (False, True)
-              ExitSuccess -> pure (False, False)
+              True -> pure (False, False)
 
+<<<<<<< HEAD
   commitResult :: ExitCode <-
     git2 ["commit", "--patch", "--quiet"]
 
@@ -167,6 +190,183 @@ mitCommitWith context = do
         case localCommits of
           [_] -> do
             -- FIXME this call wouldn't be necessary if we don't pretty-print local commits right away
+||||||| 84edf11
+  -- FIXME flatten this out, share much more code with the else-branch
+  if conflicts1 || conflicts2
+    then do
+      git_ ["stash", "apply", "--quiet", stash]
+      git2 ["commit", "--patch", "--quiet"] >>= \case
+        ExitFailure _ -> do
+          git_ ["reset", "--hard", "--quiet", "HEAD"]
+
+          mergeConflicts :: [Text] <-
+            gitMerge context.upstream
+
+          localCommits :: [Text] <-
+            case context.maybeUpstreamHead of
+              Nothing -> git ["rev-list", "HEAD"]
+              Just upstreamHead -> prettyCommitsBetween upstreamHead "HEAD"
+
+          stashConflicts :: [Text] <-
+            gitApplyStash stash
+
+          recordUndoFile context.branch64 [Reset context.head, Apply stash]
+
+          putSummary
+            Summary
+              { branch = context.branch,
+                canUndo = True,
+                conflicts = List.nub (stashConflicts ++ mergeConflicts),
+                localCommits,
+                mergeConflicts = not (null mergeConflicts),
+                pushResult = Nothing,
+                remoteCommits = context.remoteCommits,
+                upstream = context.upstream
+              }
+        ExitSuccess -> do
+          -- Invariant: this will be non-empty
+          mergeConflicts :: [Text] <-
+            gitMerge context.upstream
+
+          localCommits :: [Text] <-
+            case context.maybeUpstreamHead of
+              Nothing -> git ["rev-list", "HEAD"]
+              Just upstreamHead -> prettyCommitsBetween upstreamHead "HEAD"
+
+          recordUndoFile context.branch64 [Reset context.head, Apply stash]
+
+          putSummary
+            Summary
+              { branch = context.branch,
+                canUndo = True,
+                conflicts = mergeConflicts,
+                localCommits,
+                mergeConflicts = conflicts1,
+                pushResult = Nothing,
+                remoteCommits = context.remoteCommits,
+                upstream = context.upstream
+              }
+    else do
+      commitResult :: ExitCode <-
+        git2 ["commit", "--patch", "--quiet"]
+
+      localCommits :: [Text] <-
+        case context.maybeUpstreamHead of
+          Nothing -> git ["rev-list", "HEAD"]
+          Just upstreamHead -> prettyCommitsBetween upstreamHead "HEAD"
+
+      pushResult :: Maybe ExitCode <-
+        if not context.fetchFailed && not (null localCommits)
+          then Just <$> gitPush context.branch
+          else pure Nothing
+
+      canUndo :: Bool <-
+        case pushResult of
+          Just ExitSuccess ->
+            case commitResult of
+              ExitFailure _ -> do
+                deleteUndoFile context.branch64
+                pure False
+              ExitSuccess -> do
+                case localCommits of
+                  [_] -> do
+                    -- FIXME this call wouldn't be necessary if we don't pretty-print local commits right away
+                    head <- git ["rev-parse", "HEAD"]
+                    recordUndoFile context.branch64 [Revert head, Apply stash]
+                    pure True
+                  _ -> do
+                    deleteUndoFile context.branch64
+                    pure False
+          _ -> do
+=======
+  -- FIXME flatten this out, share much more code with the else-branch
+  if conflicts1 || conflicts2
+    then do
+      git_ ["stash", "apply", "--quiet", stash]
+      gitCommit >>= \case
+        ExitFailure _ -> do
+          git_ ["reset", "--hard", "--quiet", "HEAD"]
+
+          mergeConflicts :: [Text] <-
+            gitMerge context.upstream
+
+          localCommits :: [Text] <-
+            case context.maybeUpstreamHead of
+              Nothing -> git ["rev-list", "HEAD"]
+              Just upstreamHead -> prettyCommitsBetween upstreamHead "HEAD"
+
+          stashConflicts :: [Text] <-
+            gitApplyStash stash
+
+          recordUndoFile context.branch64 [Reset context.head, Apply stash]
+
+          putSummary
+            Summary
+              { branch = context.branch,
+                canUndo = True,
+                conflicts = List.nub (stashConflicts ++ mergeConflicts),
+                localCommits,
+                mergeConflicts = not (null mergeConflicts),
+                pushResult = Nothing,
+                remoteCommits = context.remoteCommits,
+                upstream = context.upstream
+              }
+        ExitSuccess -> do
+          -- Invariant: this will be non-empty
+          mergeConflicts :: [Text] <-
+            gitMerge context.upstream
+
+          localCommits :: [Text] <-
+            case context.maybeUpstreamHead of
+              Nothing -> git ["rev-list", "HEAD"]
+              Just upstreamHead -> prettyCommitsBetween upstreamHead "HEAD"
+
+          recordUndoFile context.branch64 [Reset context.head, Apply stash]
+
+          putSummary
+            Summary
+              { branch = context.branch,
+                canUndo = True,
+                conflicts = mergeConflicts,
+                localCommits,
+                mergeConflicts = conflicts1,
+                pushResult = Nothing,
+                remoteCommits = context.remoteCommits,
+                upstream = context.upstream
+              }
+    else do
+      commitResult :: ExitCode <-
+        gitCommit
+
+      localCommits :: [Text] <-
+        case context.maybeUpstreamHead of
+          Nothing -> git ["rev-list", "HEAD"]
+          Just upstreamHead -> prettyCommitsBetween upstreamHead "HEAD"
+
+      pushResult :: Maybe ExitCode <-
+        if not context.fetchFailed && not (null localCommits)
+          then Just <$> gitPush context.branch
+          else pure Nothing
+
+      canUndo :: Bool <-
+        case pushResult of
+          Just ExitSuccess ->
+            case commitResult of
+              ExitFailure _ -> do
+                deleteUndoFile context.branch64
+                pure False
+              ExitSuccess -> do
+                case localCommits of
+                  [_] -> do
+                    -- FIXME this call wouldn't be necessary if we don't pretty-print local commits right away
+                    head <- git ["rev-parse", "HEAD"]
+                    recordUndoFile context.branch64 [Revert head, Apply stash]
+                    pure True
+                  _ -> do
+                    deleteUndoFile context.branch64
+                    pure False
+          _ -> do
+>>>>>>> master
             head <- git ["rev-parse", "HEAD"]
             recordUndoFile context.branch64 [Revert head, Apply stash]
             pure True
@@ -195,64 +395,6 @@ mitCommitWith context = do
         pushResult,
         remoteCommits = context.remoteCommits,
         upstream = context.upstream
-      }
-
--- FIXME add mkCommitsAhead
-data Context = Context
-  { branch :: Text,
-    branch64 :: Text,
-    dirty :: DiffResult,
-    fetchFailed :: Bool,
-    head :: Text,
-    maybeUpstreamHead :: Maybe Text,
-    remoteCommits :: [Text],
-    upstream :: Text
-  }
-
-makeContext :: IO Context
-makeContext = do
-  branch :: Text <-
-    gitCurrentBranch
-
-  let branch64 :: Text
-      branch64 =
-        Text.encodeBase64 branch
-
-  let upstream :: Text
-      upstream =
-        "origin/" <> branch
-
-  head :: Text <-
-    git ["rev-parse", "HEAD"]
-
-  fetchFailed :: Bool <-
-    git ["fetch", "--quiet", "origin"] <&> \case
-      ExitFailure _ -> True
-      ExitSuccess -> False
-
-  maybeUpstreamHead :: Maybe Text <-
-    git ["rev-parse", "refs/remotes/" <> upstream] <&> \case
-      Left _ -> Nothing
-      Right upstreamHead -> Just upstreamHead
-
-  remoteCommits :: [Text] <-
-    case maybeUpstreamHead of
-      Nothing -> pure []
-      Just upstreamHead -> prettyCommitsBetween head upstreamHead
-
-  dirty :: DiffResult <-
-    gitDiff
-
-  pure
-    Context
-      { branch,
-        branch64,
-        dirty,
-        fetchFailed,
-        head,
-        maybeUpstreamHead,
-        remoteCommits,
-        upstream
       }
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
@@ -316,6 +458,87 @@ mitSyncWith context = do
         pushResult,
         remoteCommits = context.remoteCommits,
         upstream = context.upstream
+      }
+
+-- FIXME output what we just undid
+mitUndo :: IO ()
+mitUndo = do
+  branch <- gitCurrentBranch
+  let branch64 = Text.encodeBase64 branch
+  let file = undofile branch64
+  try (Text.readFile file) >>= \case
+    Left (_ :: IOException) -> exitFailure
+    Right contents ->
+      case parseUndos contents of
+        Nothing -> throwIO (userError ("Corrupt undo file: " ++ file))
+        Just undos -> do
+          deleteUndoFile branch64
+          for_ undos \case
+            Apply commit -> git_ ["stash", "apply", "--quiet", commit]
+            Reset commit -> git_ ["reset", "--hard", "--quiet", commit]
+            Revert commit -> git_ ["revert", commit]
+          when (undosContainRevert undos) mitSync
+  where
+    undosContainRevert :: [Undo] -> Bool
+    undosContainRevert = \case
+      [] -> False
+      Revert _ : _ -> True
+      _ : undos -> undosContainRevert undos
+
+-- FIXME add mkCommitsAhead
+data Context = Context
+  { branch :: Text,
+    branch64 :: Text,
+    dirty :: DiffResult,
+    fetchFailed :: Bool,
+    head :: Text,
+    maybeUpstreamHead :: Maybe Text,
+    remoteCommits :: [Text],
+    upstream :: Text
+  }
+
+makeContext :: IO Context
+makeContext = do
+  branch :: Text <-
+    gitCurrentBranch
+
+  let branch64 :: Text
+      branch64 =
+        Text.encodeBase64 branch
+
+  let upstream :: Text
+      upstream =
+        "origin/" <> branch
+
+  head :: Text <-
+    git ["rev-parse", "HEAD"]
+
+  fetchFailed :: Bool <-
+    not <$> git ["fetch", "--quiet", "origin"]
+
+  maybeUpstreamHead :: Maybe Text <-
+    git ["rev-parse", "refs/remotes/" <> upstream] <&> \case
+      Left _ -> Nothing
+      Right upstreamHead -> Just upstreamHead
+
+  remoteCommits :: [Text] <-
+    case maybeUpstreamHead of
+      Nothing -> pure []
+      Just upstreamHead -> prettyCommitsBetween head upstreamHead
+
+  dirty :: DiffResult <-
+    gitDiff
+
+  pure
+    Context
+      { branch,
+        branch64,
+        dirty,
+        fetchFailed,
+        head,
+        maybeUpstreamHead,
+        remoteCommits,
+        upstream
       }
 
 data Summary = Summary
@@ -407,11 +630,19 @@ recordUndoFile branch64 undos = do
 gitApplyStash :: Text -> IO [Text]
 gitApplyStash stash = do
   git ["stash", "apply", "--quiet", stash] >>= \case
-    ExitFailure _ -> do
+    False -> do
       conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
       git_ ["reset", "--quiet"] -- unmerged (weird) -> unstaged (normal)
       pure conflicts
-    ExitSuccess -> pure []
+    True -> pure []
+
+gitCommit :: IO ExitCode
+gitCommit =
+  queryTerminal 0 >>= \case
+    False -> do
+      message <- lookupEnv "MIT_COMMIT_MESSAGE"
+      git ["commit", "--all", "--message", maybe "" Text.pack message, "--quiet"]
+    True -> git2 ["commit", "--patch", "--quiet"]
 
 -- | Get the current branch.
 gitCurrentBranch :: IO Text
@@ -434,26 +665,24 @@ gitDiff = do
   git_ ["reset", "--quiet"]
   git_ ["add", "--all", "--intent-to-add"]
   git ["diff", "--quiet"] <&> \case
-    ExitFailure _ -> Differences
-    ExitSuccess -> NoDifferences
+    False -> Differences
+    True -> NoDifferences
 
 -- FIXME document what this does
 gitMerge :: Text -> IO [Text]
 gitMerge target = do
   git ["merge", "--ff", "--quiet", target] >>= \case
-    ExitFailure _ -> do
+    False -> do
       conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
       git_ ["add", "--all"]
       -- TODO better commit message than the default
       git_ ["commit", "--no-edit", "--quiet"]
       pure conflicts
-    ExitSuccess -> pure []
+    True -> pure []
 
 gitMergeInProgress :: IO Bool
 gitMergeInProgress =
-  git ["merge", "--quiet", "HEAD"] <&> \case
-    ExitFailure _ -> True
-    ExitSuccess -> False
+  not <$> git ["merge", "--quiet", "HEAD"]
 
 gitPush :: Text -> IO ExitCode
 gitPush branch =
@@ -508,6 +737,23 @@ showGitVersion :: GitVersion -> Text
 showGitVersion (GitVersion x y z) =
   Text.pack (show x) <> "." <> Text.pack (show y) <> "." <> Text.pack (show z)
 
+-- /dir/one 0efd393c35 [oingo]         -> ("/dir/one", "0efd393c35", Just "oingo")
+-- /dir/two dc0c114266 (detached HEAD) -> ("/dir/two", "dc0c114266", Nothing)
+gitWorktreeList :: IO [(Text, Text, Maybe Text)]
+gitWorktreeList = do
+  map f <$> git ["worktree", "list"]
+  where
+    f :: Text -> (Text, Text, Maybe Text)
+    f line =
+      case Text.words line of
+        [dir, commit, stripBrackets -> Just branch] -> (dir, commit, Just branch)
+        [dir, commit, "(detached", "HEAD)"] -> (dir, commit, Nothing)
+        _ -> error (Text.unpack line)
+      where
+        stripBrackets :: Text -> Maybe Text
+        stripBrackets =
+          Text.stripPrefix "[" >=> Text.stripSuffix "]"
+
 debug :: Bool
 debug =
   isJust (unsafePerformIO (lookupEnv "debug"))
@@ -527,6 +773,11 @@ class ProcessOutput a where
 instance ProcessOutput () where
   fromProcessOutput _ _ code =
     when (code /= ExitSuccess) (exitWith code)
+
+instance ProcessOutput Bool where
+  fromProcessOutput _ _ = \case
+    ExitFailure _ -> pure False
+    ExitSuccess -> pure True
 
 instance ProcessOutput ExitCode where
   fromProcessOutput _ _ = pure
@@ -651,6 +902,12 @@ putLines =
 quoteText :: Text -> Text
 quoteText s =
   if Text.any isSpace s then "'" <> Text.replace "'" "\\'" s <> "'" else s
+
+unlessM :: Monad m => m Bool -> m () -> m ()
+unlessM mx action =
+  mx >>= \case
+    False -> action
+    True -> pure ()
 
 whenM :: Monad m => m Bool -> m () -> m ()
 whenM mx action =
