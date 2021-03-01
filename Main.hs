@@ -332,12 +332,18 @@ mitUndo = do
       case parseUndos contents of
         Nothing -> throwIO (userError ("Corrupt undo file: " ++ file))
         Just undos -> do
+          deleteUndoFile branch64
           for_ undos \case
             Apply commit -> git_ ["stash", "apply", "--quiet", commit]
             Reset commit -> git_ ["reset", "--hard", "--quiet", commit]
             Revert commit -> git_ ["revert", commit]
-          -- TODO if we reverted, we also want to push
-          deleteUndoFile branch64
+          when (undosContainRevert undos) mitSync
+  where
+    undosContainRevert :: [Undo] -> Bool
+    undosContainRevert = \case
+      [] -> False
+      Revert _ : _ -> True
+      _ : undos -> undosContainRevert undos
 
 -- FIXME add mkCommitsAhead
 data Context = Context
