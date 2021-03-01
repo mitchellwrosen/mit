@@ -34,8 +34,6 @@ import Prelude hiding (head)
 
 -- FIXME pushing a new branch lists too many commits and doesn't format them
 
--- FIXME oops, clone is asymmetric, need .git dir in main branch apparently
-
 -- TODO mit init
 
 main :: IO ()
@@ -105,18 +103,20 @@ mitBranch branch = do
     case List.find (\(_, _, worktreeBranch) -> worktreeBranch == Just branch) worktrees of
       Nothing -> do
         git_ ["worktree", "add", "--detach", "--quiet", worktreeDir]
-
-        -- TODO handle case where a branch exists locally but not in a worktree
         withCurrentDirectory (Text.unpack worktreeDir) do
-          git_ ["branch", "--no-track", branch]
-          git_ ["switch", "--quiet", branch]
+          git ["rev-parse", "--quiet", "--verify", "refs/heads/" <> branch] >>= \case
+            False -> do
+              git_ ["branch", "--no-track", branch]
+              git_ ["switch", "--quiet", branch]
 
-          _fetchResult :: ExitCode <-
-            git ["fetch", "--quiet", "origin"]
+              _fetchResult :: ExitCode <-
+                git ["fetch", "--quiet", "origin"]
 
-          whenM (git ["rev-parse", "--quiet", "--verify", "refs/remotes/" <> upstream]) do
-            git_ ["reset", "--hard", "--quiet", upstream]
-            git_ ["branch", "--set-upstream-to", upstream]
+              whenM (git ["rev-parse", "--quiet", "--verify", "refs/remotes/" <> upstream]) do
+                git_ ["reset", "--hard", "--quiet", upstream]
+                git_ ["branch", "--set-upstream-to", upstream]
+            True ->
+              git_ ["switch", "--quiet", branch]
       Just (dir, _, _) ->
         unless (worktreeDir == dir) do
           Text.putStrLn ("Branch " <> Text.bold branch <> " is already checked out in " <> Text.bold dir)
