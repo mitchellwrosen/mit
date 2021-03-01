@@ -17,7 +17,7 @@ import Data.Text qualified as Text
 import Data.Text.ANSI qualified as Text
 import Data.Text.Encoding.Base64 qualified as Text
 import Data.Text.IO qualified as Text
-import System.Directory (removeFile)
+import System.Directory (doesDirectoryExist, removeFile, withCurrentDirectory)
 import System.Environment (getArgs, lookupEnv)
 import System.Exit (ExitCode (..), exitFailure, exitWith)
 import System.IO (Handle, hIsEOF)
@@ -33,11 +33,17 @@ import Prelude hiding (head)
 
 -- FIXME pushing a new branch lists too many commits and doesn't format them
 
+-- FIXME oops, clone is asymmetric, need .git dir in main branch apparently
+
+-- TODO make Bool a valid process result
+-- TODO mit init
+
 main :: IO ()
 main = do
   -- TODO fail if not in git repo
   warnIfBuggyGit
   getArgs >>= \case
+    ["branch", branch] -> mitBranch (Text.pack branch)
     ["clone", parseGitRepo . Text.pack -> Just (url, name)] ->
       git ["clone", url, "--separate-git-dir", name <> "/.git", name <> "/master"] >>= \case
         ExitFailure _ -> exitFailure
@@ -48,6 +54,7 @@ main = do
     _ ->
       putLines
         [ "Usage:",
+          "  mit branch ≪branch≫",
           "  mit clone ≪repo≫",
           "  mit commit",
           "  mit sync",
@@ -82,6 +89,46 @@ main = do
                 <> "."
             )
           ]
+
+mitBranch :: Text -> IO ()
+mitBranch branch = do
+  let upstream :: Text
+      upstream =
+        "origin/" <> branch
+
+  let worktreeDir :: Text
+      worktreeDir =
+        Text.dropWhileEnd (/= '/') gitdir <> branch
+
+  unlessM (doesDirectoryExist (Text.unpack worktreeDir)) do
+    worktrees :: [(Text, Text, Maybe Text)] <-
+      gitWorktreeList
+
+    case List.find (\(_, _, worktreeBranch) -> worktreeBranch == Just branch) worktrees of
+      Nothing -> do
+        git_ ["worktree", "add", "--detach", "--quiet", worktreeDir]
+
+        -- TODO handle case where a branch exists locally but not in a worktree
+        withCurrentDirectory (Text.unpack worktreeDir) do
+          git_ ["branch", "--no-track", branch]
+          git_ ["switch", "--quiet", branch]
+
+          _fetchResult :: ExitCode <-
+            git ["fetch", "--quiet", "origin"]
+
+          whenM
+            ( git ["rev-parse", "--quiet", "--verify", "refs/remotes/" <> upstream] <&> \case
+                ExitFailure _ -> False
+                ExitSuccess -> True
+            )
+            ( do
+                git_ ["reset", "--hard", "--quiet", upstream]
+                git_ ["branch", "--set-upstream-to", upstream]
+            )
+      Just (dir, _, _) ->
+        unless (worktreeDir == dir) do
+          Text.putStrLn ("Branch " <> Text.bold branch <> " is already checked out in " <> Text.bold dir)
+          exitFailure
 
 mitCommit :: IO ()
 mitCommit = do
@@ -549,6 +596,23 @@ showGitVersion :: GitVersion -> Text
 showGitVersion (GitVersion x y z) =
   Text.pack (show x) <> "." <> Text.pack (show y) <> "." <> Text.pack (show z)
 
+-- /dir/one 0efd393c35 [oingo]         -> ("/dir/one", "0efd393c35", Just "oingo")
+-- /dir/two dc0c114266 (detached HEAD) -> ("/dir/two", "dc0c114266", Nothing)
+gitWorktreeList :: IO [(Text, Text, Maybe Text)]
+gitWorktreeList = do
+  map f <$> git ["worktree", "list"]
+  where
+    f :: Text -> (Text, Text, Maybe Text)
+    f line =
+      case Text.words line of
+        [dir, commit, stripBrackets -> Just branch] -> (dir, commit, Just branch)
+        [dir, commit, "(detached", "HEAD)"] -> (dir, commit, Nothing)
+        _ -> error (Text.unpack line)
+      where
+        stripBrackets :: Text -> Maybe Text
+        stripBrackets =
+          Text.stripPrefix "[" >=> Text.stripSuffix "]"
+
 debug :: Bool
 debug =
   isJust (unsafePerformIO (lookupEnv "debug"))
@@ -692,6 +756,12 @@ putLines =
 quoteText :: Text -> Text
 quoteText s =
   if Text.any isSpace s then "'" <> Text.replace "'" "\\'" s <> "'" else s
+
+unlessM :: Monad m => m Bool -> m () -> m ()
+unlessM mx action =
+  mx >>= \case
+    False -> action
+    True -> pure ()
 
 whenM :: Monad m => m Bool -> m () -> m ()
 whenM mx action =
