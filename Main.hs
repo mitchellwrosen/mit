@@ -162,23 +162,15 @@ mitCommitWith context = do
   commitResult :: Bool <-
     gitCommit
 
-  mergeConflicts :: [Text] <-
+  (mergeConflicts, stashConflicts) :: ([Text], [Text]) <-
     if conflicts1 || conflicts2
-      then
-        if commitResult
-          then gitMerge context.upstream -- invariant: this will be non-empty
-          else do
-            git_ ["reset", "--hard", "--quiet", "HEAD"]
-            gitMerge context.upstream
-      else pure []
+      then do
+        unless commitResult (git_ ["reset", "--hard", "--quiet", "HEAD"])
+        (,) <$> gitMerge context.upstream <*> gitApplyStash stash
+      else pure ([], [])
 
   localCommits :: [Text] <-
     context.getLocalCommits
-
-  stashConflicts :: [Text] <-
-    if (conflicts1 || conflicts2) && not commitResult
-      then gitApplyStash stash
-      else pure []
 
   pushResult :: Maybe ExitCode <-
     if not (conflicts1 || conflicts2) && not context.fetchFailed && not (null localCommits)
