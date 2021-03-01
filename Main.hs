@@ -35,7 +35,6 @@ import Prelude hiding (head)
 
 -- FIXME oops, clone is asymmetric, need .git dir in main branch apparently
 
--- TODO make Bool a valid process result
 -- TODO mit init
 
 main :: IO ()
@@ -45,9 +44,7 @@ main = do
   getArgs >>= \case
     ["branch", branch] -> mitBranch (Text.pack branch)
     ["clone", parseGitRepo . Text.pack -> Just (url, name)] ->
-      git ["clone", url, "--separate-git-dir", name <> "/.git", name <> "/master"] >>= \case
-        ExitFailure _ -> exitFailure
-        ExitSuccess -> pure ()
+      git ["clone", url, "--separate-git-dir", name <> "/.git", name <> "/master"]
     ["commit"] -> mitCommit
     ["sync"] -> mitSync
     ["undo"] -> mitUndo
@@ -116,15 +113,9 @@ mitBranch branch = do
           _fetchResult :: ExitCode <-
             git ["fetch", "--quiet", "origin"]
 
-          whenM
-            ( git ["rev-parse", "--quiet", "--verify", "refs/remotes/" <> upstream] <&> \case
-                ExitFailure _ -> False
-                ExitSuccess -> True
-            )
-            ( do
-                git_ ["reset", "--hard", "--quiet", upstream]
-                git_ ["branch", "--set-upstream-to", upstream]
-            )
+          whenM (git ["rev-parse", "--quiet", "--verify", "refs/remotes/" <> upstream]) do
+            git_ ["reset", "--hard", "--quiet", upstream]
+            git_ ["branch", "--set-upstream-to", upstream]
       Just (dir, _, _) ->
         unless (worktreeDir == dir) do
           Text.putStrLn ("Branch " <> Text.bold branch <> " is already checked out in " <> Text.bold dir)
@@ -150,15 +141,15 @@ mitCommitWith context = do
       _ -> do
         git_ ["reset", "--hard", "--quiet", "HEAD"]
         git ["merge", "--ff", "--quiet", context.upstream] >>= \case
-          ExitFailure _ -> do
+          False -> do
             git_ ["merge", "--abort"]
             pure (True, False)
-          ExitSuccess ->
+          True ->
             git ["stash", "apply", "--quiet", stash] >>= \case
-              ExitFailure _ -> do
+              False -> do
                 git_ ["reset", "--hard", "--quiet", context.head]
                 pure (False, True)
-              ExitSuccess -> pure (False, False)
+              True -> pure (False, False)
 
   -- FIXME flatten this out, share much more code with the else-branch
   if conflicts1 || conflicts2
@@ -377,9 +368,7 @@ makeContext = do
     git ["rev-parse", "HEAD"]
 
   fetchFailed :: Bool <-
-    git ["fetch", "--quiet", "origin"] <&> \case
-      ExitFailure _ -> True
-      ExitSuccess -> False
+    git ["fetch", "--quiet", "origin"]
 
   maybeUpstreamHead :: Maybe Text <-
     git ["rev-parse", "refs/remotes/" <> upstream] <&> \case
@@ -495,11 +484,11 @@ recordUndoFile branch64 undos = do
 gitApplyStash :: Text -> IO [Text]
 gitApplyStash stash = do
   git ["stash", "apply", "--quiet", stash] >>= \case
-    ExitFailure _ -> do
+    False -> do
       conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
       git_ ["reset", "--quiet"] -- unmerged (weird) -> unstaged (normal)
       pure conflicts
-    ExitSuccess -> pure []
+    True -> pure []
 
 -- | Get the current branch.
 gitCurrentBranch :: IO Text
@@ -522,26 +511,24 @@ gitDiff = do
   git_ ["reset", "--quiet"]
   git_ ["add", "--all", "--intent-to-add"]
   git ["diff", "--quiet"] <&> \case
-    ExitFailure _ -> Differences
-    ExitSuccess -> NoDifferences
+    False -> Differences
+    True -> NoDifferences
 
 -- FIXME document what this does
 gitMerge :: Text -> IO [Text]
 gitMerge target = do
   git ["merge", "--ff", "--quiet", target] >>= \case
-    ExitFailure _ -> do
+    False -> do
       conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
       git_ ["add", "--all"]
       -- TODO better commit message than the default
       git_ ["commit", "--no-edit", "--quiet"]
       pure conflicts
-    ExitSuccess -> pure []
+    True -> pure []
 
 gitMergeInProgress :: IO Bool
 gitMergeInProgress =
-  git ["merge", "--quiet", "HEAD"] <&> \case
-    ExitFailure _ -> True
-    ExitSuccess -> False
+  not <$> git ["merge", "--quiet", "HEAD"]
 
 gitPush :: Text -> IO ExitCode
 gitPush branch =
@@ -632,6 +619,11 @@ class ProcessOutput a where
 instance ProcessOutput () where
   fromProcessOutput _ _ code =
     when (code /= ExitSuccess) (exitWith code)
+
+instance ProcessOutput Bool where
+  fromProcessOutput _ _ = \case
+    ExitFailure _ -> pure False
+    ExitSuccess -> pure True
 
 instance ProcessOutput ExitCode where
   fromProcessOutput _ _ = pure
