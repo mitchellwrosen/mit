@@ -348,7 +348,7 @@ makeContext = do
       Right upstreamHead -> Just upstreamHead
 
   let getLocalCommits :: IO [Text]
-      getLocalCommits = undefined
+      getLocalCommits =
         case maybeUpstreamHead of
           Nothing -> git ["rev-list", "HEAD"] -- FIXME
           Just upstreamHead -> prettyCommitsBetween upstreamHead "HEAD"
