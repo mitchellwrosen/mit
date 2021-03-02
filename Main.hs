@@ -45,6 +45,7 @@ main = do
     ["branch", branch] -> mitBranch (Text.pack branch)
     ["clone", parseGitRepo . Text.pack -> Just (url, name)] -> mitClone url name
     ["commit"] -> mitCommit
+    ["merge", branch] -> mitMerge (Text.pack branch) -- temporary
     ["sync"] -> mitSync
     ["undo"] -> mitUndo
     _ ->
@@ -53,6 +54,7 @@ main = do
           "  mit branch ≪branch≫",
           "  mit clone ≪repo≫",
           "  mit commit",
+          "  mit merge ≪branch≫",
           "  mit sync",
           "  mit undo"
         ]
@@ -227,6 +229,63 @@ mitCommitWith context = do
                 source = context.branch,
                 success = pushResult == Just ExitSuccess,
                 target = context.upstream
+              }
+          ]
+      }
+
+mitMerge :: Text -> IO ()
+mitMerge target = do
+  -- FIXME the entire context isn't needed, e.g. remoteCommits
+  context <- makeContext
+
+  maybeTargetCommit :: Maybe Text <-
+    git ["rev-parse", target] <&> \case
+      Left _ -> Nothing
+      Right targetCommit -> Just targetCommit
+
+  targetCommits :: [GitRevisionInfo] <-
+    case maybeTargetCommit of
+      Nothing -> pure []
+      Just targetCommit -> commitsBetween (Just context.head) targetCommit
+
+  maybeStash :: Maybe Text <-
+    case (targetCommits, context.dirty) of
+      (_ : _, Differences) -> Just <$> gitStash
+      _ -> pure Nothing
+
+  mergeConflicts :: Maybe [Text] <-
+    case targetCommits of
+      [] -> pure Nothing
+      _ ->
+        fmap Just do
+          gitMerge context.branch target >>= \case
+            Left commitConflicts -> commitConflicts
+            Right () -> pure []
+
+  stashConflicts :: [Text] <-
+    case maybeStash of
+      Nothing -> pure []
+      Just stash -> gitApplyStash stash
+
+  canUndo :: Bool <- do
+    head <- git ["rev-parse", "HEAD"]
+    if head == context.head
+      then pure False
+      else do
+        recordUndoFile context.branch64 (Reset context.head : maybeToList (Apply <$> maybeStash))
+        pure True
+
+  putSummary
+    Summary
+      { branch = context.branch,
+        canUndo,
+        conflicts = List.nub (stashConflicts ++ fromMaybe [] mergeConflicts),
+        syncs =
+          [ Sync
+              { commits = targetCommits,
+                source = target,
+                success = maybe True null mergeConflicts,
+                target = context.branch
               }
           ]
       }
