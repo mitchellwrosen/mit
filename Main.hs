@@ -213,16 +213,22 @@ mitCommitWith context = do
       { branch = context.branch,
         canUndo,
         conflicts = List.nub (stashConflicts ++ mergeConflicts),
-        localCommits,
-        mergeConflicts =
-          (conflicts1 || conflicts2)
-            && ( if commitResult
-                   then conflicts1
-                   else not (null mergeConflicts)
-               ),
-        pushResult,
-        remoteCommits = context.remoteCommits,
-        upstream = context.upstream
+        syncs =
+          [ Sync
+              { commits = context.remoteCommits,
+                source = context.upstream,
+                success =
+                  (not conflicts1 && (not conflicts2 || commitResult))
+                    || (not commitResult && null mergeConflicts),
+                target = context.branch
+              },
+            Sync
+              { commits = localCommits,
+                source = context.branch,
+                success = pushResult == Just ExitSuccess,
+                target = context.upstream
+              }
+          ]
       }
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
@@ -281,11 +287,20 @@ mitSyncWith context = do
       { branch = context.branch,
         canUndo,
         conflicts = List.nub (stashConflicts ++ fromMaybe [] mergeConflicts),
-        localCommits,
-        mergeConflicts = maybe False (not . null) mergeConflicts,
-        pushResult,
-        remoteCommits = context.remoteCommits,
-        upstream = context.upstream
+        syncs =
+          [ Sync
+              { commits = context.remoteCommits,
+                source = context.upstream,
+                success = maybe True null mergeConflicts,
+                target = context.branch
+              },
+            Sync
+              { commits = localCommits,
+                source = context.branch,
+                success = pushResult == Just ExitSuccess,
+                target = context.upstream
+              }
+          ]
       }
 
 -- FIXME output what we just undid
@@ -313,7 +328,6 @@ mitUndo = do
       Revert _ : _ -> True
       _ : undos -> undosContainRevert undos
 
--- FIXME add mkCommitsAhead
 data Context = Context
   { branch :: Text,
     branch64 :: Text,
@@ -371,45 +385,79 @@ makeContext = do
         upstream
       }
 
+data SyncContext = SyncContext
+  { context :: Context,
+    getLocalCommits :: IO [GitRevisionInfo],
+    maybeUpstreamHead :: Maybe Text,
+    remoteCommits :: [GitRevisionInfo]
+  }
+
+makeSyncContext :: Context -> IO SyncContext
+makeSyncContext context = do
+  maybeUpstreamHead :: Maybe Text <-
+    git ["rev-parse", "refs/remotes/" <> context.upstream] <&> \case
+      Left _ -> Nothing
+      Right upstreamHead -> Just upstreamHead
+
+  let getLocalCommits :: IO [GitRevisionInfo]
+      getLocalCommits =
+        commitsBetween maybeUpstreamHead "HEAD"
+
+  remoteCommits :: [GitRevisionInfo] <-
+    case maybeUpstreamHead of
+      Nothing -> pure []
+      Just upstreamHead -> commitsBetween (Just context.head) upstreamHead
+
+  pure
+    SyncContext
+      { context,
+        getLocalCommits,
+        maybeUpstreamHead,
+        remoteCommits
+      }
+
 data Summary = Summary
   { branch :: Text,
     canUndo :: Bool,
     conflicts :: [Text],
-    localCommits :: [GitRevisionInfo],
-    mergeConflicts :: Bool,
-    pushResult :: Maybe ExitCode,
-    remoteCommits :: [GitRevisionInfo],
-    upstream :: Text
+    syncs :: [Sync]
+  }
+
+data Sync = Sync
+  { commits :: [GitRevisionInfo],
+    source :: Text,
+    success :: Bool,
+    target :: Text
   }
 
 -- FIXME show some graph of where local/remote is at
 putSummary :: Summary -> IO ()
-putSummary summary = do
-  putLines . concatMap ("" :) . catMaybes $
-    [ do
-        guard (not (null summary.remoteCommits))
-        let colorize = if summary.mergeConflicts then Text.red else Text.green
-        Just
-          ( colorize (Text.italic ("  " <> summary.upstream <> " → " <> summary.branch)) :
-            map (("  " <>) . prettyGitRevisionInfo) summary.remoteCommits
-          ),
-      do
-        guard (not (null summary.localCommits))
-        let colorize =
-              case summary.pushResult of
-                Just ExitSuccess -> Text.green
-                _ -> Text.red
-        Just
-          ( colorize (Text.italic ("  " <> summary.branch <> " → " <> summary.upstream)) :
-            map (("  " <>) . prettyGitRevisionInfo) summary.localCommits
-          ),
-      do
-        guard (not (null summary.conflicts))
-        Just ("  The following files have conflicts." : map (("    " <>) . Text.red) summary.conflicts),
-      do
-        guard summary.canUndo
-        Just ["  Run " <> Text.bold (Text.blue "mit undo") <> " to undo this change."]
-    ]
+putSummary summary =
+  let output = concatMap syncLines summary.syncs ++ conflictsLines ++ undoLines
+   in if null output then pure () else putLines ("" : output)
+  where
+    conflictsLines :: [Text]
+    conflictsLines =
+      if null summary.conflicts
+        then []
+        else "  The following files have conflicts." : map (("    " <>) . Text.red) summary.conflicts ++ [""]
+    syncLines :: Sync -> [Text]
+    syncLines sync =
+      if null sync.commits
+        then []
+        else
+          colorize (Text.italic ("  " <> sync.source <> " → " <> sync.target)) :
+          map (("  " <>) . prettyGitRevisionInfo) sync.commits
+            ++ [""]
+      where
+        colorize :: Text -> Text
+        colorize =
+          if sync.success then Text.green else Text.red
+    undoLines :: [Text]
+    undoLines =
+      if summary.canUndo
+        then ["  Run " <> Text.bold (Text.blue "mit undo") <> " to undo this change.", ""]
+        else []
 
 deleteUndoFile :: Text -> IO ()
 deleteUndoFile branch64 =
