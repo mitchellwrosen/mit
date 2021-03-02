@@ -173,7 +173,10 @@ mitCommitWith context = do
     context.getLocalCommits
 
   pushResult :: Maybe ExitCode <-
-    if not (conflicts1 || conflicts2) && not context.fetchFailed && not (null localCommits)
+    if not context.fetchFailed -- if fetch failed, assume we're offline
+      && null mergeConflicts -- we don't want to push a local broken merge bubble
+      && (null stashConflicts || not commitResult) -- stash conflicts are ok if we aborted the commit
+      && not (null localCommits) -- is there even anything to push?
       then Just <$> gitPush context.branch
       else pure Nothing
 
@@ -244,12 +247,10 @@ mitSyncWith context = do
       Nothing -> pure []
       Just stash -> gitApplyStash stash
 
-  let conflicts :: [Text]
-      conflicts =
-        List.nub (stashConflicts ++ fromMaybe [] mergeConflicts)
-
   pushResult :: Maybe ExitCode <-
-    if not context.fetchFailed && not (null localCommits) && null conflicts
+    if not context.fetchFailed -- if fetch failed, assume we're offline
+      && null (fromMaybe [] mergeConflicts) -- we don't want to push a local broken merge bubble
+      && not (null localCommits) -- is there even anything to push?
       then Just <$> gitPush context.branch
       else pure Nothing
 
@@ -270,7 +271,7 @@ mitSyncWith context = do
     Summary
       { branch = context.branch,
         canUndo,
-        conflicts,
+        conflicts = List.nub (stashConflicts ++ fromMaybe [] mergeConflicts),
         localCommits,
         mergeConflicts = maybe False (not . null) mergeConflicts,
         pushResult,

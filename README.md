@@ -48,16 +48,16 @@ Below is a detailed description of the `mit commit` algorithm. Assuming the user
   - `mit` prepares a commit interactively with `git commit --patch`. (Note that this commit may be aborted by staging no
     changes, or providing an empty commit message).
   - Whether or not the commit was aborted, if any conflicts were observed while synchronizing with `origin/feature`,
-    `mit` performs a follow-up merge, which will fail.
-  - `mit` _commits the conflicting merge bubble as-is_, noting which files are in conflict, to report later. This is
-    done so a subsequent commit can clearly show how the conflicts were resolved, possibly after publishing the broken
-    commit so the conflicts can be resolved collaboratively. `git`, by contrast, encourages the developer to resolve
-    conflicts alone, and worse, does not provide a convenient mechanism for other developers to witness how exactly the
-    conflicts were resolved.
-  - `mit` attempts to push `feature` to `origin/feature` if there were no conflicts (because otherwise the local
-    repository's latest commit is a merge bubble with conflict markers), the initial fetch did not fail (indicating the
-    user is probably offline), and there is at least one commit reachable by `feature` but not `origin/feature` (either
-    recorded previously, or just now - but recall that the current commit may have been aborted).
+    `mit` performs a follow-up merge, which will fail. `mit` _commits the conflicting merge bubble as-is_, noting which
+    files are in conflict. This is done so a subsequent commit can clearly show how the conflicts were resolved,
+    possibly after publishing the broken commit so the conflicts can be resolved collaboratively. `git`, by contrast,
+    encourages the developer to resolve conflicts alone, and worse, does not provide a convenient mechanism for other
+    developers to witness how exactly the conflicts were resolved.
+  - `mit` attempts to push `feature` to `origin/feature` if the initial fetch did not fail (indicating the user is
+    probably offline), there were no merge conflicts (because otherwise the local repository's latest commit is a merge
+    bubble with conflict markers), there were either no conflicts due to the uncommitted changes, or if there were, the
+    current commit was aborted, and there is at least one commit reachable by `feature` but not `origin/feature`
+    (possibly recorded previously while offline, or by raw `git`, etc.)
   - `mit` determines whether all of the above can be undone with a `mit undo`, and if so, records some undo metadata
     in a file in the `.git` directory.
   - `mit` provides a summary of what just occurred, indicating which previously unseen commits from `origin/feature`
@@ -66,4 +66,4 @@ Below is a detailed description of the `mit commit` algorithm. Assuming the user
 
 ## The full `mit sync` algorithm
 
-  - TODO
+  - TODO (but, in a nutshell, it's similar to `mit commit`, only less complicated.
