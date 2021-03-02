@@ -8,7 +8,7 @@ import Control.Category ((>>>))
 import Control.Exception (AsyncException (UserInterrupt), IOException, catch, throwIO, try)
 import Control.Monad
 import Data.Char
-import Data.Foldable (for_)
+import Data.Foldable (fold, for_)
 import Data.Function
 import Data.List qualified as List
 import Data.Maybe
@@ -169,7 +169,7 @@ mitCommitWith context = do
         (,) <$> gitMerge context.upstream <*> gitApplyStash stash
       else pure ([], [])
 
-  localCommits :: [Text] <-
+  localCommits :: [GitRevisionInfo] <-
     context.getLocalCommits
 
   pushResult :: Maybe ExitCode <-
@@ -239,7 +239,7 @@ mitSyncWith context = do
       [] -> pure Nothing
       _ -> Just <$> gitMerge context.upstream
 
-  localCommits :: [Text] <-
+  localCommits :: [GitRevisionInfo] <-
     context.getLocalCommits
 
   stashConflicts :: [Text] <-
@@ -310,10 +310,10 @@ data Context = Context
     branch64 :: Text,
     dirty :: DiffResult,
     fetchFailed :: Bool,
-    getLocalCommits :: IO [Text],
+    getLocalCommits :: IO [GitRevisionInfo],
     head :: Text,
     maybeUpstreamHead :: Maybe Text,
-    remoteCommits :: [Text],
+    remoteCommits :: [GitRevisionInfo],
     upstream :: Text
   }
 
@@ -340,16 +340,14 @@ makeContext = do
       Left _ -> Nothing
       Right upstreamHead -> Just upstreamHead
 
-  let getLocalCommits :: IO [Text]
+  let getLocalCommits :: IO [GitRevisionInfo]
       getLocalCommits =
-        case maybeUpstreamHead of
-          Nothing -> git ["rev-list", "HEAD"] -- FIXME
-          Just upstreamHead -> prettyCommitsBetween upstreamHead "HEAD"
+        commitsBetween maybeUpstreamHead "HEAD"
 
-  remoteCommits :: [Text] <-
+  remoteCommits :: [GitRevisionInfo] <-
     case maybeUpstreamHead of
       Nothing -> pure []
-      Just upstreamHead -> prettyCommitsBetween head upstreamHead
+      Just upstreamHead -> commitsBetween (Just head) upstreamHead
 
   pure
     Context
@@ -368,10 +366,10 @@ data Summary = Summary
   { branch :: Text,
     canUndo :: Bool,
     conflicts :: [Text],
-    localCommits :: [Text],
+    localCommits :: [GitRevisionInfo],
     mergeConflicts :: Bool,
     pushResult :: Maybe ExitCode,
-    remoteCommits :: [Text],
+    remoteCommits :: [GitRevisionInfo],
     upstream :: Text
   }
 
@@ -384,7 +382,7 @@ putSummary summary = do
         let colorize = if summary.mergeConflicts then Text.red else Text.green
         Just
           ( colorize (Text.italic ("  " <> summary.upstream <> " → " <> summary.branch)) :
-            map ("  " <>) summary.remoteCommits
+            map (("  " <>) . prettyGitRevisionInfo) summary.remoteCommits
           ),
       do
         guard (not (null summary.localCommits))
@@ -394,7 +392,7 @@ putSummary summary = do
                 _ -> Text.red
         Just
           ( colorize (Text.italic ("  " <> summary.branch <> " → " <> summary.upstream)) :
-            map ("  " <>) summary.localCommits
+            map (("  " <>) . prettyGitRevisionInfo) summary.localCommits
           ),
       do
         guard (not (null summary.conflicts))
@@ -518,12 +516,27 @@ data GitRevisionInfo = GitRevisionInfo
   { author :: Text,
     date :: Text,
     hash :: Text,
+    shorthash :: Text,
     subject :: Text
   }
+  deriving stock (Show)
 
-prettyCommitsBetween :: Text -> Text -> IO [Text]
-prettyCommitsBetween commit1 commit2 =
-  if commit1 == commit2
+prettyGitRevisionInfo :: GitRevisionInfo -> Text
+prettyGitRevisionInfo info =
+  -- FIXME use builder
+  fold
+    [ Text.bold (Text.black info.shorthash),
+      " ",
+      Text.bold (Text.white info.subject),
+      " - ",
+      Text.italic (Text.white info.author),
+      " ",
+      Text.italic (Text.yellow info.date)
+    ]
+
+commitsBetween :: Maybe Text -> Text -> IO [GitRevisionInfo]
+commitsBetween commit1 commit2 =
+  if commit1 == Just commit2
     then pure []
     else do
       commits <-
@@ -532,17 +545,22 @@ prettyCommitsBetween commit1 commit2 =
           [ "rev-list",
             "--color=always",
             "--date=human",
-            "--format=format:%C(bold black)%h%C(reset) %C(bold white)%s%C(reset) – %C(italic white)%an%C(reset) %C(italic yellow)%ad%C(reset)",
+            "--format=format:%an\xFEFF%ad\xFEFF%H\xFEFF%h\xFEFF%s",
             "--max-count=10",
-            commit1 <> ".." <> commit2
+            maybe id (\c1 c2 -> c1 <> ".." <> c2) commit1 commit2
           ]
-      pure (dropEvens commits)
+      pure (map parseRevisionInfo (dropEvens commits))
   where
     -- git rev-list with a custom format prefixes every commit with a redundant line :|
     dropEvens :: [a] -> [a]
     dropEvens = \case
       _ : x : xs -> x : dropEvens xs
       xs -> xs
+    parseRevisionInfo :: Text -> GitRevisionInfo
+    parseRevisionInfo line =
+      case Text.split (== '\xFEFF') line of
+        [author, date, hash, shorthash, subject] -> GitRevisionInfo {author, date, hash, shorthash, subject}
+        _ -> error (Text.unpack line)
 
 data GitVersion
   = GitVersion Int Int Int

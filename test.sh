@@ -231,7 +231,7 @@ echo two >> two.txt
 git commit --all --message two >/dev/null || exit 1
 local0=$(git rev-parse feature)
 echo four > three.txt
-MIT_COMMIT_MESSAGE=four mit commit </dev/null || exit 1
+MIT_COMMIT_MESSAGE=four mit commit </dev/null >/dev/null || exit 1
 [ $local0 = $(git rev-parse feature^^) ] || exit 1
 [ $remote0 = $(git rev-parse origin/feature) ] || exit 1
 [ $remote0 = $(git rev-parse feature^2) ] || exit 1
