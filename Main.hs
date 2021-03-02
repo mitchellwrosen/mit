@@ -146,12 +146,12 @@ mitCommitWith context = do
       [] -> pure (False, False)
       _ -> do
         git_ ["reset", "--hard", "--quiet", "HEAD"]
-        git ["merge", "--ff", "--quiet", context.upstream] >>= \case
-          False -> do
+        gitMerge context.branch context.upstream >>= \case
+          Left _commitConflicts -> do
             git_ ["merge", "--abort"]
             git_ ["stash", "apply", "--quiet", stash]
             pure (True, False)
-          True ->
+          Right () ->
             git ["stash", "apply", "--quiet", stash] >>= \case
               False -> do
                 git_ ["reset", "--hard", "--quiet", context.head]
@@ -166,7 +166,12 @@ mitCommitWith context = do
     if conflicts1 || conflicts2
       then do
         unless commitResult (git_ ["reset", "--hard", "--quiet", "HEAD"])
-        (,) <$> gitMerge context.upstream <*> gitApplyStash stash
+        mergeConflicts <-
+          gitMerge context.branch context.upstream >>= \case
+            Left commitConflicts -> commitConflicts
+            Right () -> pure []
+        stashConflicts <- gitApplyStash stash
+        pure (mergeConflicts, stashConflicts)
       else pure ([], [])
 
   localCommits :: [GitRevisionInfo] <-
@@ -237,7 +242,11 @@ mitSyncWith context = do
   mergeConflicts :: Maybe [Text] <-
     case context.remoteCommits of
       [] -> pure Nothing
-      _ -> Just <$> gitMerge context.upstream
+      _ ->
+        fmap Just do
+          gitMerge context.branch context.upstream >>= \case
+            Left commitConflicts -> commitConflicts
+            Right () -> pure []
 
   localCommits :: [GitRevisionInfo] <-
     context.getLocalCommits
@@ -493,16 +502,33 @@ gitDiff = do
     True -> NoDifferences
 
 -- FIXME document what this does
-gitMerge :: Text -> IO [Text]
-gitMerge target = do
-  git ["merge", "--ff", "--quiet", target] >>= \case
-    False -> do
-      conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
-      git_ ["add", "--all"]
-      -- TODO better commit message than the default
-      git_ ["commit", "--no-edit", "--quiet"]
-      pure conflicts
-    True -> pure []
+gitMerge :: Text -> Text -> IO (Either (IO [Text]) ())
+gitMerge me target = do
+  git ["merge", "--ff", "--no-commit", "--quiet", target] >>= \case
+    False ->
+      (pure . Left) do
+        conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
+        git_ ["add", "--all"]
+        git_ ["commit", "--no-edit", "--quiet", "--message", mergeMessage conflicts]
+        pure conflicts
+    True -> do
+      whenM gitMergeInProgress (git_ ["commit", "--message", mergeMessage []])
+      pure (Right ())
+  where
+    mergeMessage :: [Text] -> Text
+    mergeMessage conflicts =
+      -- FIXME use builder
+      fold
+        [ "⅄",
+          if null conflicts then "" else "\x0338",
+          " ",
+          target,
+          " → ",
+          me,
+          if null conflicts
+            then ""
+            else " (conflicts)\n\nConflicting files:\n" <> Text.intercalate "\n" (map ("  " <>) conflicts)
+        ]
 
 gitMergeInProgress :: IO Bool
 gitMergeInProgress =
