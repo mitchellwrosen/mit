@@ -137,14 +137,25 @@ mitCommit = do
     Differences -> mitCommitWith context
     NoDifferences -> mitSyncWith context -- n.b. not covered by tests (would be dupes of sync tests)
 
+-- FIXME commit first, then merge?
 mitCommitWith :: Context -> IO ()
 mitCommitWith context = do
+  maybeUpstreamHead :: Maybe Text <-
+    git ["rev-parse", "refs/remotes/" <> context.upstream] <&> \case
+      Left _ -> Nothing
+      Right upstreamHead -> Just upstreamHead
+
+  remoteCommits :: [GitRevisionInfo] <-
+    case maybeUpstreamHead of
+      Nothing -> pure []
+      Just upstreamHead -> commitsBetween (Just context.head) upstreamHead
+
   stash :: Text <-
     git ["stash", "create"]
 
   -- FIXME kinda clean this up
   (conflicts1, conflicts2) <-
-    case context.remoteCommits of
+    case remoteCommits of
       [] -> pure (False, False)
       _ -> do
         git_ ["reset", "--hard", "--quiet", "HEAD"]
@@ -177,7 +188,7 @@ mitCommitWith context = do
       else pure ([], [])
 
   localCommits :: [GitRevisionInfo] <-
-    context.getLocalCommits
+    commitsBetween maybeUpstreamHead "HEAD"
 
   pushResult :: Maybe ExitCode <-
     if not context.fetchFailed -- if fetch failed, assume we're offline
@@ -217,7 +228,7 @@ mitCommitWith context = do
         conflicts = List.nub (stashConflicts ++ mergeConflicts),
         syncs =
           [ Sync
-              { commits = context.remoteCommits,
+              { commits = remoteCommits,
                 source = context.upstream,
                 success =
                   (not conflicts1 && (not conflicts2 || commitResult))
@@ -235,8 +246,8 @@ mitCommitWith context = do
 
 mitMerge :: Text -> IO ()
 mitMerge target = do
-  -- FIXME the entire context isn't needed, e.g. remoteCommits
-  context <- makeContext
+  context :: Context <-
+    makeContext
 
   maybeTargetCommit :: Maybe Text <-
     git ["rev-parse", target] <&> \case
@@ -299,13 +310,23 @@ mitSync = do
 
 mitSyncWith :: Context -> IO ()
 mitSyncWith context = do
+  maybeUpstreamHead :: Maybe Text <-
+    git ["rev-parse", "refs/remotes/" <> context.upstream] <&> \case
+      Left _ -> Nothing
+      Right upstreamHead -> Just upstreamHead
+
+  remoteCommits :: [GitRevisionInfo] <-
+    case maybeUpstreamHead of
+      Nothing -> pure []
+      Just upstreamHead -> commitsBetween (Just context.head) upstreamHead
+
   maybeStash :: Maybe Text <-
-    case (context.remoteCommits, context.dirty) of
+    case (remoteCommits, context.dirty) of
       (_ : _, Differences) -> Just <$> gitStash
       _ -> pure Nothing
 
   mergeConflicts :: Maybe [Text] <-
-    case context.remoteCommits of
+    case remoteCommits of
       [] -> pure Nothing
       _ ->
         fmap Just do
@@ -314,7 +335,7 @@ mitSyncWith context = do
             Right () -> pure []
 
   localCommits :: [GitRevisionInfo] <-
-    context.getLocalCommits
+    commitsBetween maybeUpstreamHead "HEAD"
 
   stashConflicts :: [Text] <-
     case maybeStash of
@@ -348,7 +369,7 @@ mitSyncWith context = do
         conflicts = List.nub (stashConflicts ++ fromMaybe [] mergeConflicts),
         syncs =
           [ Sync
-              { commits = context.remoteCommits,
+              { commits = remoteCommits,
                 source = context.upstream,
                 success = maybe True null mergeConflicts,
                 target = context.branch
@@ -392,10 +413,7 @@ data Context = Context
     branch64 :: Text,
     dirty :: DiffResult,
     fetchFailed :: Bool,
-    getLocalCommits :: IO [GitRevisionInfo],
     head :: Text,
-    maybeUpstreamHead :: Maybe Text,
-    remoteCommits :: [GitRevisionInfo],
     upstream :: Text
   }
 
@@ -417,62 +435,14 @@ makeContext = do
   fetchFailed :: Bool <-
     not <$> git ["fetch", "--quiet", "origin"]
 
-  maybeUpstreamHead :: Maybe Text <-
-    git ["rev-parse", "refs/remotes/" <> upstream] <&> \case
-      Left _ -> Nothing
-      Right upstreamHead -> Just upstreamHead
-
-  let getLocalCommits :: IO [GitRevisionInfo]
-      getLocalCommits =
-        commitsBetween maybeUpstreamHead "HEAD"
-
-  remoteCommits :: [GitRevisionInfo] <-
-    case maybeUpstreamHead of
-      Nothing -> pure []
-      Just upstreamHead -> commitsBetween (Just head) upstreamHead
-
   pure
     Context
       { branch,
         branch64 = Text.encodeBase64 branch,
         dirty,
         fetchFailed,
-        getLocalCommits,
         head,
-        maybeUpstreamHead,
-        remoteCommits,
         upstream
-      }
-
-data SyncContext = SyncContext
-  { context :: Context,
-    getLocalCommits :: IO [GitRevisionInfo],
-    maybeUpstreamHead :: Maybe Text,
-    remoteCommits :: [GitRevisionInfo]
-  }
-
-makeSyncContext :: Context -> IO SyncContext
-makeSyncContext context = do
-  maybeUpstreamHead :: Maybe Text <-
-    git ["rev-parse", "refs/remotes/" <> context.upstream] <&> \case
-      Left _ -> Nothing
-      Right upstreamHead -> Just upstreamHead
-
-  let getLocalCommits :: IO [GitRevisionInfo]
-      getLocalCommits =
-        commitsBetween maybeUpstreamHead "HEAD"
-
-  remoteCommits :: [GitRevisionInfo] <-
-    case maybeUpstreamHead of
-      Nothing -> pure []
-      Just upstreamHead -> commitsBetween (Just context.head) upstreamHead
-
-  pure
-    SyncContext
-      { context,
-        getLocalCommits,
-        maybeUpstreamHead,
-        remoteCommits
       }
 
 data Summary = Summary
