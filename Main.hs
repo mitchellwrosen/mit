@@ -111,7 +111,7 @@ mitBranch branch = do
               git_ ["branch", "--no-track", branch]
               git_ ["switch", "--quiet", branch]
 
-              _fetchResult :: ExitCode <-
+              _fetchResult :: Bool <-
                 git ["fetch", "--quiet", "origin"]
 
               whenM (git ["rev-parse", "--quiet", "--verify", "refs/remotes/" <> upstream]) do
@@ -138,6 +138,7 @@ mitCommit = do
     NoDifferences -> mitSyncWith context -- n.b. not covered by tests (would be dupes of sync tests)
 
 -- FIXME commit first, then merge?
+-- FIXME call the merge with upstream something else?
 mitCommitWith :: Context -> IO ()
 mitCommitWith context = do
   maybeUpstreamHead :: Maybe Text <-
@@ -145,7 +146,7 @@ mitCommitWith context = do
       Left _ -> Nothing
       Right upstreamHead -> Just upstreamHead
 
-  remoteCommits :: [GitRevisionInfo] <-
+  remoteCommits :: [GitCommitInfo] <-
     case maybeUpstreamHead of
       Nothing -> pure []
       Just upstreamHead -> commitsBetween (Just context.head) upstreamHead
@@ -187,39 +188,41 @@ mitCommitWith context = do
         pure (mergeConflicts, stashConflicts)
       else pure ([], [])
 
-  localCommits :: [GitRevisionInfo] <-
+  localCommits :: [GitCommitInfo] <-
     commitsBetween maybeUpstreamHead "HEAD"
 
-  pushResult :: Maybe ExitCode <-
+  pushResult :: Bool <-
     if not context.fetchFailed -- if fetch failed, assume we're offline
       && null mergeConflicts -- we don't want to push a local broken merge bubble
       && (null stashConflicts || not commitResult) -- stash conflicts are ok if we aborted the commit
       && not (null localCommits) -- is there even anything to push?
-      then Just <$> gitPush context.branch
-      else pure Nothing
+      then gitPush context.branch
+      else pure False
 
   canUndo :: Bool <-
-    case (pushResult, commitResult) of
-      (Just ExitSuccess, False) -> do
-        deleteUndoFile context.branch64
-        pure False
-      (Just ExitSuccess, True) -> do
-        case localCommits of
-          [_] -> do
-            -- FIXME this call wouldn't be necessary if we don't pretty-print local commits right away
-            head <- git ["rev-parse", "HEAD"]
-            recordUndoFile context.branch64 [Revert head, Apply stash]
-            pure True
-          _ -> do
-            deleteUndoFile context.branch64
-            pure False
-      _ -> do
+    case pushResult of
+      False -> do
         head <- git ["rev-parse", "HEAD"]
-        if head == context.head
-          then pure False
-          else do
+        case head == context.head of
+          False -> do
             recordUndoFile context.branch64 [Reset context.head, Apply stash]
             pure True
+          True -> pure False
+      True ->
+        case commitResult of
+          False -> do
+            deleteUndoFile context.branch64
+            pure False
+          True ->
+            case localCommits of
+              [_] -> do
+                -- FIXME this call wouldn't be necessary if we don't pretty-print local commits right away
+                head <- git ["rev-parse", "HEAD"]
+                recordUndoFile context.branch64 [Revert head, Apply stash]
+                pure True
+              _ -> do
+                deleteUndoFile context.branch64
+                pure False
 
   putSummary
     Summary
@@ -238,7 +241,7 @@ mitCommitWith context = do
             Sync
               { commits = localCommits,
                 source = context.branch,
-                success = pushResult == Just ExitSuccess,
+                success = pushResult,
                 target = context.upstream
               }
           ]
@@ -254,7 +257,7 @@ mitMerge target = do
       Left _ -> Nothing
       Right targetCommit -> Just targetCommit
 
-  targetCommits :: [GitRevisionInfo] <-
+  targetCommits :: [GitCommitInfo] <-
     case maybeTargetCommit of
       Nothing -> pure []
       Just targetCommit -> commitsBetween (Just context.head) targetCommit
@@ -315,7 +318,7 @@ mitSyncWith context = do
       Left _ -> Nothing
       Right upstreamHead -> Just upstreamHead
 
-  remoteCommits :: [GitRevisionInfo] <-
+  remoteCommits :: [GitCommitInfo] <-
     case maybeUpstreamHead of
       Nothing -> pure []
       Just upstreamHead -> commitsBetween (Just context.head) upstreamHead
@@ -334,7 +337,7 @@ mitSyncWith context = do
             Left commitConflicts -> commitConflicts
             Right () -> pure []
 
-  localCommits :: [GitRevisionInfo] <-
+  localCommits :: [GitCommitInfo] <-
     commitsBetween maybeUpstreamHead "HEAD"
 
   stashConflicts :: [Text] <-
@@ -342,7 +345,7 @@ mitSyncWith context = do
       Nothing -> pure []
       Just stash -> gitApplyStash stash
 
-  pushResult :: Maybe ExitCode <-
+  pushResult :: Maybe Bool <-
     if not context.fetchFailed -- if fetch failed, assume we're offline
       && null (fromMaybe [] mergeConflicts) -- we don't want to push a local broken merge bubble
       && not (null localCommits) -- is there even anything to push?
@@ -351,7 +354,7 @@ mitSyncWith context = do
 
   canUndo :: Bool <-
     case pushResult of
-      Just ExitSuccess -> do
+      Just True -> do
         deleteUndoFile context.branch64
         pure False
       _ -> do
@@ -377,7 +380,7 @@ mitSyncWith context = do
             Sync
               { commits = localCommits,
                 source = context.branch,
-                success = pushResult == Just ExitSuccess,
+                success = pushResult == Just True,
                 target = context.upstream
               }
           ]
@@ -453,7 +456,7 @@ data Summary = Summary
   }
 
 data Sync = Sync
-  { commits :: [GitRevisionInfo],
+  { commits :: [GitCommitInfo],
     source :: Text,
     success :: Bool,
     target :: Text
@@ -476,7 +479,7 @@ putSummary summary =
         then []
         else
           colorize (Text.italic ("  " <> sync.source <> " → " <> sync.target)) :
-          map (("  " <>) . prettyGitRevisionInfo) sync.commits
+          map (("  " <>) . prettyGitCommitInfo) sync.commits
             ++ [""]
       where
         colorize :: Text -> Text
@@ -611,11 +614,11 @@ gitMergeInProgress :: IO Bool
 gitMergeInProgress =
   not <$> git ["merge", "--quiet", "HEAD"]
 
-gitPush :: Text -> IO ExitCode
+gitPush :: Text -> IO Bool
 gitPush branch =
   git ["push", "--quiet", "--set-upstream", "origin", branch <> ":" <> branch]
 
-data GitRevisionInfo = GitRevisionInfo
+data GitCommitInfo = GitCommitInfo
   { author :: Text,
     date :: Text,
     hash :: Text,
@@ -624,8 +627,8 @@ data GitRevisionInfo = GitRevisionInfo
   }
   deriving stock (Show)
 
-prettyGitRevisionInfo :: GitRevisionInfo -> Text
-prettyGitRevisionInfo info =
+prettyGitCommitInfo :: GitCommitInfo -> Text
+prettyGitCommitInfo info =
   -- FIXME use builder
   fold
     [ Text.bold (Text.black info.shorthash),
@@ -637,7 +640,7 @@ prettyGitRevisionInfo info =
       Text.italic (Text.yellow info.date)
     ]
 
-commitsBetween :: Maybe Text -> Text -> IO [GitRevisionInfo]
+commitsBetween :: Maybe Text -> Text -> IO [GitCommitInfo]
 commitsBetween commit1 commit2 =
   if commit1 == Just commit2
     then pure []
@@ -652,17 +655,17 @@ commitsBetween commit1 commit2 =
             "--max-count=10",
             maybe id (\c1 c2 -> c1 <> ".." <> c2) commit1 commit2
           ]
-      pure (map parseRevisionInfo (dropEvens commits))
+      pure (map parseCommitInfo (dropEvens commits))
   where
     -- git rev-list with a custom format prefixes every commit with a redundant line :|
     dropEvens :: [a] -> [a]
     dropEvens = \case
       _ : x : xs -> x : dropEvens xs
       xs -> xs
-    parseRevisionInfo :: Text -> GitRevisionInfo
-    parseRevisionInfo line =
+    parseCommitInfo :: Text -> GitCommitInfo
+    parseCommitInfo line =
       case Text.split (== '\xFEFF') line of
-        [author, date, hash, shorthash, subject] -> GitRevisionInfo {author, date, hash, shorthash, subject}
+        [author, date, hash, shorthash, subject] -> GitCommitInfo {author, date, hash, shorthash, subject}
         _ -> error (Text.unpack line)
 
 data GitVersion
@@ -725,9 +728,6 @@ instance ProcessOutput Bool where
   fromProcessOutput _ _ = \case
     ExitFailure _ -> pure False
     ExitSuccess -> pure True
-
-instance ProcessOutput ExitCode where
-  fromProcessOutput _ _ = pure
 
 instance ProcessOutput Text where
   fromProcessOutput out _ code = do
