@@ -17,7 +17,7 @@ import Data.Text qualified as Text
 import Data.Text.ANSI qualified as Text
 import Data.Text.Encoding.Base64 qualified as Text
 import Data.Text.IO qualified as Text
-import System.Directory (doesDirectoryExist, removeFile, withCurrentDirectory)
+import System.Directory (doesDirectoryExist, doesFileExist, removeFile, withCurrentDirectory)
 import System.Environment (getArgs, lookupEnv)
 import System.Exit (ExitCode (..), exitFailure, exitWith)
 import System.IO (Handle, hIsEOF)
@@ -627,7 +627,7 @@ gitMerge me target = do
 
 gitMergeInProgress :: IO Bool
 gitMergeInProgress =
-  not <$> git ["merge", "--quiet", "HEAD"]
+  doesFileExist (Text.unpack (gitdir <> "/MERGE_HEAD"))
 
 gitPush :: Text -> IO Bool
 gitPush branch =
