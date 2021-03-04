@@ -42,7 +42,7 @@ main = do
     ["branch", branch] -> mitBranch (Text.pack branch)
     ["clone", parseGitRepo . Text.pack -> Just (url, name)] -> mitClone url name
     ["commit"] -> mitCommit
-    ["merge", branch] -> mitMerge (Text.pack branch) -- temporary
+    ["merge", branch] -> mitMerge (Text.pack branch) -- temporary?
     ["sync"] -> mitSync
     ["undo"] -> mitUndo
     _ ->
@@ -617,9 +617,7 @@ gitMerge me target = do
         [ "⅄",
           if null conflicts then "" else "\x0338",
           " ",
-          target,
-          " → ",
-          me,
+          if target == "origin/" <> me then me else target <> " → " <> me,
           if null conflicts
             then ""
             else " (conflicts)\n\nConflicting files:\n" <> Text.intercalate "\n" (map ("  " <>) conflicts)
