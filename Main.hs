@@ -253,12 +253,19 @@ mitCommitWith context = do
       }
 
 mitMerge :: Text -> IO ()
-mitMerge target = do
+mitMerge target0 = do
   dieIfMergeInProgress
   whenM gitExistUntrackedFiles dieIfBuggyGit
 
   context :: Context <-
     makeContext
+
+  -- When given 'mit merge foo', prefer merging 'origin/foo' over 'foo'
+  target :: Text <- do
+    let remote = "origin/" <> target0
+    git ["rev-parse", "--quiet", "--verify", remote] <&> \case
+      False -> target0
+      True -> remote
 
   maybeTargetCommit :: Maybe Text <-
     git ["rev-parse", target] <&> \case
@@ -617,11 +624,15 @@ gitMerge me target = do
         [ "⅄",
           if null conflicts then "" else "\x0338",
           " ",
-          if target == "origin/" <> me then me else target <> " → " <> me,
+          if target' == me then me else target' <> " → " <> me,
           if null conflicts
             then ""
             else " (conflicts)\n\nConflicting files:\n" <> Text.intercalate "\n" (map ("  " <>) conflicts)
         ]
+      where
+        target' :: Text
+        target' =
+          fromMaybe target (Text.stripPrefix "origin/" target)
 
 gitMergeInProgress :: IO Bool
 gitMergeInProgress =
