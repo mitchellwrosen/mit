@@ -29,9 +29,7 @@ import Prelude hiding (head)
 
 -- FIXME: nicer "git status" story. in particular the conflict markers in the commits after a merge are a bit
 -- ephemeral feeling
--- FIXME better feedback when exiting due to active merge, or perhaps just do the commit...?
 -- FIXME bail if active cherry-pick, active revert, active rebase, what else?
--- FIXME pushing a new branch lists too many commits and doesn't format them
 -- FIXME rev-list max 11, use ellipses after 10
 
 -- TODO mit init
@@ -63,14 +61,11 @@ dieIfBuggyGit = do
   version <- gitVersion
   case foldr (\(ver, err) acc -> if version < ver then (ver, err) : acc else acc) [] validations of
     [] -> pure ()
-    errors -> do
-      putLines $
+    errors ->
+      die $
         map
-          ( \(ver, err) ->
-              Text.red ("Prior to " <> Text.bold "git" <> " version " <> showGitVersion ver <> ", " <> err)
-          )
+          (\(ver, err) -> "Prior to " <> Text.bold "git" <> " version " <> showGitVersion ver <> ", " <> err)
           errors
-      exitFailure
   where
     validations :: [(GitVersion, Text)]
     validations =
@@ -87,6 +82,15 @@ dieIfBuggyGit = do
             <> "."
         )
       ]
+
+dieIfMergeInProgress :: IO ()
+dieIfMergeInProgress =
+  whenM gitMergeInProgress (die [Text.bold "git merge" <> " in progress."])
+
+die :: [Text] -> IO a
+die ss = do
+  Text.putStr (Text.red (Text.unlines ss))
+  exitFailure
 
 mitBranch :: Text -> IO ()
 mitBranch branch = do
@@ -131,7 +135,7 @@ mitClone url name =
 
 mitCommit :: IO ()
 mitCommit = do
-  whenM gitMergeInProgress exitFailure
+  dieIfMergeInProgress
   whenM gitExistUntrackedFiles dieIfBuggyGit
   context <- makeContext
   case context.dirty of
@@ -250,7 +254,7 @@ mitCommitWith context = do
 
 mitMerge :: Text -> IO ()
 mitMerge target = do
-  whenM gitMergeInProgress exitFailure
+  dieIfMergeInProgress
   whenM gitExistUntrackedFiles dieIfBuggyGit
 
   context :: Context <-
@@ -311,7 +315,7 @@ mitMerge target = do
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
 mitSync :: IO ()
 mitSync = do
-  whenM gitMergeInProgress exitFailure
+  dieIfMergeInProgress
   whenM gitExistUntrackedFiles dieIfBuggyGit
   context <- makeContext
   mitSyncWith context
