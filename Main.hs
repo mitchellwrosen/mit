@@ -40,7 +40,6 @@ import Prelude hiding (head)
 main :: IO ()
 main = do
   -- TODO fail if not in git repo
-  warnIfBuggyGit
   getArgs >>= \case
     ["branch", branch] -> mitBranch (Text.pack branch)
     ["clone", parseGitRepo . Text.pack -> Just (url, name)] -> mitClone url name
@@ -58,35 +57,36 @@ main = do
           "  mit sync",
           "  mit undo"
         ]
+
+dieIfBuggyGit :: IO ()
+dieIfBuggyGit = do
+  version <- gitVersion
+  case foldr (\(ver, err) acc -> if version < ver then (ver, err) : acc else acc) [] validations of
+    [] -> pure ()
+    errors -> do
+      putLines $
+        map
+          ( \(ver, err) ->
+              Text.red ("Prior to " <> Text.bold "git" <> " version " <> showGitVersion ver <> ", " <> err)
+          )
+          errors
+      exitFailure
   where
-    warnIfBuggyGit :: IO ()
-    warnIfBuggyGit = do
-      version <- gitVersion
-      case foldr (\(ver, warn) acc -> if version < ver then (ver, warn) : acc else acc) [] validations of
-        [] -> pure ()
-        warnings ->
-          putLines $
-            map
-              ( \(ver, warn) ->
-                  Text.yellow ("Prior to " <> Text.bold "git" <> " version " <> showGitVersion ver <> ", " <> warn)
-              )
-              warnings
-      where
-        validations :: [(GitVersion, Text)]
-        validations =
-          [ ( GitVersion 2 29 0,
-              Text.bold "git commit --patch"
-                <> " was broken for new files added with "
-                <> Text.bold "git add --intent-to-add"
-                <> "."
-            ),
-            ( GitVersion 2 30 1,
-              Text.bold "git stash create"
-                <> " was broken for new files added with "
-                <> Text.bold "git add --intent-to-add"
-                <> "."
-            )
-          ]
+    validations :: [(GitVersion, Text)]
+    validations =
+      [ ( GitVersion 2 29 0,
+          Text.bold "git commit --patch"
+            <> " was broken for new files added with "
+            <> Text.bold "git add --intent-to-add"
+            <> "."
+        ),
+        ( GitVersion 2 30 1,
+          Text.bold "git stash create"
+            <> " was broken for new files added with "
+            <> Text.bold "git add --intent-to-add"
+            <> "."
+        )
+      ]
 
 mitBranch :: Text -> IO ()
 mitBranch branch = do
@@ -132,6 +132,7 @@ mitClone url name =
 mitCommit :: IO ()
 mitCommit = do
   whenM gitMergeInProgress exitFailure
+  whenM gitExistUntrackedFiles dieIfBuggyGit
   context <- makeContext
   case context.dirty of
     Differences -> mitCommitWith context
@@ -249,6 +250,9 @@ mitCommitWith context = do
 
 mitMerge :: Text -> IO ()
 mitMerge target = do
+  whenM gitMergeInProgress exitFailure
+  whenM gitExistUntrackedFiles dieIfBuggyGit
+
   context :: Context <-
     makeContext
 
@@ -308,6 +312,7 @@ mitMerge target = do
 mitSync :: IO ()
 mitSync = do
   whenM gitMergeInProgress exitFailure
+  whenM gitExistUntrackedFiles dieIfBuggyGit
   context <- makeContext
   mitSyncWith context
 
@@ -561,6 +566,12 @@ gitCommit =
 gitCurrentBranch :: IO Text
 gitCurrentBranch =
   git ["branch", "--show-current"]
+
+-- | Do any untracked files exist?
+gitExistUntrackedFiles :: IO Bool
+gitExistUntrackedFiles = do
+  files :: [Text] <- git ["ls-files", "--exclude-standard", "--other"]
+  pure (not (null files))
 
 -- | Create a stash and blow away local changes (like 'git stash push')
 gitStash :: IO Text
