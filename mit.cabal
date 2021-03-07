@@ -6,6 +6,7 @@ executable mit
   build-depends:
     base,
     base64,
+    clock,
     directory,
     process,
     record-dot-preprocessor,
@@ -24,6 +25,7 @@ executable mit
     LambdaCase
     MultiParamTypeClasses
     NamedFieldPuns
+    NumericUnderscores
     OverloadedStrings
     ScopedTypeVariables
     TypeApplications

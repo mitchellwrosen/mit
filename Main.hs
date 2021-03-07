@@ -17,6 +17,7 @@ import Data.Text qualified as Text
 import Data.Text.ANSI qualified as Text
 import Data.Text.Encoding.Base64 qualified as Text
 import Data.Text.IO qualified as Text
+import System.Clock qualified as Clock
 import System.Directory (doesDirectoryExist, doesFileExist, removeFile, withCurrentDirectory)
 import System.Environment (getArgs, lookupEnv)
 import System.Exit (ExitCode (..), exitFailure, exitWith)
@@ -31,11 +32,14 @@ import Prelude hiding (head)
 -- ephemeral feeling
 -- FIXME bail if active cherry-pick, active revert, active rebase, what else?
 -- FIXME rev-list max 11, use ellipses after 10
+-- FIXME test file deleted by us/them conflict
 
 -- TODO mit init
 -- TODO mit delete-branch
 -- TODO tweak things to work with git < 2.30.1
 -- TODO rewrite mit commit algorithm in readme
+-- TODO git(hub,lab) flow or something?
+-- TODO 'mit branch' with dirty working directory - apply changes to new worktree?
 
 main :: IO ()
 main = do
@@ -163,22 +167,25 @@ mitCommitWith context = do
   remoteCommits :: [GitCommitInfo] <-
     case maybeUpstreamHead of
       Nothing -> pure []
-      Just upstreamHead -> commitsBetween (Just context.head) upstreamHead
+      Just upstreamHead -> gitCommitsBetween (Just context.head) upstreamHead
 
   localCommits0 :: [GitCommitInfo] <-
-    commitsBetween maybeUpstreamHead "HEAD"
+    gitCommitsBetween maybeUpstreamHead "HEAD"
 
-  -- FIXME actually make running 'mit commit' again work
   when (not (null remoteCommits) && null localCommits0) do
-    putLines
-      [ "",
-        "  " <> Text.italic context.branch <> " is not up to date.",
-        "",
-        "  Run " <> Text.bold (Text.blue "mit sync") <> "first, or run " <> Text.bold (Text.blue "mit commit")
-          <> " again to record a commit anyway.",
-        ""
-      ]
-    exitFailure
+    readCommitFile context.branch64 >>= \case
+      Just (hash, age) | hash == context.head && age < 10_000_000_000 -> pure ()
+      _ -> do
+        recordCommitFile context.branch64 context.head
+        putLines
+          [ "",
+            "  " <> Text.italic context.branch <> " is not up to date.",
+            "",
+            "  Run " <> Text.bold (Text.blue "mit sync") <> " first, or run " <> Text.bold (Text.blue "mit commit")
+              <> " again to record a commit anyway.",
+            ""
+          ]
+        exitFailure
 
   stash :: Text <-
     git ["stash", "create"]
@@ -186,10 +193,16 @@ mitCommitWith context = do
   commitResult :: Bool <-
     gitCommit
 
+  -- If the commit was aborted, reset the timer (allowing another 'mit commit' right away). Otherwise, delete the commit
+  -- file, because it's no longer needed.
+  case commitResult of
+    False -> recordCommitFile context.branch64 context.head
+    True -> deleteCommitFile context.branch64
+
   localCommits :: [GitCommitInfo] <-
     case commitResult of
       False -> pure localCommits0
-      True -> commitsBetween maybeUpstreamHead "HEAD"
+      True -> gitCommitsBetween maybeUpstreamHead "HEAD"
 
   pushResult :: Bool <-
     if not context.fetchFailed -- if fetch failed, assume we're offline
@@ -262,7 +275,7 @@ mitMerge target0 = do
   targetCommits :: [GitCommitInfo] <-
     case maybeTargetCommit of
       Nothing -> pure []
-      Just targetCommit -> commitsBetween (Just context.head) targetCommit
+      Just targetCommit -> gitCommitsBetween (Just context.head) targetCommit
 
   maybeStash :: Maybe Text <-
     case (targetCommits, context.dirty) of
@@ -307,7 +320,6 @@ mitMerge target0 = do
       }
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
--- FIXME don't push if any remote commits were applied locally
 mitSync :: IO ()
 mitSync = do
   dieIfNotInGitDir
@@ -327,7 +339,7 @@ mitSyncWith context = do
   remoteCommits :: [GitCommitInfo] <-
     case maybeUpstreamHead of
       Nothing -> pure []
-      Just upstreamHead -> commitsBetween (Just context.head) upstreamHead
+      Just upstreamHead -> gitCommitsBetween (Just context.head) upstreamHead
 
   maybeStash :: Maybe Text <-
     case (remoteCommits, context.dirty) of
@@ -344,7 +356,7 @@ mitSyncWith context = do
             Right () -> pure []
 
   localCommits :: [GitCommitInfo] <-
-    commitsBetween maybeUpstreamHead "HEAD"
+    gitCommitsBetween maybeUpstreamHead "HEAD"
 
   stashConflicts :: [Text] <-
     case maybeStash of
@@ -399,19 +411,15 @@ mitUndo = do
 
   branch <- gitCurrentBranch
   let branch64 = Text.encodeBase64 branch
-  let file = undofile branch64
-  try (Text.readFile file) >>= \case
-    Left (_ :: IOException) -> exitFailure
-    Right contents ->
-      case parseUndos contents of
-        Nothing -> throwIO (userError ("Corrupt undo file: " ++ file))
-        Just undos -> do
-          deleteUndoFile branch64
-          for_ undos \case
-            Apply commit -> git_ ["stash", "apply", "--quiet", commit]
-            Reset commit -> git_ ["reset", "--hard", "--quiet", commit]
-            Revert commit -> git_ ["revert", commit]
-          when (undosContainRevert undos) mitSync
+  readUndoFile branch64 >>= \case
+    Nothing -> exitFailure
+    Just undos -> do
+      deleteUndoFile branch64
+      for_ undos \case
+        Apply commit -> git_ ["stash", "apply", "--quiet", commit]
+        Reset commit -> git_ ["reset", "--hard", "--quiet", commit]
+        Revert commit -> git_ ["revert", commit]
+      when (undosContainRevert undos) mitSync
   where
     undosContainRevert :: [Undo] -> Bool
     undosContainRevert = \case
@@ -463,6 +471,7 @@ data Summary = Summary
     syncs :: [Sync]
   }
 
+-- FIXME add "gray" success for offline
 -- FIXME add "yellow" success for could-have-pushed-but-didnt?
 data Sync = Sync
   { commits :: [GitCommitInfo],
@@ -500,18 +509,48 @@ putSummary summary =
         then ["  Run " <> Text.bold (Text.blue "mit undo") <> " to undo this change.", ""]
         else []
 
-deleteUndoFile :: Text -> IO ()
-deleteUndoFile branch64 =
-  removeFile (undofile branch64) `catch` \(_ :: IOException) -> pure ()
+-- Commit file utils
 
-gitdir :: Text
-gitdir =
-  unsafePerformIO (git ["rev-parse", "--absolute-git-dir"])
-{-# NOINLINE gitdir #-}
+deleteCommitFile :: Text -> IO ()
+deleteCommitFile branch64 =
+  removeFile (commitfile branch64) `catch` \(_ :: IOException) -> pure ()
 
-undofile :: Text -> FilePath
-undofile branch64 =
-  Text.unpack (gitdir <> "/mit-" <> branch64)
+-- | Read the amount of time that has elapsed (in nanoseconds) since the commit file was created
+readCommitFile :: Text -> IO (Maybe (Text, Integer))
+readCommitFile branch64 = do
+  try (Text.readFile (commitfile branch64)) >>= \case
+    Left (_ :: IOException) -> pure Nothing
+    Right contents ->
+      case Text.split (== ',') contents of
+        [hash, text2int -> Just t0] -> do
+          t1 <- Clock.getTime Clock.Realtime
+          pure (Just (hash, Clock.toNanoSecs t1 - t0))
+        _ -> do
+          deleteCommitFile branch64
+          pure Nothing
+  where
+    -- FIXME make this faster
+    text2int :: Text -> Maybe Integer
+    text2int =
+      readMaybe . Text.unpack
+
+recordCommitFile :: Text -> Text -> IO ()
+recordCommitFile branch64 hash = do
+  now <- Clock.getTime Clock.Realtime
+  -- FIXME use builder
+  let contents = hash <> "," <> int2text (Clock.toNanoSecs now)
+  Text.writeFile (commitfile branch64) contents `catch` \(_ :: IOException) -> pure ()
+  where
+    -- FIXME make this faster
+    int2text :: Integer -> Text
+    int2text =
+      Text.pack . show
+
+commitfile :: Text -> FilePath
+commitfile branch64 =
+  Text.unpack (gitdir <> "/.mit-" <> branch64 <> "-commit")
+
+-- Undo file utils
 
 data Undo
   = Apply Text -- apply stash
@@ -540,10 +579,81 @@ parseUndos =
         ["revert", commit] -> Just (Revert commit)
         _ -> Nothing
 
+deleteUndoFile :: Text -> IO ()
+deleteUndoFile branch64 =
+  removeFile (undofile branch64) `catch` \(_ :: IOException) -> pure ()
+
+readUndoFile :: Text -> IO (Maybe [Undo])
+readUndoFile branch64 =
+  try (Text.readFile file) >>= \case
+    Left (_ :: IOException) -> pure Nothing
+    Right contents ->
+      case parseUndos contents of
+        Nothing -> do
+          when debug (putStrLn ("Corrupt undo file: " ++ file))
+          pure Nothing
+        Just undos -> pure (Just undos)
+  where
+    file :: FilePath
+    file =
+      undofile branch64
+
 -- Record a file for 'mit undo' to use, if invoked.
 recordUndoFile :: Text -> [Undo] -> IO ()
 recordUndoFile branch64 undos = do
-  Text.writeFile (undofile branch64) (showUndos undos)
+  Text.writeFile (undofile branch64) (showUndos undos) `catch` \(_ :: IOException) -> pure ()
+
+undofile :: Text -> FilePath
+undofile branch64 =
+  Text.unpack (gitdir <> "/.mit-" <> branch64)
+
+-- Globals
+
+debug :: Bool
+debug =
+  isJust (unsafePerformIO (lookupEnv "debug"))
+{-# NOINLINE debug #-}
+
+gitdir :: Text
+gitdir =
+  unsafePerformIO (git ["rev-parse", "--absolute-git-dir"])
+{-# NOINLINE gitdir #-}
+
+-- Git helpers
+
+data DiffResult
+  = Differences
+  | NoDifferences
+
+data GitCommitInfo = GitCommitInfo
+  { author :: Text,
+    date :: Text,
+    hash :: Text,
+    shorthash :: Text,
+    subject :: Text
+  }
+  deriving stock (Show)
+
+prettyGitCommitInfo :: GitCommitInfo -> Text
+prettyGitCommitInfo info =
+  -- FIXME use builder
+  fold
+    [ Text.bold (Text.black info.shorthash),
+      " ",
+      Text.bold (Text.white info.subject),
+      " - ",
+      Text.italic (Text.white info.author),
+      " ",
+      Text.italic (Text.yellow info.date)
+    ]
+
+data GitVersion
+  = GitVersion Int Int Int
+  deriving stock (Eq, Ord)
+
+showGitVersion :: GitVersion -> Text
+showGitVersion (GitVersion x y z) =
+  Text.pack (show x) <> "." <> Text.pack (show y) <> "." <> Text.pack (show z)
 
 -- | Apply stash, return conflicts.
 gitApplyStash :: Text -> IO [Text]
@@ -566,6 +676,34 @@ gitCommit =
         ExitFailure _ -> False
         ExitSuccess -> True
 
+gitCommitsBetween :: Maybe Text -> Text -> IO [GitCommitInfo]
+gitCommitsBetween commit1 commit2 =
+  if commit1 == Just commit2
+    then pure []
+    else do
+      commits <-
+        -- --first-parent seems desirable for topic branches
+        git
+          [ "rev-list",
+            "--color=always",
+            "--date=human",
+            "--format=format:%an\xFEFF%ad\xFEFF%H\xFEFF%h\xFEFF%s",
+            "--max-count=10",
+            maybe id (\c1 c2 -> c1 <> ".." <> c2) commit1 commit2
+          ]
+      pure (map parseCommitInfo (dropEvens commits))
+  where
+    -- git rev-list with a custom format prefixes every commit with a redundant line :|
+    dropEvens :: [a] -> [a]
+    dropEvens = \case
+      _ : x : xs -> x : dropEvens xs
+      xs -> xs
+    parseCommitInfo :: Text -> GitCommitInfo
+    parseCommitInfo line =
+      case Text.split (== '\xFEFF') line of
+        [author, date, hash, shorthash, subject] -> GitCommitInfo {author, date, hash, shorthash, subject}
+        _ -> error (Text.unpack line)
+
 -- | Get the current branch.
 gitCurrentBranch :: IO Text
 gitCurrentBranch =
@@ -576,17 +714,6 @@ gitExistUntrackedFiles :: IO Bool
 gitExistUntrackedFiles = do
   files :: [Text] <- git ["ls-files", "--exclude-standard", "--other"]
   pure (not (null files))
-
--- | Create a stash and blow away local changes (like 'git stash push')
-gitStash :: IO Text
-gitStash = do
-  stash <- git ["stash", "create"]
-  git_ ["reset", "--hard", "--quiet", "HEAD"]
-  pure stash
-
-data DiffResult
-  = Differences
-  | NoDifferences
 
 gitDiff :: IO DiffResult
 gitDiff = do
@@ -635,59 +762,12 @@ gitPush :: Text -> IO Bool
 gitPush branch =
   git ["push", "--quiet", "--set-upstream", "origin", branch <> ":" <> branch]
 
-data GitCommitInfo = GitCommitInfo
-  { author :: Text,
-    date :: Text,
-    hash :: Text,
-    shorthash :: Text,
-    subject :: Text
-  }
-  deriving stock (Show)
-
-prettyGitCommitInfo :: GitCommitInfo -> Text
-prettyGitCommitInfo info =
-  -- FIXME use builder
-  fold
-    [ Text.bold (Text.black info.shorthash),
-      " ",
-      Text.bold (Text.white info.subject),
-      " - ",
-      Text.italic (Text.white info.author),
-      " ",
-      Text.italic (Text.yellow info.date)
-    ]
-
-commitsBetween :: Maybe Text -> Text -> IO [GitCommitInfo]
-commitsBetween commit1 commit2 =
-  if commit1 == Just commit2
-    then pure []
-    else do
-      commits <-
-        -- --first-parent seems desirable for topic branches
-        git
-          [ "rev-list",
-            "--color=always",
-            "--date=human",
-            "--format=format:%an\xFEFF%ad\xFEFF%H\xFEFF%h\xFEFF%s",
-            "--max-count=10",
-            maybe id (\c1 c2 -> c1 <> ".." <> c2) commit1 commit2
-          ]
-      pure (map parseCommitInfo (dropEvens commits))
-  where
-    -- git rev-list with a custom format prefixes every commit with a redundant line :|
-    dropEvens :: [a] -> [a]
-    dropEvens = \case
-      _ : x : xs -> x : dropEvens xs
-      xs -> xs
-    parseCommitInfo :: Text -> GitCommitInfo
-    parseCommitInfo line =
-      case Text.split (== '\xFEFF') line of
-        [author, date, hash, shorthash, subject] -> GitCommitInfo {author, date, hash, shorthash, subject}
-        _ -> error (Text.unpack line)
-
-data GitVersion
-  = GitVersion Int Int Int
-  deriving stock (Eq, Ord)
+-- | Create a stash and blow away local changes (like 'git stash push')
+gitStash :: IO Text
+gitStash = do
+  stash <- git ["stash", "create"]
+  git_ ["reset", "--hard", "--quiet", "HEAD"]
+  pure stash
 
 gitVersion :: IO GitVersion
 gitVersion = do
@@ -699,10 +779,6 @@ gitVersion = do
     y <- readMaybe (Text.unpack sy)
     z <- readMaybe (Text.unpack sz)
     pure (pure (GitVersion x y z))
-
-showGitVersion :: GitVersion -> Text
-showGitVersion (GitVersion x y z) =
-  Text.pack (show x) <> "." <> Text.pack (show y) <> "." <> Text.pack (show z)
 
 -- /dir/one 0efd393c35 [oingo]         -> ("/dir/one", "0efd393c35", Just "oingo")
 -- /dir/two dc0c114266 (detached HEAD) -> ("/dir/two", "dc0c114266", Nothing)
@@ -720,11 +796,6 @@ gitWorktreeList = do
         stripBrackets :: Text -> Maybe Text
         stripBrackets =
           Text.stripPrefix "[" >=> Text.stripSuffix "]"
-
-debug :: Bool
-debug =
-  isJust (unsafePerformIO (lookupEnv "debug"))
-{-# NOINLINE debug #-}
 
 -- git@github.com:mitchellwrosen/mit.git -> Just ("git@github.com:mitchellwrosen/mit.git", "mit")
 parseGitRepo :: Text -> Maybe (Text, Text)
@@ -843,7 +914,7 @@ git2 args = do
       Text.unwords ("git" : map quoteText args) <> " : " <> Text.pack (show (stderrLines, exitCode))
   pure exitCode
 
---
+-- Mini prelude extensions
 
 (<&>) :: Functor f => f a -> (a -> b) -> f b
 (<&>) =

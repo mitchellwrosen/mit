@@ -124,10 +124,18 @@ mit undo >/dev/null && exit 1
 
 echo "mit commit: local behind remote"
 git reset --hard origin/feature^ >/dev/null || exit 1
-head=$(git rev-parse HEAD)
+local0=$(git rev-parse feature)
+remote0=$(git rev-parse origin/feature)
 echo two >> two.txt
 MIT_COMMIT_MESSAGE=two mit commit </dev/null >/dev/null && exit 1
+MIT_COMMIT_MESSAGE=two mit commit </dev/null >/dev/null || exit 1
+[ $local0 = $(git rev-parse feature^) ] || exit 1
+[ $remote0 = $(git rev-parse origin/feature) ] || exit 1
+mit undo >/dev/null || exit 1
+[ $local0 = $(git rev-parse feature) ] || exit 1
+[ "$(git diff --shortstat)" = " 1 file changed, 1 insertion(+)" ] || exit 1
 
+set +x
 echo "mit commit: local ahead of remote"
 git reset --hard origin/feature >/dev/null || exit 1
 head=$(git rev-parse HEAD)
