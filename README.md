@@ -4,12 +4,40 @@
 remote repository automatically, providing informative and visual feedback, and allowing the user to undo the last
 modification whenever possible.
 
-As compared to `git`, which encourages siloed, offline development until an acceptable level of quality and completeness
-is reached and commit history rewritten to show a pristine path, `mit` follows the general philosophy that development
+Compared to `git`, which encourages siloed, offline development until an acceptable level of quality and completeness is
+reached and commit history rewritten to show a pristine path, `mit` follows the general philosophy that development
 should be iterative and highly collaborative, checkins should occur frequently, history should be preserved accurately,
 and it is perfectly okay to have points in the history that do not even build, let alone work correctly.
 
+## The commands
+
+### `mit branch`
+
+TODO document this
+
+### `mit clone`
+
+TODO document this
+
+### `mit commit`
+
+TODO document this
+
+### `mit merge`
+
+TODO document this
+
+### `mit sync`
+
+TODO document this
+
+### `mit undo`
+
+TODO document this
+
 ## The full `mit commit` algorithm
+
+FIXME this is the old algorithm. Document the new one.
 
 `mit commit`, the flagship command that `mit` exposes, is semantically equivalent to something like
 `git pull && git commit && git push` - that is, whenever recording a commit locally, first synchronize with the remote

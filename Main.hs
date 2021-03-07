@@ -5,7 +5,7 @@
 module Main where
 
 import Control.Category ((>>>))
-import Control.Exception (AsyncException (UserInterrupt), IOException, catch, throwIO, try)
+import Control.Exception (AsyncException (UserInterrupt), IOException, catch, evaluate, throwIO, try)
 import Control.Monad
 import Data.Char
 import Data.Foldable (fold, for_)
@@ -33,11 +33,12 @@ import Prelude hiding (head)
 -- FIXME rev-list max 11, use ellipses after 10
 
 -- TODO mit init
+-- TODO mit delete-branch
 -- TODO tweak things to work with git < 2.30.1
+-- TODO rewrite mit commit algorithm in readme
 
 main :: IO ()
 main = do
-  -- TODO fail if not in git repo
   getArgs >>= \case
     ["branch", branch] -> mitBranch (Text.pack branch)
     ["clone", parseGitRepo . Text.pack -> Just (url, name)] -> mitClone url name
@@ -87,6 +88,12 @@ dieIfMergeInProgress :: IO ()
 dieIfMergeInProgress =
   whenM gitMergeInProgress (die [Text.bold "git merge" <> " in progress."])
 
+dieIfNotInGitDir :: IO ()
+dieIfNotInGitDir =
+  try (evaluate gitdir) >>= \case
+    Left (_ :: ExitCode) -> exitFailure
+    Right _ -> pure ()
+
 die :: [Text] -> IO a
 die ss = do
   Text.putStr (Text.red (Text.unlines ss))
@@ -94,6 +101,8 @@ die ss = do
 
 mitBranch :: Text -> IO ()
 mitBranch branch = do
+  dieIfNotInGitDir
+
   let upstream :: Text
       upstream =
         "origin/" <> branch
@@ -135,8 +144,10 @@ mitClone url name =
 
 mitCommit :: IO ()
 mitCommit = do
+  dieIfNotInGitDir
   dieIfMergeInProgress
   whenM gitExistUntrackedFiles dieIfBuggyGit
+
   context <- makeContext
   case context.dirty of
     Differences -> mitCommitWith context
@@ -231,6 +242,7 @@ mitCommitWith context = do
 
 mitMerge :: Text -> IO ()
 mitMerge target0 = do
+  dieIfNotInGitDir
   dieIfMergeInProgress
   whenM gitExistUntrackedFiles dieIfBuggyGit
 
@@ -297,10 +309,13 @@ mitMerge target0 = do
       }
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
+-- FIXME don't push if any remote commits were applied locally
 mitSync :: IO ()
 mitSync = do
+  dieIfNotInGitDir
   dieIfMergeInProgress
   whenM gitExistUntrackedFiles dieIfBuggyGit
+
   context <- makeContext
   mitSyncWith context
 
@@ -382,6 +397,8 @@ mitSyncWith context = do
 -- FIXME output what we just undid
 mitUndo :: IO ()
 mitUndo = do
+  dieIfNotInGitDir
+
   branch <- gitCurrentBranch
   let branch64 = Text.encodeBase64 branch
   let file = undofile branch64
