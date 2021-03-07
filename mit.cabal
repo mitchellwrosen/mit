@@ -24,6 +24,7 @@ executable mit
     ImportQualifiedPost
     LambdaCase
     MultiParamTypeClasses
+    MultiWayIf
     NamedFieldPuns
     NumericUnderscores
     OverloadedStrings

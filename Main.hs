@@ -204,23 +204,23 @@ mitCommitWith context = do
       False -> pure localCommits0
       True -> gitCommitsBetween maybeUpstreamHead "HEAD"
 
-  pushResult :: Bool <-
-    if not context.fetchFailed -- if fetch failed, assume we're offline
-      && null remoteCommits -- if remote was ahead, we were already forked, or just forked
-      && not (null localCommits) -- is there even anything to push?
-      then gitPush context.branch
-      else pure False
+  pushResult :: PushResult <-
+    if
+        | null localCommits -> pure (PushNotAttempted PushNoCommits)
+        | not (null remoteCommits) -> pure (PushNotAttempted PushWouldConflict)
+        | context.fetchFailed -> pure (PushNotAttempted PushOffline)
+        | otherwise -> PushAttempted <$> gitPush context.branch
 
-  canUndo :: Bool <-
+  canUndo :: Bool <- do
+    let pushDidntHappen = do
+          head <- git ["rev-parse", "HEAD"]
+          case head == context.head of
+            False -> do
+              recordUndoFile context.branch64 [Reset context.head, Apply stash]
+              pure True
+            True -> pure False
     case pushResult of
-      False -> do
-        head <- git ["rev-parse", "HEAD"]
-        case head == context.head of
-          False -> do
-            recordUndoFile context.branch64 [Reset context.head, Apply stash]
-            pure True
-          True -> pure False
-      True ->
+      PushAttempted True ->
         case commitResult of
           False -> do
             deleteUndoFile context.branch64
@@ -235,6 +235,8 @@ mitCommitWith context = do
               _ -> do
                 deleteUndoFile context.branch64
                 pure False
+      PushAttempted False -> pushDidntHappen
+      PushNotAttempted _ -> pushDidntHappen
 
   putSummary
     Summary
@@ -244,12 +246,33 @@ mitCommitWith context = do
         syncs =
           [ Sync
               { commits = localCommits,
-                result = if context.fetchFailed then Offline else if pushResult then Failure else Success,
+                result = pushResultToSyncResult pushResult,
                 source = context.branch,
                 target = context.upstream
               }
           ]
       }
+
+data PushResult
+  = PushAttempted Bool
+  | PushNotAttempted PushNotAttemptedReason
+
+data PushNotAttemptedReason
+  = PushCommitHasConflicts -- local commit has conflict markers
+  | PushNewCommits -- we just pulled remote commits; don't push in case there's something local to address
+  | PushNoCommits -- no commits to push
+  | PushOffline -- fetch failed, so we seem offline
+  | PushWouldConflict -- local history has forked, need to sync
+
+pushResultToSyncResult :: PushResult -> SyncResult
+pushResultToSyncResult = \case
+  PushAttempted True -> Success
+  PushAttempted False -> Failure
+  PushNotAttempted PushCommitHasConflicts -> Failure
+  PushNotAttempted PushNewCommits -> Pending
+  PushNotAttempted PushNoCommits -> Success -- doesnt matter, wont be shown
+  PushNotAttempted PushOffline -> Offline
+  PushNotAttempted PushWouldConflict -> Failure
 
 mitMerge :: Text -> IO ()
 mitMerge target0 = do
@@ -364,25 +387,32 @@ mitSyncWith context = do
       Nothing -> pure []
       Just stash -> gitApplyStash stash
 
-  pushResult :: Maybe Bool <-
-    if not context.fetchFailed -- if fetch failed, assume we're offline
-      && null remoteCommits -- don't push if we pulled anything, so it can be inspected locally
-      && not (null localCommits) -- is there even anything to push?
-      then Just <$> gitPush context.branch
-      else pure Nothing
+  pushResult :: PushResult <-
+    case localCommits of
+      [] -> pure (PushNotAttempted PushNoCommits)
+      _ ->
+        case mergeConflicts of
+          Nothing ->
+            case context.fetchFailed of
+              False -> PushAttempted <$> gitPush context.branch
+              True -> pure (PushNotAttempted PushOffline)
+          Just [] -> pure (PushNotAttempted PushNewCommits)
+          Just (_ : _) -> pure (PushNotAttempted PushWouldConflict)
 
-  canUndo :: Bool <-
+  canUndo :: Bool <- do
+    let pushDidntHappen = do
+          head2 <- git ["rev-parse", "HEAD"]
+          if context.head == head2
+            then pure False -- head didn't move; nothing to undo
+            else do
+              recordUndoFile context.branch64 (Reset context.head : maybeToList (Apply <$> maybeStash))
+              pure True
     case pushResult of
-      Just True -> do
+      PushAttempted True -> do
         deleteUndoFile context.branch64
         pure False
-      _ -> do
-        head2 <- git ["rev-parse", "HEAD"]
-        if context.head == head2
-          then pure False -- head didn't move; nothing to undo
-          else do
-            recordUndoFile context.branch64 (Reset context.head : maybeToList (Apply <$> maybeStash))
-            pure True
+      PushAttempted False -> pushDidntHappen
+      PushNotAttempted _ -> pushDidntHappen
 
   putSummary
     Summary
@@ -401,7 +431,7 @@ mitSyncWith context = do
               },
             Sync
               { commits = localCommits,
-                result = if context.fetchFailed then Offline else if pushResult == Just True then Success else Failure,
+                result = pushResultToSyncResult pushResult,
                 source = context.branch,
                 target = context.upstream
               }
@@ -462,7 +492,6 @@ data Summary = Summary
     syncs :: [Sync]
   }
 
--- FIXME add "yellow" success for could-have-pushed-but-didnt?
 data Sync = Sync
   { commits :: [GitCommitInfo],
     result :: SyncResult,
@@ -473,6 +502,7 @@ data Sync = Sync
 data SyncResult
   = Offline
   | Failure
+  | Pending
   | Success
 
 -- FIXME show some graph of where local/remote is at
@@ -500,6 +530,7 @@ putSummary summary =
           case sync.result of
             Offline -> Text.brightBlack
             Failure -> Text.red
+            Pending -> Text.yellow
             Success -> Text.green
     undoLines :: [Text]
     undoLines =
@@ -642,7 +673,7 @@ prettyGitCommitInfo info =
       " - ",
       Text.italic (Text.white info.author),
       " ",
-      Text.italic (Text.yellow info.date)
+      Text.italic (Text.yellow info.date) -- FIXME some other color, magenta?
     ]
 
 data GitVersion
