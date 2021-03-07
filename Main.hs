@@ -244,8 +244,8 @@ mitCommitWith context = do
         syncs =
           [ Sync
               { commits = localCommits,
+                result = if context.fetchFailed then Offline else if pushResult then Failure else Success,
                 source = context.branch,
-                success = pushResult,
                 target = context.upstream
               }
           ]
@@ -312,8 +312,11 @@ mitMerge target0 = do
         syncs =
           [ Sync
               { commits = targetCommits,
+                result =
+                  case mergeConflicts of
+                    Just (_ : _) -> Failure
+                    _ -> Success,
                 source = target,
-                success = maybe True null mergeConflicts,
                 target = context.branch
               }
           ]
@@ -325,9 +328,7 @@ mitSync = do
   dieIfNotInGitDir
   dieIfMergeInProgress
   whenM gitExistUntrackedFiles dieIfBuggyGit
-
-  context <- makeContext
-  mitSyncWith context
+  (m1 mitSyncWith) makeContext
 
 mitSyncWith :: Context -> IO ()
 mitSyncWith context = do
@@ -391,14 +392,17 @@ mitSyncWith context = do
         syncs =
           [ Sync
               { commits = remoteCommits,
+                result =
+                  case mergeConflicts of
+                    Just (_ : _) -> Failure
+                    _ -> Success,
                 source = context.upstream,
-                success = maybe True null mergeConflicts,
                 target = context.branch
               },
             Sync
               { commits = localCommits,
+                result = if context.fetchFailed then Offline else if pushResult == Just True then Success else Failure,
                 source = context.branch,
-                success = pushResult == Just True,
                 target = context.upstream
               }
           ]
@@ -409,8 +413,7 @@ mitUndo :: IO ()
 mitUndo = do
   dieIfNotInGitDir
 
-  branch <- gitCurrentBranch
-  let branch64 = Text.encodeBase64 branch
+  branch64 <- Text.encodeBase64 <$> gitCurrentBranch
   readUndoFile branch64 >>= \case
     Nothing -> exitFailure
     Just undos -> do
@@ -438,22 +441,10 @@ data Context = Context
 
 makeContext :: IO Context
 makeContext = do
-  branch :: Text <-
-    gitCurrentBranch
-
-  let upstream :: Text
-      upstream =
-        "origin/" <> branch
-
-  dirty :: DiffResult <-
-    gitDiff
-
-  head :: Text <-
-    git ["rev-parse", "HEAD"]
-
-  fetchFailed :: Bool <-
-    not <$> git ["fetch", "--quiet", "origin"]
-
+  branch <- gitCurrentBranch
+  dirty <- gitDiff
+  head <- git ["rev-parse", "HEAD"]
+  fetchFailed <- not <$> git ["fetch", "--quiet", "origin"]
   pure
     Context
       { branch,
@@ -461,7 +452,7 @@ makeContext = do
         dirty,
         fetchFailed,
         head,
-        upstream
+        upstream = "origin/" <> branch
       }
 
 data Summary = Summary
@@ -471,14 +462,18 @@ data Summary = Summary
     syncs :: [Sync]
   }
 
--- FIXME add "gray" success for offline
 -- FIXME add "yellow" success for could-have-pushed-but-didnt?
 data Sync = Sync
   { commits :: [GitCommitInfo],
+    result :: SyncResult,
     source :: Text,
-    success :: Bool,
     target :: Text
   }
+
+data SyncResult
+  = Offline
+  | Failure
+  | Success
 
 -- FIXME show some graph of where local/remote is at
 putSummary :: Summary -> IO ()
@@ -502,7 +497,10 @@ putSummary summary =
       where
         colorize :: Text -> Text
         colorize =
-          if sync.success then Text.green else Text.red
+          case sync.result of
+            Offline -> Text.brightBlack
+            Failure -> Text.red
+            Success -> Text.green
     undoLines :: [Text]
     undoLines =
       if summary.canUndo
@@ -929,6 +927,10 @@ drainTextHandle handle = do
             loop (line : acc)
           True -> pure (reverse acc)
   loop []
+
+m1 :: Monad m => (a -> m b) -> (m a -> m b)
+m1 =
+  (=<<)
 
 putLines :: [Text] -> IO ()
 putLines =
