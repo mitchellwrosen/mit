@@ -153,8 +153,6 @@ mitCommit = do
     Differences -> mitCommitWith context
     NoDifferences -> mitSyncWith context -- n.b. not covered by tests (would be dupes of sync tests)
 
--- FIXME commit first, then merge?
--- FIXME call the merge with upstream something else?
 mitCommitWith :: Context -> IO ()
 mitCommitWith context = do
   maybeUpstreamHead :: Maybe Text <-
@@ -355,7 +353,7 @@ mitSyncWith context = do
 
   pushResult :: Maybe Bool <-
     if not context.fetchFailed -- if fetch failed, assume we're offline
-      && null (fromMaybe [] mergeConflicts) -- we don't want to push a local broken merge bubble
+      && null remoteCommits -- don't push if we pulled anything, so it can be inspected locally
       && not (null localCommits) -- is there even anything to push?
       then Just <$> gitPush context.branch
       else pure Nothing
@@ -465,6 +463,7 @@ data Summary = Summary
     syncs :: [Sync]
   }
 
+-- FIXME add "yellow" success for could-have-pushed-but-didnt?
 data Sync = Sync
   { commits :: [GitCommitInfo],
     source :: Text,
