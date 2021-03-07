@@ -156,50 +156,35 @@ mitCommitWith context = do
       Nothing -> pure []
       Just upstreamHead -> commitsBetween (Just context.head) upstreamHead
 
+  localCommits0 :: [GitCommitInfo] <-
+    commitsBetween maybeUpstreamHead "HEAD"
+
+  -- FIXME actually make running 'mit commit' again work
+  when (not (null remoteCommits) && null localCommits0) do
+    putLines
+      [ "",
+        "  " <> Text.italic context.branch <> " is not up to date.",
+        "",
+        "  Run " <> Text.bold (Text.blue "mit sync") <> "first, or run " <> Text.bold (Text.blue "mit commit")
+          <> " again to record a commit anyway.",
+        ""
+      ]
+    exitFailure
+
   stash :: Text <-
     git ["stash", "create"]
-
-  -- FIXME kinda clean this up
-  (conflicts1, conflicts2) <-
-    case remoteCommits of
-      [] -> pure (False, False)
-      _ -> do
-        git_ ["reset", "--hard", "--quiet", "HEAD"]
-        gitMerge context.branch context.upstream >>= \case
-          Left _commitConflicts -> do
-            git_ ["merge", "--abort"]
-            git_ ["stash", "apply", "--quiet", stash]
-            pure (True, False)
-          Right () ->
-            git ["stash", "apply", "--quiet", stash] >>= \case
-              False -> do
-                git_ ["reset", "--hard", "--quiet", context.head]
-                git_ ["stash", "apply", "--quiet", stash]
-                pure (False, True)
-              True -> pure (False, False)
 
   commitResult :: Bool <-
     gitCommit
 
-  (mergeConflicts, stashConflicts) :: ([Text], [Text]) <-
-    if conflicts1 || conflicts2
-      then do
-        unless commitResult (git_ ["reset", "--hard", "--quiet", "HEAD"])
-        mergeConflicts <-
-          gitMerge context.branch context.upstream >>= \case
-            Left commitConflicts -> commitConflicts
-            Right () -> pure []
-        stashConflicts <- gitApplyStash stash
-        pure (mergeConflicts, stashConflicts)
-      else pure ([], [])
-
   localCommits :: [GitCommitInfo] <-
-    commitsBetween maybeUpstreamHead "HEAD"
+    case commitResult of
+      False -> pure localCommits0
+      True -> commitsBetween maybeUpstreamHead "HEAD"
 
   pushResult :: Bool <-
     if not context.fetchFailed -- if fetch failed, assume we're offline
-      && null mergeConflicts -- we don't want to push a local broken merge bubble
-      && (null stashConflicts || not commitResult) -- stash conflicts are ok if we aborted the commit
+      && null remoteCommits -- if remote was ahead, we were already forked, or just forked
       && not (null localCommits) -- is there even anything to push?
       then gitPush context.branch
       else pure False
@@ -233,17 +218,9 @@ mitCommitWith context = do
     Summary
       { branch = context.branch,
         canUndo,
-        conflicts = List.nub (stashConflicts ++ mergeConflicts),
+        conflicts = [],
         syncs =
           [ Sync
-              { commits = remoteCommits,
-                source = context.upstream,
-                success =
-                  (not conflicts1 && (not conflicts2 || commitResult))
-                    || (not commitResult && null mergeConflicts),
-                target = context.branch
-              },
-            Sync
               { commits = localCommits,
                 source = context.branch,
                 success = pushResult,

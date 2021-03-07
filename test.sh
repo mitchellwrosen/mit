@@ -122,52 +122,11 @@ mit commit </dev/null >/dev/null || exit 1
 [ "$(git diff --shortstat)" = " 1 file changed, 1 insertion(+)" ] || exit 1
 mit undo >/dev/null && exit 1
 
-echo "mit commit: local behind remote, commit doesnt conflict"
+echo "mit commit: local behind remote"
 git reset --hard origin/feature^ >/dev/null || exit 1
 head=$(git rev-parse HEAD)
 echo two >> two.txt
-MIT_COMMIT_MESSAGE=two mit commit </dev/null >/dev/null || exit 1
-[ $(git rev-parse feature) = $(git rev-parse origin/feature) ] || exit 1
-[ $head = "$(git rev-parse feature^^)" ] || exit 1
-mit undo >/dev/null || exit 1
-[ $(git rev-parse feature) = $(git rev-parse origin/feature) ] || exit 1
-[ $head = $(git rev-parse feature^^^) ] || exit 1
-[ "$(git diff --shortstat)" = " 1 file changed, 1 insertion(+)" ] || exit 1
-git reset --hard HEAD^^ >/dev/null || exit 1
-git push --force >/dev/null 2>&1 || exit 1
-
-echo "mit commit: local behind remote, commit doesnt conflict, commit aborted"
-git reset --hard origin/feature^ >/dev/null || exit 1
-head=$(git rev-parse HEAD)
-echo two >> two.txt
-mit commit </dev/null >/dev/null || exit 1
-[ $(git rev-parse feature) = $(git rev-parse origin/feature) ] || exit 1
-[ $head = $(git rev-parse feature^) ] || exit 1
-mit undo >/dev/null || exit 1
-[ $head = $(git rev-parse feature) ] || exit 1
-[ "$(git diff --shortstat)" = " 1 file changed, 1 insertion(+)" ] || exit 1
-
-echo "mit commit: local behind remote, commit conflicts"
-git reset --hard origin/feature^ >/dev/null || exit 1
-head=$(git rev-parse HEAD)
-echo four > three.txt
-MIT_COMMIT_MESSAGE=four mit commit </dev/null >/dev/null || exit 1
-[ $head = $(git rev-parse feature^^) ] || exit 1
-[ $(git rev-parse feature^2) = $(git rev-parse origin/feature) ] || exit 1
-mit undo >/dev/null || exit 1
-[ $head = $(git rev-parse feature) ] || exit 1
-[ "$(git diff --shortstat)" = " 1 file changed, 1 insertion(+)" ] || exit 1
-
-echo "mit commit: local behind remote, commit conflicts, commit aborted"
-git reset --hard origin/feature^ >/dev/null || exit 1
-head=$(git rev-parse HEAD)
-echo four > three.txt
-mit commit </dev/null >/dev/null || exit 1
-[ $(git rev-parse feature) = $(git rev-parse origin/feature) ] || exit 1
-[ $head = $(git rev-parse feature^) ] || exit 1
-mit undo >/dev/null || exit 1
-[ $head = $(git rev-parse feature) ] || exit 1
-[ "$(git diff --shortstat)" = " 1 file changed, 1 insertion(+)" ] || exit 1
+MIT_COMMIT_MESSAGE=two mit commit </dev/null >/dev/null && exit 1
 
 echo "mit commit: local ahead of remote"
 git reset --hard origin/feature >/dev/null || exit 1
@@ -193,7 +152,7 @@ mit undo >/dev/null && exit 1
 git reset --hard $head >/dev/null || exit 1
 git push --force >/dev/null 2>&1 || exit 1
 
-echo "mit commit: local diverged from remote (no conflicts), commit doesnt conflict"
+echo "mit commit: local diverged from remote"
 git reset --hard origin/feature^ >/dev/null || exit 1
 upstream0=$(git rev-parse origin/feature)
 echo two >> two.txt
@@ -201,80 +160,23 @@ git commit --all --message two >/dev/null || exit 1
 local0=$(git rev-parse feature)
 echo two >> two.txt
 MIT_COMMIT_MESSAGE=two mit commit </dev/null >/dev/null || exit 1
-[ $(git rev-parse feature) = $(git rev-parse origin/feature) ] || exit 1
-[ $local0 = $(git rev-parse HEAD^^) ] || exit 1
-[ $upstream0 = $(git rev-parse HEAD^^2) ] || exit 1
-mit undo >/dev/null && exit 1
-git reset --hard $upstream0 >/dev/null || exit 1
-git push --force >/dev/null 2>&1 || exit 1
-
-echo "mit commit: local diverged from remote (no conflicts), commit doesnt conflict, commit aborted"
-git reset --hard origin/feature^ >/dev/null || exit 1
-upstream0=$(git rev-parse origin/feature)
-echo two >> two.txt
-git commit --all --message two >/dev/null || exit 1
-local0=$(git rev-parse feature)
-echo two >> two.txt
-mit commit </dev/null >/dev/null || exit 1
-[ $(git rev-parse feature) = $(git rev-parse origin/feature) ] || exit 1
-[ $local0 = $(git rev-parse HEAD^) ] || exit 1
-[ $upstream0 = $(git rev-parse HEAD^2) ] || exit 1
-[ "$(git diff --shortstat)" = " 1 file changed, 1 insertion(+)" ] || exit 1
-mit undo >/dev/null && exit 1
-git reset --hard $upstream0 >/dev/null || exit 1
-git push --force >/dev/null 2>&1 || exit 1
-
-echo "mit commit: local diverged from remote (no conflicts), commit conflicts"
-git reset --hard origin/feature^ >/dev/null || exit 1
-remote0=$(git rev-parse origin/feature)
-echo two >> two.txt
-git commit --all --message two >/dev/null || exit 1
-local0=$(git rev-parse feature)
-echo four > three.txt
-MIT_COMMIT_MESSAGE=four mit commit </dev/null >/dev/null || exit 1
-[ $local0 = $(git rev-parse feature^^) ] || exit 1
-[ $remote0 = $(git rev-parse origin/feature) ] || exit 1
-[ $remote0 = $(git rev-parse feature^2) ] || exit 1
+[ $upstream0 = $(git rev-parse origin/feature) ] || exit 1
+[ $local0 = $(git rev-parse feature^) ] || exit 1
 mit undo >/dev/null || exit 1
 [ $local0 = $(git rev-parse feature) ] || exit 1
 [ "$(git diff --shortstat)" = " 1 file changed, 1 insertion(+)" ] || exit 1
 
-echo "mit commit: local diverged from remote (no conflicts), commit conflicts, commit aborted"
+echo "mit commit: local diverged from remote, commit aborted"
 git reset --hard origin/feature^ >/dev/null || exit 1
 upstream0=$(git rev-parse origin/feature)
 echo two >> two.txt
 git commit --all --message two >/dev/null || exit 1
 local0=$(git rev-parse feature)
-echo four > three.txt
-mit commit </dev/null >/dev/null || exit 1
-[ $(git rev-parse feature) = $(git rev-parse origin/feature) ] || exit 1
-[ $local0 = $(git rev-parse feature^) ] || exit 1
-[ $upstream0 = $(git rev-parse feature^2) ] || exit 1
-[ "$(git diff --shortstat)" = " 1 file changed, 5 insertions(+)" ] || exit 1
-mit undo >/dev/null && exit 1
-git reset --hard $upstream0 >/dev/null || exit 1
-git push --force >/dev/null 2>&1 || exit 1
-
-echo "mit commit: local diverged from remote (conflicts), commit doesnt conflict"
-git reset --hard origin/feature^ >/dev/null || exit 1
-remote0=$(git rev-parse origin/feature)
-echo four > three.txt
-git commit --all --message four >/dev/null || exit 1
-local0=$(git rev-parse feature)
 echo two >> two.txt
-MIT_COMMIT_MESSAGE=four mit commit </dev/null >/dev/null || exit 1
-remote1=$(git rev-parse origin/feature)
-[ $remote0 = $remote1 ] || exit 1
-[ $(git rev-parse feature^^) = $local0 ] || exit 1
-[ $(git rev-parse feature^2) = $remote0 ] || exit 1
-mit undo >/dev/null || exit 1
-[ $(git rev-parse feature) = $local0 ]
-[ $(git rev-parse origin/feature) = $remote0 ]
-[ "$(git diff --shortstat)" = " 1 file changed, 1 insertion(+)" ] || exit 1
-
-echo "TODO mit commit: local diverged from remote (conflicts), commit doesnt conflict, commit aborted"
-echo "TODO mit commit: local diverged from remote (conflicts), commit conflicts"
-echo "TODO mit commit: local diverged from remote (conflicts), commit conflicts, commit aborted"
+mit commit </dev/null >/dev/null || exit 1
+[ $upstream0 = $(git rev-parse origin/feature) ] || exit 1
+[ $local0 = $(git rev-parse feature) ] || exit 1
+mit undo >/dev/null && exit 1
 
 cd ../..
 rm -rf scrap
