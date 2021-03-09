@@ -40,6 +40,8 @@ import Prelude hiding (head)
 -- TODO rewrite mit commit algorithm in readme
 -- TODO git(hub,lab) flow or something?
 -- TODO 'mit branch' with dirty working directory - apply changes to new worktree?
+-- TODO undo in more cases?
+-- TODO recommend merging master if it conflicts
 
 main :: IO ()
 main = do
@@ -107,14 +109,6 @@ mitBranch :: Text -> IO ()
 mitBranch branch = do
   dieIfNotInGitDir
 
-  let upstream :: Text
-      upstream =
-        "origin/" <> branch
-
-  let worktreeDir :: Text
-      worktreeDir =
-        Text.dropWhileEnd (/= '/') gitdir <> branch
-
   unlessM (doesDirectoryExist (Text.unpack worktreeDir)) do
     worktrees :: [(Text, Text, Maybe Text)] <-
       gitWorktreeList
@@ -140,6 +134,14 @@ mitBranch branch = do
         unless (worktreeDir == dir) do
           Text.putStrLn ("Branch " <> Text.bold branch <> " is already checked out in " <> Text.bold dir)
           exitFailure
+  where
+    upstream :: Text
+    upstream =
+      "origin/" <> branch
+
+    worktreeDir :: Text
+    worktreeDir =
+      Text.dropWhileEnd (/= '/') gitdir <> branch
 
 mitClone :: Text -> Text -> IO ()
 mitClone url name =
@@ -351,7 +353,8 @@ mitSync = do
   dieIfNotInGitDir
   dieIfMergeInProgress
   whenM gitExistUntrackedFiles dieIfBuggyGit
-  (m1 mitSyncWith) makeContext
+  context <- makeContext
+  mitSyncWith context
 
 mitSyncWith :: Context -> IO ()
 mitSyncWith context = do
@@ -958,10 +961,6 @@ drainTextHandle handle = do
             loop (line : acc)
           True -> pure (reverse acc)
   loop []
-
-m1 :: Monad m => (a -> m b) -> (m a -> m b)
-m1 =
-  (=<<)
 
 putLines :: [Text] -> IO ()
 putLines =
