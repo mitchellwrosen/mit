@@ -1,4 +1,3 @@
-{-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fplugin=RecordDotPreprocessor #-}
 
@@ -10,14 +9,14 @@ import Control.Monad
 import Data.Char
 import Data.Foldable (fold, for_)
 import Data.Function
-import Data.List qualified as List
+import qualified Data.List as List
 import Data.Maybe
 import Data.Text (Text)
-import Data.Text qualified as Text
-import Data.Text.ANSI qualified as Text
-import Data.Text.Encoding.Base64 qualified as Text
-import Data.Text.IO qualified as Text
-import System.Clock qualified as Clock
+import qualified Data.Text as Text
+import qualified Data.Text.ANSI as Text
+import qualified Data.Text.Encoding.Base64 as Text
+import qualified Data.Text.IO as Text
+import qualified System.Clock as Clock
 import System.Directory (doesDirectoryExist, doesFileExist, removeFile, withCurrentDirectory)
 import System.Environment (getArgs, lookupEnv)
 import System.Exit (ExitCode (..), exitFailure, exitWith)
