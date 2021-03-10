@@ -2,6 +2,8 @@
 
 # FIXME use some tmp dir
 
+# FIXME write tests that hit all types of conflicts
+
 rm -rf scrap
 mkdir -p scrap/remote
 mkdir scrap/local

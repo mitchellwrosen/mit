@@ -127,8 +127,7 @@ mitBranch branch = do
               whenM (git ["rev-parse", "--quiet", "--verify", "refs/remotes/" <> upstream]) do
                 git_ ["reset", "--hard", "--quiet", upstream]
                 git_ ["branch", "--set-upstream-to", upstream]
-            True ->
-              git_ ["switch", "--quiet", branch]
+            True -> git_ ["switch", "--quiet", branch]
       Just (dir, _, _) ->
         unless (worktreeDir == dir) do
           Text.putStrLn ("Branch " <> Text.bold branch <> " is already checked out in " <> Text.bold dir)
@@ -189,7 +188,7 @@ mitCommitWith context = do
         exitFailure
 
   stash :: Text <-
-    git ["stash", "create"]
+    gitCreateStash
 
   commitResult :: Bool <-
     gitCommit
@@ -453,8 +452,12 @@ mitUndo = do
     Just undos -> do
       deleteUndoFile branch64
       for_ undos \case
-        Apply commit -> git_ ["stash", "apply", "--quiet", commit]
-        Reset commit -> git_ ["reset", "--hard", "--quiet", commit]
+        Apply commit -> do
+          -- This should never return conflicts
+          -- FIXME assert?
+          _conflicts <- gitApplyStash commit
+          pure ()
+        Reset commit -> gitResetHard commit
         Revert commit -> git_ ["revert", commit]
       when (undosContainRevert undos) mitSync
   where
@@ -739,13 +742,12 @@ showGitVersion (GitVersion x y z) =
 -- | Apply stash, return conflicts.
 gitApplyStash :: Text -> IO [GitConflict]
 gitApplyStash stash = do
-  git ["stash", "apply", "--quiet", stash] >>= \case
-    False -> do
-      conflicts <- gitConflicts
-      -- FIXME test what this does for conflicts
-      git_ ["reset", "--quiet"] -- unmerged (weird) -> unstaged (normal)
-      pure conflicts
-    True -> pure []
+  conflicts <-
+    git ["stash", "apply", "--quiet", stash] >>= \case
+      False -> gitConflicts
+      True -> pure []
+  gitUnstageChanges
+  pure conflicts
 
 gitCommit :: IO Bool
 gitCommit =
@@ -786,6 +788,13 @@ gitCommitsBetween commit1 commit2 =
         [author, date, hash, shorthash, subject] -> GitCommitInfo {author, date, hash, shorthash, subject}
         _ -> error (Text.unpack line)
 
+gitCreateStash :: IO Text
+gitCreateStash = do
+  git_ ["add", "--all"] -- it seems certain things (like renames), unless staged, cannot be stashed
+  stash <- git ["stash", "create"]
+  gitUnstageChanges
+  pure stash
+
 -- | Get the current branch.
 gitCurrentBranch :: IO Text
 gitCurrentBranch =
@@ -794,11 +803,7 @@ gitCurrentBranch =
 -- FIXME document this
 gitDiff :: IO DiffResult
 gitDiff = do
-  git_ ["reset", "--quiet"]
-  -- FIXME just warn rather than use --intent-to-add, if buggy git
-  when True do
-    untrackedFiles <- gitListUntrackedFiles
-    git_ ("add" : "--intent-to-add" : untrackedFiles)
+  gitUnstageChanges
   git ["diff", "--quiet"] <&> \case
     False -> Differences
     True -> NoDifferences
@@ -858,12 +863,24 @@ gitPush :: Text -> IO Bool
 gitPush branch =
   git ["push", "--quiet", "--set-upstream", "origin", branch <> ":" <> branch]
 
+-- | Blow away untracked files, and hard-reset to the given commit
+gitResetHard :: Text -> IO ()
+gitResetHard commit = do
+  git_ ["clean", "-d", "--force"]
+  git ["reset", "--hard", "--quiet", commit]
+
 -- | Create a stash and blow away local changes (like 'git stash push')
 gitStash :: IO Text
 gitStash = do
-  stash <- git ["stash", "create"]
-  git_ ["reset", "--hard", "--quiet", "HEAD"]
+  stash <- gitCreateStash
+  gitResetHard "HEAD"
   pure stash
+
+gitUnstageChanges :: IO ()
+gitUnstageChanges = do
+  git_ ["reset", "--quiet"]
+  untrackedFiles <- gitListUntrackedFiles
+  git_ ("add" : "--intent-to-add" : untrackedFiles)
 
 gitVersion :: IO GitVersion
 gitVersion = do
