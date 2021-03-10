@@ -306,7 +306,7 @@ mitMerge target0 = do
       (_ : _, Differences) -> Just <$> gitStash
       _ -> pure Nothing
 
-  mergeConflicts :: Maybe [Text] <-
+  mergeConflicts :: Maybe [GitConflict] <-
     case targetCommits of
       [] -> pure Nothing
       _ ->
@@ -315,7 +315,7 @@ mitMerge target0 = do
             Left commitConflicts -> commitConflicts
             Right () -> pure []
 
-  stashConflicts :: [Text] <-
+  stashConflicts :: [GitConflict] <-
     case maybeStash of
       Nothing -> pure []
       Just stash -> gitApplyStash stash
@@ -332,6 +332,7 @@ mitMerge target0 = do
     Summary
       { branch = context.branch,
         canUndo,
+        -- FIXME this is dubious, nub made more sense when conflicts were just filenames...
         conflicts = List.nub (stashConflicts ++ fromMaybe [] mergeConflicts),
         syncs =
           [ Sync
@@ -372,7 +373,7 @@ mitSyncWith context = do
       (_ : _, Differences) -> Just <$> gitStash
       _ -> pure Nothing
 
-  mergeConflicts :: Maybe [Text] <-
+  mergeConflicts :: Maybe [GitConflict] <-
     case remoteCommits of
       [] -> pure Nothing
       _ ->
@@ -384,7 +385,7 @@ mitSyncWith context = do
   localCommits :: [GitCommitInfo] <-
     gitCommitsBetween maybeUpstreamHead "HEAD"
 
-  stashConflicts :: [Text] <-
+  stashConflicts :: [GitConflict] <-
     case maybeStash of
       Nothing -> pure []
       Just stash -> gitApplyStash stash
@@ -420,6 +421,7 @@ mitSyncWith context = do
     Summary
       { branch = context.branch,
         canUndo,
+        -- FIXME this is dubious, nub made more sense when conflicts were just filenames...
         conflicts = List.nub (stashConflicts ++ fromMaybe [] mergeConflicts),
         syncs =
           [ Sync
@@ -490,7 +492,7 @@ makeContext = do
 data Summary = Summary
   { branch :: Text,
     canUndo :: Bool,
-    conflicts :: [Text],
+    conflicts :: [GitConflict],
     syncs :: [Sync]
   }
 
@@ -517,7 +519,9 @@ putSummary summary =
     conflictsLines =
       if null summary.conflicts
         then []
-        else "  The following files have conflicts." : map (("    " <>) . Text.red) summary.conflicts ++ [""]
+        else
+          "  The following files have conflicts." :
+          map (("    " <>) . Text.red . showGitConflict) summary.conflicts ++ [""]
     syncLines :: Sync -> [Text]
     syncLines sync =
       if null sync.commits
@@ -678,6 +682,52 @@ prettyGitCommitInfo info =
       Text.italic (Text.yellow info.date) -- FIXME some other color, magenta?
     ]
 
+data GitConflict
+  = GitConflict GitConflictXY Text
+  deriving stock (Eq)
+
+parseGitConflict :: Text -> Maybe GitConflict
+parseGitConflict line = do
+  [xy, name] <- Just (Text.words line)
+  GitConflict <$> parseGitConflictXY xy <*> Just name
+
+-- FIXME builder
+showGitConflict :: GitConflict -> Text
+showGitConflict (GitConflict xy name) =
+  name <> " (" <> showGitConflictXY xy <> ")"
+
+data GitConflictXY
+  = AA -- both added
+  | AU -- added by us
+  | DD -- both deleted
+  | DU -- deleted by us
+  | UA -- added by them
+  | UD -- deleted by them
+  | UU -- both modified
+  deriving stock (Eq)
+
+parseGitConflictXY :: Text -> Maybe GitConflictXY
+parseGitConflictXY = \case
+  "AA" -> Just AA
+  "AU" -> Just AU
+  "DD" -> Just DD
+  "DU" -> Just DU
+  "UA" -> Just UA
+  "UD" -> Just UD
+  "UU" -> Just UU
+  _ -> Nothing
+
+-- FIXME builder
+showGitConflictXY :: GitConflictXY -> Text
+showGitConflictXY = \case
+  AA -> "both added"
+  AU -> "added by us"
+  DD -> "both deleted"
+  DU -> "deleted by us"
+  UA -> "added by them"
+  UD -> "deleted by them"
+  UU -> "both modified"
+
 data GitVersion
   = GitVersion Int Int Int
   deriving stock (Eq, Ord)
@@ -687,11 +737,12 @@ showGitVersion (GitVersion x y z) =
   Text.pack (show x) <> "." <> Text.pack (show y) <> "." <> Text.pack (show z)
 
 -- | Apply stash, return conflicts.
-gitApplyStash :: Text -> IO [Text]
+gitApplyStash :: Text -> IO [GitConflict]
 gitApplyStash stash = do
   git ["stash", "apply", "--quiet", stash] >>= \case
     False -> do
-      conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
+      conflicts <- gitConflicts
+      -- FIXME test what this does for conflicts
       git_ ["reset", "--quiet"] -- unmerged (weird) -> unstaged (normal)
       pure conflicts
     True -> pure []
@@ -740,27 +791,39 @@ gitCurrentBranch :: IO Text
 gitCurrentBranch =
   git ["branch", "--show-current"]
 
--- | Do any untracked files exist?
-gitExistUntrackedFiles :: IO Bool
-gitExistUntrackedFiles = do
-  files :: [Text] <- git ["ls-files", "--exclude-standard", "--other"]
-  pure (not (null files))
-
+-- FIXME document this
 gitDiff :: IO DiffResult
 gitDiff = do
   git_ ["reset", "--quiet"]
-  git_ ["add", "--all", "--intent-to-add"]
+  -- FIXME just warn rather than use --intent-to-add, if buggy git
+  when True do
+    untrackedFiles <- gitListUntrackedFiles
+    git_ ("add" : "--intent-to-add" : untrackedFiles)
   git ["diff", "--quiet"] <&> \case
     False -> Differences
     True -> NoDifferences
 
+-- | Do any untracked files exist?
+gitExistUntrackedFiles :: IO Bool
+gitExistUntrackedFiles =
+  not . null <$> gitListUntrackedFiles
+
+gitConflicts :: IO [GitConflict]
+gitConflicts =
+  mapMaybe parseGitConflict <$> git ["status", "--no-renames", "--porcelain=v1"]
+
+-- | List all untracked files.
+gitListUntrackedFiles :: IO [Text]
+gitListUntrackedFiles =
+  git ["ls-files", "--exclude-standard", "--other"]
+
 -- FIXME document what this does
-gitMerge :: Text -> Text -> IO (Either (IO [Text]) ())
+gitMerge :: Text -> Text -> IO (Either (IO [GitConflict]) ())
 gitMerge me target = do
   git ["merge", "--ff", "--no-commit", "--quiet", target] >>= \case
     False ->
       (pure . Left) do
-        conflicts <- git ["diff", "--name-only", "--diff-filter=U"]
+        conflicts <- gitConflicts
         git_ ["add", "--all"]
         git_ ["commit", "--no-edit", "--quiet", "--message", mergeMessage conflicts]
         pure conflicts
@@ -768,7 +831,7 @@ gitMerge me target = do
       whenM gitMergeInProgress (git_ ["commit", "--message", mergeMessage []])
       pure (Right ())
   where
-    mergeMessage :: [Text] -> Text
+    mergeMessage :: [GitConflict] -> Text
     mergeMessage conflicts =
       -- FIXME use builder
       fold
@@ -778,7 +841,9 @@ gitMerge me target = do
           if target' == me then me else target' <> " → " <> me,
           if null conflicts
             then ""
-            else " (conflicts)\n\nConflicting files:\n" <> Text.intercalate "\n" (map ("  " <>) conflicts)
+            else
+              " (conflicts)\n\nConflicting files:\n"
+                <> Text.intercalate "\n" (map (("  " <>) . showGitConflict) conflicts)
         ]
       where
         target' :: Text
