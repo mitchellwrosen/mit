@@ -880,7 +880,7 @@ gitUnstageChanges :: IO ()
 gitUnstageChanges = do
   git_ ["reset"]
   untrackedFiles <- gitListUntrackedFiles
-  git_ ("add" : "--intent-to-add" : untrackedFiles)
+  unless (null untrackedFiles) (git_ ("add" : "--intent-to-add" : untrackedFiles))
 
 gitVersion :: IO GitVersion
 gitVersion = do
