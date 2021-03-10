@@ -978,11 +978,7 @@ git args = do
   exitCode <- waitForProcess processHandle
   stdoutLines <- drainTextHandle stdoutHandle
   stderrLines <- drainTextHandle stderrHandle
-  when debug do
-    Text.putStrLn . Text.brightBlack $
-      Text.unwords ("git" : map quoteText args)
-        <> " : "
-        <> Text.pack (show (stdoutLines, stderrLines, exitCode))
+  debugPrintGit args stdoutLines stderrLines exitCode
   fromProcessOutput stdoutLines stderrLines exitCode
 
 git_ :: [Text] -> IO ()
@@ -992,11 +988,6 @@ git_ =
 -- Yucky interactive/inherity variant (so 'git commit' can open an editor).
 git2 :: [Text] -> IO ExitCode
 git2 args = do
-  when debug do
-    let quote :: Text -> Text
-        quote s =
-          if Text.any isSpace s then "'" <> Text.replace "'" "\\'" s <> "'" else s
-    Text.putStrLn (Text.brightBlack (Text.unwords ("git" : map quote args)))
   (Nothing, Nothing, Just stderrHandle, processHandle) <-
     createProcess
       CreateProcess
@@ -1022,10 +1013,21 @@ git2 args = do
       UserInterrupt -> pure (ExitFailure (-130))
       exception -> throwIO exception
   stderrLines <- drainTextHandle stderrHandle
-  when debug do
-    Text.putStrLn . Text.brightBlack $
-      Text.unwords ("git" : map quoteText args) <> " : " <> Text.pack (show (stderrLines, exitCode))
+  debugPrintGit args [] stderrLines exitCode
   pure exitCode
+
+debugPrintGit :: [Text] -> [Text] -> [Text] -> ExitCode -> IO ()
+debugPrintGit args stdoutLines stderrLines exitCode =
+  when debug do
+    putLines do
+      Text.bold (Text.brightBlack (Text.unwords (marker <> " git" : map quoteText args)))
+        : map (Text.brightBlack . ("    " <>)) (stdoutLines ++ stderrLines)
+  where
+    marker :: Text
+    marker =
+      case exitCode of
+        ExitFailure _ -> "✗"
+        ExitSuccess -> "✓"
 
 -- Mini prelude extensions
 
