@@ -12,7 +12,7 @@ maintainer: Mitchell Rosen <mitchellwrosen@gmail.com>
 name: mit-3qvpPyAi6mH
 stability: experimental
 synopsis: A git wrapper with a streamlined UX
-version: 1
+version: 2
 
 executable mit
   build-depends:
