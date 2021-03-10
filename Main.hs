@@ -114,20 +114,20 @@ mitBranch branch = do
 
     case List.find (\(_, _, worktreeBranch) -> worktreeBranch == Just branch) worktrees of
       Nothing -> do
-        git_ ["worktree", "add", "--detach", "--quiet", worktreeDir]
+        git_ ["worktree", "add", "--detach", worktreeDir]
         withCurrentDirectory (Text.unpack worktreeDir) do
-          git ["rev-parse", "--quiet", "--verify", "refs/heads/" <> branch] >>= \case
+          git ["rev-parse", "--verify", "refs/heads/" <> branch] >>= \case
             False -> do
               git_ ["branch", "--no-track", branch]
-              git_ ["switch", "--quiet", branch]
+              git_ ["switch", branch]
 
               _fetchResult :: Bool <-
-                git ["fetch", "--quiet", "origin"]
+                git ["fetch", "origin"]
 
-              whenM (git ["rev-parse", "--quiet", "--verify", "refs/remotes/" <> upstream]) do
-                git_ ["reset", "--hard", "--quiet", upstream]
+              whenM (git ["rev-parse", "--verify", "refs/remotes/" <> upstream]) do
+                git_ ["reset", "--hard", upstream]
                 git_ ["branch", "--set-upstream-to", upstream]
-            True -> git_ ["switch", "--quiet", branch]
+            True -> git_ ["switch", branch]
       Just (dir, _, _) ->
         unless (worktreeDir == dir) do
           Text.putStrLn ("Branch " <> Text.bold branch <> " is already checked out in " <> Text.bold dir)
@@ -286,7 +286,7 @@ mitMerge target0 = do
   -- When given 'mit merge foo', prefer merging 'origin/foo' over 'foo'
   target :: Text <- do
     let remote = "origin/" <> target0
-    git ["rev-parse", "--quiet", "--verify", remote] <&> \case
+    git ["rev-parse", "--verify", remote] <&> \case
       False -> target0
       True -> remote
 
@@ -481,7 +481,7 @@ makeContext = do
   branch <- gitCurrentBranch
   dirty <- gitDiff
   head <- git ["rev-parse", "HEAD"]
-  fetchFailed <- not <$> git ["fetch", "--quiet", "origin"]
+  fetchFailed <- not <$> git ["fetch", "origin"]
   pure
     Context
       { branch,
@@ -743,7 +743,7 @@ showGitVersion (GitVersion x y z) =
 gitApplyStash :: Text -> IO [GitConflict]
 gitApplyStash stash = do
   conflicts <-
-    git ["stash", "apply", "--quiet", stash] >>= \case
+    git ["stash", "apply", stash] >>= \case
       False -> gitConflicts
       True -> pure []
   gitUnstageChanges
@@ -754,7 +754,7 @@ gitCommit =
   queryTerminal 0 >>= \case
     False -> do
       message <- lookupEnv "MIT_COMMIT_MESSAGE"
-      git ["commit", "--all", "--message", maybe "" Text.pack message, "--quiet"]
+      git ["commit", "--all", "--message", maybe "" Text.pack message]
     True ->
       git2 ["commit", "--patch", "--quiet"] <&> \case
         ExitFailure _ -> False
@@ -825,12 +825,12 @@ gitListUntrackedFiles =
 -- FIXME document what this does
 gitMerge :: Text -> Text -> IO (Either (IO [GitConflict]) ())
 gitMerge me target = do
-  git ["merge", "--ff", "--no-commit", "--quiet", target] >>= \case
+  git ["merge", "--ff", "--no-commit", target] >>= \case
     False ->
       (pure . Left) do
         conflicts <- gitConflicts
         git_ ["add", "--all"]
-        git_ ["commit", "--no-edit", "--quiet", "--message", mergeMessage conflicts]
+        git_ ["commit", "--no-edit", "--message", mergeMessage conflicts]
         pure conflicts
     True -> do
       whenM gitMergeInProgress (git_ ["commit", "--message", mergeMessage []])
@@ -861,13 +861,13 @@ gitMergeInProgress =
 
 gitPush :: Text -> IO Bool
 gitPush branch =
-  git ["push", "--quiet", "--set-upstream", "origin", branch <> ":" <> branch]
+  git ["push", "--set-upstream", "origin", branch <> ":" <> branch]
 
 -- | Blow away untracked files, and hard-reset to the given commit
 gitResetHard :: Text -> IO ()
 gitResetHard commit = do
   git_ ["clean", "-d", "--force"]
-  git ["reset", "--hard", "--quiet", commit]
+  git ["reset", "--hard", commit]
 
 -- | Create a stash and blow away local changes (like 'git stash push')
 gitStash :: IO Text
@@ -878,7 +878,7 @@ gitStash = do
 
 gitUnstageChanges :: IO ()
 gitUnstageChanges = do
-  git_ ["reset", "--quiet"]
+  git_ ["reset"]
   untrackedFiles <- gitListUntrackedFiles
   git_ ("add" : "--intent-to-add" : untrackedFiles)
 
