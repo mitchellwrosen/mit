@@ -290,54 +290,38 @@ mitMerge target0 = do
       False -> target0
       True -> remote
 
-  targetCommits :: [GitCommitInfo] <-
+  (targetCommits, mergeConflicts, stashConflicts, canUndo) <-
     git ["rev-parse", target] >>= \case
-      Left _ -> pure []
-      Right targetCommit -> gitCommitsBetween (Just context.head) targetCommit
-
-  -- FIXME clean this up
-  result :: Maybe (Maybe Text, [GitConflict]) <-
-    case targetCommits of
-      [] -> pure Nothing
-      _ -> do
-        maybeStash :: Maybe Text <-
-          case context.dirty of
-            Differences -> Just <$> gitStash
-            NoDifferences -> pure Nothing
-        mergeConflicts :: [GitConflict] <-
-          gitMerge' context.branch target
-        pure (Just (maybeStash, mergeConflicts))
-
-  conflicts :: [GitConflict] <-
-    case result of
-      Nothing -> pure []
-      Just (maybeStash, mergeConflicts) ->
-        case mergeConflicts of
-          [] ->
-            case maybeStash of
-              Nothing -> pure []
-              Just stash -> gitApplyStash stash
-          _ -> pure mergeConflicts
-
-  canUndo :: Bool <-
-    case result of
-      Nothing -> pure False
-      Just (maybeStash, _mergeConflicts) -> do
-        recordUndoFile context.branch64 (Reset context.head : maybeToList (Apply <$> maybeStash))
-        pure True
+      Left _ -> pure ([], [], [], False)
+      Right targetCommit ->
+        gitCommitsBetween (Just context.head) targetCommit >>= \case
+          [] -> pure ([], [], [], False)
+          targetCommits -> do
+            maybeStash <-
+              case context.dirty of
+                Differences -> Just <$> gitStash
+                NoDifferences -> pure Nothing
+            mergeConflicts <- gitMerge' context.branch target
+            stashConflicts <-
+              case mergeConflicts of
+                [] ->
+                  case maybeStash of
+                    Nothing -> pure []
+                    Just stash -> gitApplyStash stash
+                _ -> pure []
+            recordUndoFile context.branch64 (Reset context.head : maybeToList (Apply <$> maybeStash))
+            pure (targetCommits, mergeConflicts, stashConflicts, True)
 
   putSummary
     Summary
       { branch = context.branch,
         canUndo,
-        conflicts,
+        -- At most one of stash/merge conflicts is non-null, so (++)-ing then makes sense
+        conflicts = stashConflicts ++ mergeConflicts,
         syncs =
           [ Sync
               { commits = targetCommits,
-                result =
-                  case result of
-                    Just (_, _ : _) -> Failure
-                    _ -> Success,
+                result = if null mergeConflicts then Success else Failure,
                 source = target,
                 target = context.branch
               }
