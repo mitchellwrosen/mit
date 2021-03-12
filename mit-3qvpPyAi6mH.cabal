@@ -40,6 +40,7 @@ executable mit
     NumericUnderscores
     OverloadedStrings
     ScopedTypeVariables
+    TupleSections
     TypeApplications
     UndecidableInstances
     ViewPatterns

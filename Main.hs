@@ -290,40 +290,39 @@ mitMerge target0 = do
       False -> target0
       True -> remote
 
-  maybeTargetCommit :: Maybe Text <-
-    git ["rev-parse", target] <&> \case
-      Left _ -> Nothing
-      Right targetCommit -> Just targetCommit
-
   targetCommits :: [GitCommitInfo] <-
-    case maybeTargetCommit of
-      Nothing -> pure []
-      Just targetCommit -> gitCommitsBetween (Just context.head) targetCommit
+    git ["rev-parse", target] >>= \case
+      Left _ -> pure []
+      Right targetCommit -> gitCommitsBetween (Just context.head) targetCommit
 
-  maybeStash :: Maybe Text <-
-    case (targetCommits, context.dirty) of
-      (_ : _, Differences) -> Just <$> gitStash
-      _ -> pure Nothing
-
-  mergeConflicts :: Maybe [GitConflict] <-
+  -- FIXME clean this up
+  result :: Maybe (Maybe Text, [GitConflict]) <-
     case targetCommits of
       [] -> pure Nothing
-      _ ->
-        fmap Just do
-          gitMerge context.branch target >>= \case
-            Left commitConflicts -> commitConflicts
-            Right () -> pure []
+      _ -> do
+        maybeStash :: Maybe Text <-
+          case context.dirty of
+            Differences -> Just <$> gitStash
+            NoDifferences -> pure Nothing
+        mergeConflicts :: [GitConflict] <-
+          gitMerge' context.branch target
+        pure (Just (maybeStash, mergeConflicts))
 
-  stashConflicts :: [GitConflict] <-
-    case maybeStash of
+  conflicts :: [GitConflict] <-
+    case result of
       Nothing -> pure []
-      Just stash -> gitApplyStash stash
+      Just (maybeStash, mergeConflicts) ->
+        case mergeConflicts of
+          [] ->
+            case maybeStash of
+              Nothing -> pure []
+              Just stash -> gitApplyStash stash
+          _ -> pure mergeConflicts
 
-  canUndo :: Bool <- do
-    head <- git ["rev-parse", "HEAD"]
-    if head == context.head
-      then pure False
-      else do
+  canUndo :: Bool <-
+    case result of
+      Nothing -> pure False
+      Just (maybeStash, _mergeConflicts) -> do
         recordUndoFile context.branch64 (Reset context.head : maybeToList (Apply <$> maybeStash))
         pure True
 
@@ -331,14 +330,13 @@ mitMerge target0 = do
     Summary
       { branch = context.branch,
         canUndo,
-        -- FIXME this is dubious, nub made more sense when conflicts were just filenames...
-        conflicts = List.nub (stashConflicts ++ fromMaybe [] mergeConflicts),
+        conflicts,
         syncs =
           [ Sync
               { commits = targetCommits,
                 result =
-                  case mergeConflicts of
-                    Just (_ : _) -> Failure
+                  case result of
+                    Just (_, _ : _) -> Failure
                     _ -> Success,
                 source = target,
                 target = context.branch
@@ -835,6 +833,34 @@ gitMerge me target = do
     True -> do
       whenM gitMergeInProgress (git_ ["commit", "--message", mergeMessage []])
       pure (Right ())
+  where
+    mergeMessage :: [GitConflict] -> Text
+    mergeMessage conflicts =
+      -- FIXME use builder
+      fold
+        [ "⅄",
+          if null conflicts then "" else "\x0338",
+          " ",
+          if target' == me then me else target' <> " → " <> me,
+          if null conflicts
+            then ""
+            else
+              " (conflicts)\n\nConflicting files:\n"
+                <> Text.intercalate "\n" (map (("  " <>) . showGitConflict) conflicts)
+        ]
+      where
+        target' :: Text
+        target' =
+          fromMaybe target (Text.stripPrefix "origin/" target)
+
+-- FIXME document what this does
+gitMerge' :: Text -> Text -> IO [GitConflict]
+gitMerge' me target = do
+  git ["merge", "--ff", "--no-commit", target] >>= \case
+    False -> gitConflicts
+    True -> do
+      whenM gitMergeInProgress (git_ ["commit", "--message", mergeMessage []])
+      pure []
   where
     mergeMessage :: [GitConflict] -> Text
     mergeMessage conflicts =
