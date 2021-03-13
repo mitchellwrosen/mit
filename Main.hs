@@ -253,7 +253,7 @@ mitCommitWith context = do
                         _ -> []
                     PushAttempted False -> onDidntPush
                     PushNotAttempted _ -> onDidntPush
-        pure MitState {ranCommitAt, head, undos}
+        pure MitState {head, merging = Nothing, ranCommitAt, undos}
 
       writeMitState context state1
 
@@ -281,7 +281,7 @@ mitCommitWith context = do
       ranCommitAt <- Just . Clock.toNanoSecs <$> Clock.getTime Clock.Realtime
       let state0 =
             case maybeState0 of
-              Nothing -> MitState {ranCommitAt, head = context.head, undos = []}
+              Nothing -> MitState {head = context.head, merging = Nothing, ranCommitAt, undos = []}
               Just s0 -> s0 {ranCommitAt}
       writeMitState context state0
       putLines
@@ -363,6 +363,10 @@ mitMerge target = do
           context
           MitState
             { head,
+              merging =
+                case mergeConflicts of
+                  [] -> Nothing
+                  _ -> Just target,
               ranCommitAt = Nothing,
               undos = Reset context.head : maybeToList (Apply <$> maybeStash)
             }
@@ -615,6 +619,7 @@ putSummary summary =
 
 data MitState = MitState
   { head :: Text,
+    merging :: Maybe Text,
     ranCommitAt :: Maybe Integer,
     undos :: [Undo]
   }
@@ -625,15 +630,20 @@ deleteMitState context =
 
 parseMitState :: Text -> Maybe MitState
 parseMitState contents = do
-  [headLine, ranCommitAtLine, undosLine] <- Just (Text.lines contents)
+  [headLine, mergingLine, ranCommitAtLine, undosLine] <- Just (Text.lines contents)
   ["head", head] <- Just (Text.words headLine)
+  merging <-
+    case Text.words mergingLine of
+      ["merging"] -> Just Nothing
+      ["merging", branch] -> Just (Just branch)
+      _ -> Nothing
   ranCommitAt <-
     case Text.words ranCommitAtLine of
       ["committed-at"] -> Just Nothing
       ["committed-at", text2int -> Just n] -> Just (Just n)
       _ -> Nothing
   undos <- Text.stripPrefix "undos " undosLine >>= parseUndos
-  pure MitState {ranCommitAt, head, undos}
+  pure MitState {head, merging, ranCommitAt, undos}
 
 readMitState :: Context -> IO (Maybe MitState)
 readMitState context =
@@ -659,6 +669,7 @@ writeMitState context state =
     contents =
       Text.unlines
         [ "head " <> state.head,
+          "merging " <> fromMaybe Text.empty state.merging,
           "ran-commit-at " <> maybe Text.empty int2text state.ranCommitAt,
           "undos " <> showUndos state.undos
         ]
@@ -934,40 +945,6 @@ gitMerge me target = do
         target' :: Text
         target' =
           fromMaybe target (Text.stripPrefix "origin/" target)
-
--- FIXME document what this does
--- gitMerge' :: Text -> Text -> IO [GitConflict]
--- gitMerge' _ target = do
---   git ["merge", "--ff", "--no-commit", target] >>= \case
---     False -> gitConflicts
---     True -> undefined
-
--- gitMerge' :: Text -> Text -> IO [GitConflict]
--- gitMerge' me target = do
---   git ["merge", "--ff", "--no-commit", target] >>= \case
---     False -> gitConflicts
---     True -> do
---       whenM gitMergeInProgress (git_ ["commit", "--message", mergeMessage []])
---       pure []
---   where
---     mergeMessage :: [GitConflict] -> Text
---     mergeMessage conflicts =
---       -- FIXME use builder
---       fold
---         [ "⅄",
---           if null conflicts then "" else "\x0338",
---           " ",
---           if target' == me then me else target' <> " → " <> me,
---           if null conflicts
---             then ""
---             else
---               " (conflicts)\n\nConflicting files:\n"
---                 <> Text.intercalate "\n" (map (("  " <>) . showGitConflict) conflicts)
---         ]
---       where
---         target' :: Text
---         target' =
---           fromMaybe target (Text.stripPrefix "origin/" target)
 
 gitMergeInProgress :: IO Bool
 gitMergeInProgress =
