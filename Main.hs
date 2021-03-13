@@ -202,89 +202,96 @@ mitCommitWith context = do
       Nothing -> pure []
       Just upstreamHead -> gitCommitsBetween (Just context.head) upstreamHead
 
-  localCommits0 :: [GitCommitInfo] <-
-    gitCommitsBetween maybeUpstreamHead "HEAD"
+  localCommits0 <- gitCommitsBetween maybeUpstreamHead "HEAD"
+  maybeState0 <- readMitState context
 
-  when (not (null remoteCommits) && null localCommits0) do
-    readCommitFile context.branch64 >>= \case
-      Just (hash, age) | hash == context.head && age < 10_000_000_000 -> pure ()
-      _ -> do
-        recordCommitFile context.branch64 context.head
-        putLines
-          [ "",
-            "  " <> Text.italic context.branch <> " is not up to date.",
-            "",
-            "  Run " <> Text.bold (Text.blue "mit sync") <> " first, or run " <> Text.bold (Text.blue "mit commit")
-              <> " again to record a commit anyway.",
-            ""
-          ]
-        exitFailure
+  shouldWarnAboutFork <- do
+    let wouldFork = not (null remoteCommits) && null localCommits0
+    case wouldFork of
+      False -> pure False
+      True -> do
+        let theyRanMitCommitRecently =
+              case maybeState0 of
+                Just MitState {committed = Just t0} -> do
+                  t1 <- Clock.toNanoSecs <$> Clock.getTime Clock.Realtime
+                  pure ((t1 - t0) < 10_000_000_000)
+                _ -> pure False
+        not <$> theyRanMitCommitRecently
 
-  stash :: Text <-
-    gitCreateStash
+  case shouldWarnAboutFork of
+    False -> do
+      stash <- gitCreateStash
+      commitResult <- gitCommit
+      localCommits <- if commitResult then gitCommitsBetween maybeUpstreamHead "HEAD" else pure localCommits0
 
-  commitResult :: Bool <-
-    gitCommit
+      pushResult <-
+        if
+            | null localCommits -> pure (PushNotAttempted PushNoCommits)
+            | not (null remoteCommits) -> pure (PushNotAttempted PushWouldConflict)
+            | context.fetchFailed -> pure (PushNotAttempted PushOffline)
+            | otherwise -> PushAttempted <$> gitPush context.branch
 
-  -- If the commit was aborted, reset the timer (allowing another 'mit commit' right away). Otherwise, delete the commit
-  -- file, because it's no longer needed.
-  case commitResult of
-    False -> recordCommitFile context.branch64 context.head
-    True -> deleteCommitFile context.branch64
+      state1 <- do
+        committed <-
+          case commitResult of
+            False -> Just . Clock.toNanoSecs <$> Clock.getTime Clock.Realtime
+            True -> pure Nothing
+        head <-
+          case commitResult of
+            False -> pure context.head
+            True -> git ["rev-parse", "HEAD"]
+        let undos =
+              let onDidntPush =
+                    if head == context.head
+                      then maybe [] (.undos) maybeState0
+                      else [Reset context.head, Apply stash]
+               in case pushResult of
+                    PushAttempted True ->
+                      case (commitResult, localCommits) of
+                        (True, [_]) -> [Revert head, Apply stash]
+                        _ -> []
+                    PushAttempted False -> onDidntPush
+                    PushNotAttempted _ -> onDidntPush
+        pure MitState {committed, head, undos}
 
-  localCommits :: [GitCommitInfo] <-
-    case commitResult of
-      False -> pure localCommits0
-      True -> gitCommitsBetween maybeUpstreamHead "HEAD"
+      writeMitState context.branch64 state1
 
-  pushResult :: PushResult <-
-    if
-        | null localCommits -> pure (PushNotAttempted PushNoCommits)
-        | not (null remoteCommits) -> pure (PushNotAttempted PushWouldConflict)
-        | context.fetchFailed -> pure (PushNotAttempted PushOffline)
-        | otherwise -> PushAttempted <$> gitPush context.branch
-
-  canUndo :: Bool <- do
-    let pushDidntHappen = do
-          head <- git ["rev-parse", "HEAD"]
-          case head == context.head of
-            False -> do
-              recordUndoFile context.branch64 [Reset context.head, Apply stash]
-              pure True
-            True -> pure False
-    case pushResult of
-      PushAttempted True ->
-        case commitResult of
-          False -> do
-            deleteUndoFile context.branch64
-            pure False
-          True ->
-            case localCommits of
-              [_] -> do
-                -- FIXME this call wouldn't be necessary if we don't pretty-print local commits right away
-                head <- git ["rev-parse", "HEAD"]
-                recordUndoFile context.branch64 [Revert head, Apply stash]
-                pure True
-              _ -> do
-                deleteUndoFile context.branch64
-                pure False
-      PushAttempted False -> pushDidntHappen
-      PushNotAttempted _ -> pushDidntHappen
-
-  putSummary
-    Summary
-      { branch = context.branch,
-        canUndo,
-        conflicts = [],
-        syncs =
-          [ Sync
-              { commits = localCommits,
-                result = pushResultToSyncResult pushResult,
-                source = context.branch,
-                target = context.upstream
-              }
-          ]
-      }
+      putSummary
+        Summary
+          { branch = context.branch,
+            -- Whether we "can undo" from here is not exactly if the state says we can undo, because of one corner case:
+            -- we ran 'mit commit', then aborted the commit, and ultimately didn't push any other local changes.
+            --
+            -- In this case, the underlying state hasn't changed, so 'mit undo' will still work as if the 'mit commit'
+            -- was never run, we merely don't want to *say* "run 'mit undo' to undo" as feedback, because that sounds as
+            -- if it would undo the last command run, namely the 'mit commit' that was aborted.
+            canUndo = not (null state1.undos) && state1.head /= context.head,
+            conflicts = [],
+            syncs =
+              [ Sync
+                  { commits = localCommits,
+                    result = pushResultToSyncResult pushResult,
+                    source = context.branch,
+                    target = context.upstream
+                  }
+              ]
+          }
+    True -> do
+      committed <- Just . Clock.toNanoSecs <$> Clock.getTime Clock.Realtime
+      let state0 =
+            case maybeState0 of
+              Nothing -> MitState {committed, head = context.head, undos = []}
+              Just s0 -> s0 {committed}
+      writeMitState context.branch64 state0
+      putLines
+        [ "",
+          "  " <> Text.italic context.branch <> " is not up to date.",
+          "",
+          "  Run " <> Text.bold (Text.blue "mit sync") <> " first, or run " <> Text.bold (Text.blue "mit commit")
+            <> " again to record a commit anyway.",
+          ""
+        ]
+      exitFailure
 
 data PushResult
   = PushAttempted Bool
@@ -567,6 +574,61 @@ putSummary summary =
 
 -- FIXME consolidate these files
 
+-- State file
+
+data MitState = MitState
+  { committed :: Maybe Integer,
+    head :: Text,
+    undos :: [Undo]
+  }
+
+deleteMitState :: Context -> IO ()
+deleteMitState context =
+  removeFile (mitfile context.branch64) `catch` \(_ :: IOException) -> pure ()
+
+parseMitState :: Text -> Maybe MitState
+parseMitState contents = do
+  [committedLine, headLine, undosLine] <- Just (Text.lines contents)
+  committed <-
+    case Text.words committedLine of
+      ["committed"] -> Just Nothing
+      ["committed", text2int -> Just n] -> Just (Just n)
+      _ -> Nothing
+  ["head", head] <- Just (Text.words headLine)
+  undos <- Text.stripPrefix "undos " undosLine >>= parseUndos
+  pure MitState {committed, head, undos}
+
+readMitState :: Context -> IO (Maybe MitState)
+readMitState context =
+  try (Text.readFile (commitfile context.branch64)) >>= \case
+    Left (_ :: IOException) -> pure Nothing
+    Right contents -> do
+      let maybeState = do
+            state <- parseMitState contents
+            guard (context.head == state.head)
+            pure state
+      case maybeState of
+        Nothing -> do
+          deleteMitState context
+          pure Nothing
+        Just state -> pure (Just state)
+
+writeMitState :: Text -> MitState -> IO ()
+writeMitState branch64 state =
+  Text.writeFile (mitfile branch64) contents `catch` \(_ :: IOException) -> pure ()
+  where
+    contents :: Text
+    contents =
+      Text.unlines
+        [ "committed " <> maybe Text.empty int2text state.committed,
+          "head " <> state.head,
+          "undos " <> showUndos state.undos
+        ]
+
+mitfile :: Text -> FilePath
+mitfile branch64 =
+  Text.unpack (gitdir <> "/.mit-" <> branch64)
+
 -- Commit file utils
 
 deleteCommitFile :: Text -> IO ()
@@ -586,11 +648,6 @@ readCommitFile branch64 = do
         _ -> do
           deleteCommitFile branch64
           pure Nothing
-  where
-    -- FIXME make this faster
-    text2int :: Text -> Maybe Integer
-    text2int =
-      readMaybe . Text.unpack
 
 recordCommitFile :: Text -> Text -> IO ()
 recordCommitFile branch64 hash = do
@@ -598,11 +655,6 @@ recordCommitFile branch64 hash = do
   -- FIXME use builder
   let contents = hash <> "," <> int2text (Clock.toNanoSecs now)
   Text.writeFile (commitfile branch64) contents `catch` \(_ :: IOException) -> pure ()
-  where
-    -- FIXME make this faster
-    int2text :: Integer -> Text
-    int2text =
-      Text.pack . show
 
 commitfile :: Text -> FilePath
 commitfile branch64 =
@@ -672,6 +724,7 @@ debug =
   isJust (unsafePerformIO (lookupEnv "debug"))
 {-# NOINLINE debug #-}
 
+-- FIXME this finds the wrong dir for worktrees
 gitdir :: Text
 gitdir =
   unsafePerformIO (git ["rev-parse", "--absolute-git-dir"])
@@ -1095,6 +1148,11 @@ drainTextHandle handle = do
           True -> pure (reverse acc)
   loop []
 
+-- FIXME make this faster
+int2text :: Integer -> Text
+int2text =
+  Text.pack . show
+
 putLines :: [Text] -> IO ()
 putLines =
   Text.putStr . Text.unlines
@@ -1102,6 +1160,11 @@ putLines =
 quoteText :: Text -> Text
 quoteText s =
   if Text.any isSpace s then "'" <> Text.replace "'" "\\'" s <> "'" else s
+
+-- FIXME make this faster
+text2int :: Text -> Maybe Integer
+text2int =
+  readMaybe . Text.unpack
 
 unlessM :: Monad m => m Bool -> m () -> m ()
 unlessM mx action =
