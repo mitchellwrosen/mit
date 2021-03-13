@@ -153,40 +153,37 @@ mitCommit = do
   dieIfNotInGitDir
   whenM gitExistUntrackedFiles dieIfBuggyGit
 
+  context <- makeContext
   gitMergeInProgress >>= \case
     False -> do
-      context <- makeContext
       case context.dirty of
         Differences -> mitCommitWith context
         NoDifferences -> mitSyncWith context Nothing -- n.b. not covered by tests (would be dupes of sync tests)
-    True -> mitCommitMerge
+    True -> mitCommitMerge context
 
-mitCommitMerge :: IO ()
-mitCommitMerge = do
-  head <- git ["rev-parse", "HEAD"]
-  branch <- gitCurrentBranch
-  let branch64 = Text.encodeBase64 branch
-  git_ ["commit", "--all", "--message", "merge from TODO"]
-  maybeUndos <- readUndoFile branch64
-  let maybeStash = do
-        undos <- maybeUndos
-        listToMaybe [commit | Apply commit <- undos]
-  case maybeStash of
-    Nothing -> do
-      context <- makeContext
-      mitSyncWith context (Just [Reset head])
-    Just stash ->
+mitCommitMerge :: Context -> IO ()
+mitCommitMerge context = do
+  maybeState0 <- readMitState context
+  let maybeMerging = do
+        state0 <- maybeState0
+        state0.merging
+  case maybeMerging of
+    Nothing -> git_ ["commit", "--all", "--no-edit"]
+    Just merging -> git_ ["commit", "--all", "--message", "⅄ " <> merging <> " → " <> context.branch]
+  let undos = maybe [] (.undos) maybeState0
+  case [commit | Apply commit <- undos] of
+    [] -> mitSyncWith context (Just [Reset context.head])
+    stash : _ ->
       gitApplyStash stash >>= \case
-        [] -> do
-          -- FIXME we just unstashed, now we're about to stash again :/
-          context <- makeContext
-          mitSyncWith context (Just [Reset head, Apply stash])
-        stashConflicts ->
-          -- FIXME state file
+        -- FIXME we just unstashed, now we're about to stash again :/
+        [] -> mitSyncWith context (Just [Reset context.head, Apply stash])
+        stashConflicts -> do
+          head <- git ["rev-parse", "HEAD"]
+          writeMitState context MitState {head, merging = Nothing, ranCommitAt = Nothing, undos}
           putSummary
             Summary
-              { branch,
-                canUndo = isJust maybeUndos,
+              { branch = context.branch,
+                canUndo = not (null undos),
                 conflicts = stashConflicts,
                 syncs = []
               }
