@@ -41,6 +41,7 @@ import Prelude hiding (head)
 -- TODO 'mit branch' with dirty working directory - apply changes to new worktree?
 -- TODO undo in more cases?
 -- TODO recommend merging master if it conflicts
+-- TODO mit log
 
 main :: IO ()
 main = do
@@ -150,13 +151,44 @@ mitClone url name =
 mitCommit :: IO ()
 mitCommit = do
   dieIfNotInGitDir
-  dieIfMergeInProgress
   whenM gitExistUntrackedFiles dieIfBuggyGit
 
-  context <- makeContext
-  case context.dirty of
-    Differences -> mitCommitWith context
-    NoDifferences -> mitSyncWith context -- n.b. not covered by tests (would be dupes of sync tests)
+  gitMergeInProgress >>= \case
+    False -> do
+      context <- makeContext
+      case context.dirty of
+        Differences -> mitCommitWith context
+        NoDifferences -> mitSyncWith context Nothing -- n.b. not covered by tests (would be dupes of sync tests)
+    True -> mitCommitMerge
+
+mitCommitMerge :: IO ()
+mitCommitMerge = do
+  head <- git ["rev-parse", "HEAD"]
+  branch <- gitCurrentBranch
+  let branch64 = Text.encodeBase64 branch
+  git_ ["commit", "--all", "--message", "merge from TODO"]
+  maybeUndos <- readUndoFile branch64
+  let maybeStash = do
+        undos <- maybeUndos
+        listToMaybe [commit | Apply commit <- undos]
+  case maybeStash of
+    Nothing -> do
+      context <- makeContext
+      mitSyncWith context (Just [Reset head])
+    Just stash ->
+      gitApplyStash stash >>= \case
+        [] -> do
+          -- FIXME we just unstashed, now we're about to stash again :/
+          context <- makeContext
+          mitSyncWith context (Just [Reset head, Apply stash])
+        stashConflicts ->
+          putSummary
+            Summary
+              { branch,
+                canUndo = isJust maybeUndos,
+                conflicts = stashConflicts,
+                syncs = []
+              }
 
 mitCommitWith :: Context -> IO ()
 mitCommitWith context = do
@@ -335,10 +367,10 @@ mitSync = do
   dieIfMergeInProgress
   whenM gitExistUntrackedFiles dieIfBuggyGit
   context <- makeContext
-  mitSyncWith context
+  mitSyncWith context Nothing
 
-mitSyncWith :: Context -> IO ()
-mitSyncWith context = do
+mitSyncWith :: Context -> Maybe [Undo] -> IO ()
+mitSyncWith context maybeUndos = do
   maybeUpstreamHead :: Maybe Text <-
     git ["rev-parse", "refs/remotes/" <> context.upstream] <&> \case
       Left _ -> Nothing
@@ -389,7 +421,11 @@ mitSyncWith context = do
           if context.head == head2
             then pure False -- head didn't move; nothing to undo
             else do
-              recordUndoFile context.branch64 (Reset context.head : maybeToList (Apply <$> maybeStash))
+              recordUndoFile context.branch64
+                ( case maybeUndos of
+                    Nothing -> Reset context.head : maybeToList (Apply <$> maybeStash)
+                    Just undos -> undos
+                )
               pure True
     case pushResult of
       PushAttempted True -> do
@@ -528,6 +564,8 @@ putSummary summary =
       if summary.canUndo
         then ["  Run " <> Text.bold (Text.blue "mit undo") <> " to undo this change.", ""]
         else []
+
+-- FIXME consolidate these files
 
 -- Commit file utils
 
@@ -1030,8 +1068,10 @@ debugPrintGit :: [Text] -> [Text] -> [Text] -> ExitCode -> IO ()
 debugPrintGit args stdoutLines stderrLines exitCode =
   when debug do
     putLines do
-      Text.bold (Text.brightBlack (Text.unwords (marker <> " git" : map quoteText args)))
-        : map (Text.brightBlack . ("    " <>)) (stdoutLines ++ stderrLines)
+      let output :: [Text]
+          output =
+            map (Text.brightBlack . ("    " <>)) (stdoutLines ++ stderrLines)
+      Text.bold (Text.brightBlack (Text.unwords (marker <> " git" : map quoteText args))) : output
   where
     marker :: Text
     marker =
