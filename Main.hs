@@ -600,7 +600,7 @@ parseMitState contents = do
 
 readMitState :: Context -> IO (Maybe MitState)
 readMitState context =
-  try (Text.readFile (commitfile context.branch64)) >>= \case
+  try (Text.readFile (mitfile context.branch64)) >>= \case
     Left (_ :: IOException) -> pure Nothing
     Right contents -> do
       let maybeState = do
@@ -628,37 +628,6 @@ writeMitState branch64 state =
 mitfile :: Text -> FilePath
 mitfile branch64 =
   Text.unpack (gitdir <> "/.mit-" <> branch64)
-
--- Commit file utils
-
-deleteCommitFile :: Text -> IO ()
-deleteCommitFile branch64 =
-  removeFile (commitfile branch64) `catch` \(_ :: IOException) -> pure ()
-
--- | Read the amount of time that has elapsed (in nanoseconds) since the commit file was created
-readCommitFile :: Text -> IO (Maybe (Text, Integer))
-readCommitFile branch64 = do
-  try (Text.readFile (commitfile branch64)) >>= \case
-    Left (_ :: IOException) -> pure Nothing
-    Right contents ->
-      case Text.split (== ',') contents of
-        [hash, text2int -> Just t0] -> do
-          t1 <- Clock.getTime Clock.Realtime
-          pure (Just (hash, Clock.toNanoSecs t1 - t0))
-        _ -> do
-          deleteCommitFile branch64
-          pure Nothing
-
-recordCommitFile :: Text -> Text -> IO ()
-recordCommitFile branch64 hash = do
-  now <- Clock.getTime Clock.Realtime
-  -- FIXME use builder
-  let contents = hash <> "," <> int2text (Clock.toNanoSecs now)
-  Text.writeFile (commitfile branch64) contents `catch` \(_ :: IOException) -> pure ()
-
-commitfile :: Text -> FilePath
-commitfile branch64 =
-  Text.unpack (gitdir <> "/.mit-" <> branch64 <> "-commit")
 
 -- Undo file utils
 
