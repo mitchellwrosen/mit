@@ -33,7 +33,142 @@ git switch --create feature >/dev/null 2>&1 || exit 1
 git branch --set-upstream-to origin/feature >/dev/null || exit 1
 git reset --hard origin/feature >/dev/null || exit 1
 
+echo "mit merge"
+echo "========="
+echo " | branch   | merge        | working tree |"
+echo " | -------------------------------------- |"
+
+echo " | equal    | none         | clean        |"
+head0=$(git rev-parse feature)
+mit merge feature >/dev/null || exit 1
+[ $(git rev-parse feature) = $head0 ] || exit 1
+mit undo >/dev/null && exit 1
+
+echo " | equal    | none         | dirty        |"
+head0=$(git rev-parse feature)
+echo four >> three.txt
+mit merge feature >/dev/null || exit 1
+[ $(git rev-parse feature) = $head0 ] || exit 1
+[ "$(git diff --shortstat)" = " 1 file changed, 1 insertion(+)" ] || exit 1
+mit undo >/dev/null && exit 1
+
+echo " | behind   | fast-forward | clean        |"
+git reset --hard origin/feature^ >/dev/null || exit 1
+head0=$(git rev-parse feature)
+mit merge feature >/dev/null || exit 1
+[ $(git rev-parse feature) = $(git rev-parse origin/feature) ] || exit 1
+mit undo >/dev/null || exit 1
+[ $(git rev-parse feature) = $head0 ] || exit 1
+
+echo " | behind   | fast-forward | dirty        |"
+git reset --hard origin/feature^ >/dev/null || exit 1
+head0=$(git rev-parse feature)
+echo four >> two.txt
+mit merge feature >/dev/null || exit 1
+[ $(git rev-parse feature) = $(git rev-parse origin/feature) ] || exit 1
+[ "$(git diff --shortstat)" = " 1 file changed, 1 insertion(+)" ] || exit 1
+mit undo >/dev/null || exit 1
+[ $(git rev-parse feature) = $head0 ] || exit 1
+[ "$(git diff --shortstat)" = " 1 file changed, 1 insertion(+)" ] || exit 1
+
+echo " | behind   | fast-forward | conflicting  |"
+git reset --hard origin/feature^ >/dev/null || exit 1
+head0=$(git rev-parse feature)
+echo four >> three.txt
+mit merge feature >/dev/null || exit 1
+[ $(git rev-parse feature) = $(git rev-parse origin/feature) ] || exit 1
+[ "$(git diff --shortstat)" = " 1 file changed, 5 insertions(+)" ] || exit 1
+mit undo >/dev/null || exit 1
+[ $(git rev-parse feature) = $head0 ] || exit 1
+[ "$(git diff --shortstat)" = " 1 file changed, 1 insertion(+)" ] || exit 1
+
+echo " | ahead    | none         | clean        |"
+git reset --hard origin/feature >/dev/null || exit 1
+echo four >> three.txt
+git commit --all --message "four" >/dev/null || exit 1
+head0=$(git rev-parse feature)
+mit merge feature >/dev/null || exit 1
+[ $(git rev-parse feature) = $head0 ] || exit 1
+mit undo >/dev/null && exit 1
+
+echo " | ahead    | none         | dirty        |"
+git reset --hard origin/feature >/dev/null || exit 1
+echo four >> three.txt
+git commit --all --message "four" >/dev/null || exit 1
+echo five >> three.txt
+head0=$(git rev-parse feature)
+mit merge feature >/dev/null || exit 1
+[ $(git rev-parse feature) = $head0 ] || exit 1
+[ "$(git diff --shortstat)" = " 1 file changed, 1 insertion(+)" ] || exit 1
+mit undo >/dev/null && exit 1
+
+echo " | diverged | bubble       | clean        |"
+git reset --hard origin/feature^ >/dev/null || exit 1
+echo three >> two.txt
+git commit --all --message "three" >/dev/null || exit 1
+head0=$(git rev-parse feature)
+mit merge feature >/dev/null || exit 1
+[ $(git rev-parse feature^) = $head0 ] || exit 1
+[ $(git rev-parse feature^2) = $(git rev-parse origin/feature) ] || exit 1
+mit undo >/dev/null || exit 1
+[ $(git rev-parse feature) = $head0 ] || exit 1
+
+echo " | diverged | bubble       | dirty        |"
+git reset --hard origin/feature^ >/dev/null || exit 1
+echo three >> two.txt
+git commit --all --message "three" >/dev/null || exit 1
+echo four >> two.txt
+head0=$(git rev-parse feature)
+mit merge feature >/dev/null || exit 1
+[ $(git rev-parse feature^) = $head0 ] || exit 1
+[ $(git rev-parse feature^2) = $(git rev-parse origin/feature) ] || exit 1
+[ "$(git diff --shortstat)" = " 1 file changed, 1 insertion(+)" ] || exit 1
+mit undo >/dev/null || exit 1
+[ $(git rev-parse feature) = $head0 ] || exit 1
+[ "$(git diff --shortstat)" = " 1 file changed, 1 insertion(+)" ] || exit 1
+
+echo " | diverged | bubble       | conflicting  |"
+git reset --hard origin/feature^ >/dev/null || exit 1
+echo three >> two.txt
+git commit --all --message "three" >/dev/null || exit 1
+echo four >> three.txt
+head0=$(git rev-parse feature)
+mit merge feature >/dev/null || exit 1
+[ $(git rev-parse feature^) = $head0 ] || exit 1
+[ $(git rev-parse feature^2) = $(git rev-parse origin/feature) ] || exit 1
+[ "$(git diff --shortstat)" = " 1 file changed, 5 insertions(+)" ] || exit 1
+mit undo >/dev/null || exit 1
+[ $(git rev-parse feature) = $head0 ] || exit 1
+[ "$(git diff --shortstat)" = " 1 file changed, 1 insertion(+)" ] || exit 1
+
+echo " | diverged | conflicting  | clean        |"
+git reset --hard origin/feature^ >/dev/null || exit 1
+echo four >> three.txt
+git commit --all --message "four" >/dev/null || exit 1
+head0=$(git rev-parse feature)
+mit merge feature >/dev/null || exit 1
+[ $(git rev-parse feature) = $head0 ] || exit 1
+[ "$(git diff --shortstat)" = " 1 file changed, 5 insertions(+)" ] || exit 1
+mit undo >/dev/null || exit 1
+[ $(git rev-parse feature) = $head0 ] || exit 1
+
+echo " | diverged | conflicting  | dirty        |"
+git reset --hard origin/feature^ >/dev/null || exit 1
+echo four >> three.txt
+git commit --all --message "four" >/dev/null || exit 1
+echo three >> two.txt
+head0=$(git rev-parse feature)
+mit merge feature >/dev/null || exit 1
+[ $(git rev-parse feature) = $head0 ] || exit 1
+[ "$(git diff --shortstat)" = " 1 file changed, 5 insertions(+)" ] || exit 1
+mit undo >/dev/null || exit 1
+[ $(git rev-parse feature) = $head0 ] || exit 1
+[ "$(git diff --shortstat)" = " 1 file changed, 1 insertion(+)" ] || exit 1
+
+echo " | diverged | conflicting  | conflicting  |"
+
 echo "mit sync: local = remote, no changes"
+git reset --hard origin/feature >/dev/null || exit 1
 mit sync >/dev/null || exit 1
 [ $(git rev-parse feature) = $(git rev-parse origin/feature) ] || exit 1
 mit undo >/dev/null && exit

@@ -48,10 +48,10 @@ main = do
     ["branch", branch] -> mitBranch (Text.pack branch)
     ["clone", parseGitRepo . Text.pack -> Just (url, name)] -> mitClone url name
     ["commit"] -> mitCommit
-    ["merge", branch] -> mitMerge (Text.pack branch) -- temporary?
+    ["merge", branch] -> mitMerge (Text.pack branch)
     ["sync"] -> mitSync
     ["undo"] -> mitUndo
-    _ ->
+    _ -> do
       putLines
         [ "Usage:",
           "  mit branch ≪branch≫",
@@ -61,6 +61,7 @@ main = do
           "  mit sync",
           "  mit undo"
         ]
+      exitFailure
 
 dieIfBuggyGit :: IO ()
 dieIfBuggyGit = do
@@ -280,11 +281,10 @@ mitMerge target0 = do
   dieIfMergeInProgress
   whenM gitExistUntrackedFiles dieIfBuggyGit
 
-  context :: Context <-
-    makeContext
+  context <- makeContext
 
   -- When given 'mit merge foo', prefer merging 'origin/foo' over 'foo'
-  target :: Text <- do
+  target <- do
     let remote = "origin/" <> target0
     git ["rev-parse", "--verify", remote] <&> \case
       False -> target0
@@ -669,7 +669,7 @@ prettyGitCommitInfo info =
 
 data GitConflict
   = GitConflict GitConflictXY Text
-  deriving stock (Eq)
+  deriving stock (Eq, Show)
 
 parseGitConflict :: Text -> Maybe GitConflict
 parseGitConflict line = do
@@ -689,7 +689,7 @@ data GitConflictXY
   | UA -- added by them
   | UD -- deleted by them
   | UU -- both modified
-  deriving stock (Eq)
+  deriving stock (Eq, Show)
 
 parseGitConflictXY :: Text -> Maybe GitConflictXY
 parseGitConflictXY = \case
