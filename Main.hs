@@ -152,13 +152,12 @@ mitCommit :: IO ()
 mitCommit = do
   dieIfNotInGitDir
   whenM gitExistUntrackedFiles dieIfBuggyGit
-
+  gitDiff >>= \case
+    Differences -> pure ()
+    NoDifferences -> exitFailure
   context <- makeContext
   gitMergeInProgress >>= \case
-    False -> do
-      case context.dirty of
-        Differences -> mitCommitWith context
-        NoDifferences -> mitSyncWith context Nothing -- n.b. not covered by tests (would be dupes of sync tests)
+    False -> mitCommitWith context
     True -> mitCommitMerge context
 
 mitCommitMerge :: Context -> IO ()
@@ -334,10 +333,7 @@ mitMerge target = do
     gitCommitsBetween (Just context.head) targetCommit >>= \case
       [] -> pure ([], [], [], False)
       targetCommits -> do
-        maybeStash <-
-          case context.dirty of
-            Differences -> Just <$> gitStash
-            NoDifferences -> pure Nothing
+        maybeStash <- gitStash
         mergeConflicts <-
           git ["merge", "--ff", "--no-commit", targetCommit] >>= \case
             False -> gitConflicts
@@ -427,9 +423,9 @@ mitSyncWith context maybeUndos = do
       Just upstreamHead -> gitCommitsBetween (Just context.head) upstreamHead
 
   maybeStash :: Maybe Text <-
-    case (remoteCommits, context.dirty) of
-      (_ : _, Differences) -> Just <$> gitStash
-      _ -> pure Nothing
+    case null remoteCommits of
+      False -> gitStash
+      True -> pure Nothing
 
   mergeConflicts :: Maybe [GitConflict] <-
     case remoteCommits of
@@ -533,7 +529,6 @@ mitUndo = do
 data Context = Context
   { branch :: Text,
     branch64 :: Text,
-    dirty :: DiffResult,
     fetchFailed :: Bool,
     head :: Text,
     upstream :: Text
@@ -542,14 +537,12 @@ data Context = Context
 makeContext :: IO Context
 makeContext = do
   branch <- gitCurrentBranch
-  dirty <- gitDiff
   head <- git ["rev-parse", "HEAD"]
   fetchFailed <- not <$> git ["fetch", "origin"]
   pure
     Context
       { branch,
         branch64 = Text.encodeBase64 branch,
-        dirty,
         fetchFailed,
         head,
         upstream = "origin/" <> branch
@@ -957,16 +950,19 @@ gitResetHard commit = do
   git_ ["clean", "-d", "--force"]
   git ["reset", "--hard", commit]
 
--- | Create a stash and blow away local changes (like 'git stash push')
-gitStash :: IO Text
+-- | Stash uncommitted changes (if any).
+gitStash :: IO (Maybe Text)
 gitStash = do
-  stash <- gitCreateStash
-  gitResetHard "HEAD"
-  pure stash
+  gitDiff >>= \case
+    Differences -> do
+      stash <- gitCreateStash
+      gitResetHard "HEAD"
+      pure (Just stash)
+    NoDifferences -> pure Nothing
 
 gitUnstageChanges :: IO ()
 gitUnstageChanges = do
-  git_ ["reset"]
+  git_ ["reset", "--mixed"]
   untrackedFiles <- gitListUntrackedFiles
   unless (null untrackedFiles) (git_ ("add" : "--intent-to-add" : untrackedFiles))
 
