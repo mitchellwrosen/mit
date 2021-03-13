@@ -182,6 +182,7 @@ mitCommitMerge = do
           context <- makeContext
           mitSyncWith context (Just [Reset head, Apply stash])
         stashConflicts ->
+          -- FIXME state file
           putSummary
             Summary
               { branch,
@@ -212,7 +213,7 @@ mitCommitWith context = do
       True -> do
         let theyRanMitCommitRecently =
               case maybeState0 of
-                Just MitState {committed = Just t0} -> do
+                Just MitState {ranCommitAt = Just t0} -> do
                   t1 <- Clock.toNanoSecs <$> Clock.getTime Clock.Realtime
                   pure ((t1 - t0) < 10_000_000_000)
                 _ -> pure False
@@ -232,7 +233,7 @@ mitCommitWith context = do
             | otherwise -> PushAttempted <$> gitPush context.branch
 
       state1 <- do
-        committed <-
+        ranCommitAt <-
           case commitResult of
             False -> Just . Clock.toNanoSecs <$> Clock.getTime Clock.Realtime
             True -> pure Nothing
@@ -252,9 +253,9 @@ mitCommitWith context = do
                         _ -> []
                     PushAttempted False -> onDidntPush
                     PushNotAttempted _ -> onDidntPush
-        pure MitState {committed, head, undos}
+        pure MitState {ranCommitAt, head, undos}
 
-      writeMitState context.branch64 state1
+      writeMitState context state1
 
       putSummary
         Summary
@@ -277,12 +278,12 @@ mitCommitWith context = do
               ]
           }
     True -> do
-      committed <- Just . Clock.toNanoSecs <$> Clock.getTime Clock.Realtime
+      ranCommitAt <- Just . Clock.toNanoSecs <$> Clock.getTime Clock.Realtime
       let state0 =
             case maybeState0 of
-              Nothing -> MitState {committed, head = context.head, undos = []}
-              Just s0 -> s0 {committed}
-      writeMitState context.branch64 state0
+              Nothing -> MitState {ranCommitAt, head = context.head, undos = []}
+              Just s0 -> s0 {ranCommitAt}
+      writeMitState context state0
       putLines
         [ "",
           "  " <> Text.italic context.branch <> " is not up to date.",
@@ -314,8 +315,9 @@ pushResultToSyncResult = \case
   PushNotAttempted PushOffline -> Offline
   PushNotAttempted PushWouldConflict -> Failure
 
+-- FIXME if on branch 'foo', handle 'mitMerge foo' or 'mitMerge origin/foo' as 'mitSync'?
 mitMerge :: Text -> IO ()
-mitMerge target0 = do
+mitMerge target = do
   dieIfNotInGitDir
   dieIfMergeInProgress
   whenM gitExistUntrackedFiles dieIfBuggyGit
@@ -323,39 +325,54 @@ mitMerge target0 = do
   context <- makeContext
 
   -- When given 'mit merge foo', prefer merging 'origin/foo' over 'foo'
-  target <- do
-    let remote = "origin/" <> target0
-    git ["rev-parse", "--verify", remote] <&> \case
-      False -> target0
-      True -> remote
+  targetCommit <- do
+    git ["rev-parse", "origin/" <> target] >>= \case
+      Left _ ->
+        git ["rev-parse", target] >>= \case
+          Left _ -> exitFailure
+          Right commit -> pure commit
+      Right commit -> pure commit
 
   (targetCommits, mergeConflicts, stashConflicts, canUndo) <-
-    git ["rev-parse", target] >>= \case
-      Left _ -> pure ([], [], [], False)
-      Right targetCommit ->
-        gitCommitsBetween (Just context.head) targetCommit >>= \case
-          [] -> pure ([], [], [], False)
-          targetCommits -> do
-            maybeStash <-
-              case context.dirty of
-                Differences -> Just <$> gitStash
-                NoDifferences -> pure Nothing
-            mergeConflicts <- gitMerge' context.branch target
-            stashConflicts <-
-              case mergeConflicts of
-                [] ->
-                  case maybeStash of
-                    Nothing -> pure []
-                    Just stash -> gitApplyStash stash
-                _ -> pure []
-            recordUndoFile context.branch64 (Reset context.head : maybeToList (Apply <$> maybeStash))
-            pure (targetCommits, mergeConflicts, stashConflicts, True)
+    gitCommitsBetween (Just context.head) targetCommit >>= \case
+      [] -> pure ([], [], [], False)
+      targetCommits -> do
+        maybeStash <-
+          case context.dirty of
+            Differences -> Just <$> gitStash
+            NoDifferences -> pure Nothing
+        mergeConflicts <-
+          git ["merge", "--ff", "--no-commit", targetCommit] >>= \case
+            False -> gitConflicts
+            True -> do
+              let message = "⅄ " <> target <> " → " <> context.branch
+              whenM gitMergeInProgress (git_ ["commit", "--message", message])
+              pure []
+        stashConflicts <-
+          case mergeConflicts of
+            [] ->
+              case maybeStash of
+                Nothing -> pure []
+                Just stash -> gitApplyStash stash
+            _ -> pure []
+        head <-
+          case mergeConflicts of
+            [] -> git ["rev-parse", "HEAD"]
+            _ -> pure context.head
+        writeMitState
+          context
+          MitState
+            { head,
+              ranCommitAt = Nothing,
+              undos = Reset context.head : maybeToList (Apply <$> maybeStash)
+            }
+        pure (targetCommits, mergeConflicts, stashConflicts, True)
 
   putSummary
     Summary
       { branch = context.branch,
         canUndo,
-        -- At most one of stash/merge conflicts is non-null, so (++)-ing then makes sense
+        -- At most one of stash/merge conflicts is non-null, so just appending them makes some sense
         conflicts = stashConflicts ++ mergeConflicts,
         syncs =
           [ Sync
@@ -376,6 +393,26 @@ mitSync = do
   context <- makeContext
   mitSyncWith context Nothing
 
+-- | @mitSyncWith context maybeUndos@
+--
+-- Whenever recording what 'mit undo' should do after 'mit sync', if 'maybeUndos' is provided, we use them instead.
+-- This is pulled into a function argument to get better undo behavior after committing a merge.
+--
+-- Consider:
+--
+-- The user runs 'mit merge foo' (with or without a clean working tree), and gets conflicts. After fixing them, she runs
+-- 'mit commit'. This may result in *additional* conflicts due to the just-stashed uncommitted changes.
+--
+-- But either way, internally, we would like this 'mit commit' to effectively behave as a normal commit, in the sense
+-- that we want to immediately push it upstream. That means the code would like to simply call 'mit sync' after
+-- 'git commit'!
+--
+-- However, if this commit could be undone (i.e. we didn't push it), we wouldn't want that 'mit sync' to *locally*
+-- compute where to undo, because it would just conclude, "oh, HEAD hasn't moved, and we didn't push, so there's nothing
+-- to undo".
+--
+-- Instead, we want to undo to the point before running the 'mit merge' that caused the conflicts, which were later
+-- resolved by 'mit commit'.
 mitSyncWith :: Context -> Maybe [Undo] -> IO ()
 mitSyncWith context maybeUndos = do
   maybeUpstreamHead :: Maybe Text <-
@@ -422,8 +459,8 @@ mitSyncWith context maybeUndos = do
           Just [] -> pure (PushNotAttempted PushNewCommits)
           Just (_ : _) -> pure (PushNotAttempted PushWouldConflict)
 
-  canUndo :: Bool <- do
-    let pushDidntHappen = do
+  canUndo <- do
+    let onPushDidntHappen = do
           head2 <- git ["rev-parse", "HEAD"]
           if context.head == head2
             then pure False -- head didn't move; nothing to undo
@@ -438,8 +475,8 @@ mitSyncWith context maybeUndos = do
       PushAttempted True -> do
         deleteUndoFile context.branch64
         pure False
-      PushAttempted False -> pushDidntHappen
-      PushNotAttempted _ -> pushDidntHappen
+      PushAttempted False -> onPushDidntHappen
+      PushNotAttempted _ -> onPushDidntHappen
 
   putSummary
     Summary
@@ -577,8 +614,8 @@ putSummary summary =
 -- State file
 
 data MitState = MitState
-  { committed :: Maybe Integer,
-    head :: Text,
+  { head :: Text,
+    ranCommitAt :: Maybe Integer,
     undos :: [Undo]
   }
 
@@ -588,15 +625,15 @@ deleteMitState context =
 
 parseMitState :: Text -> Maybe MitState
 parseMitState contents = do
-  [committedLine, headLine, undosLine] <- Just (Text.lines contents)
-  committed <-
-    case Text.words committedLine of
-      ["committed"] -> Just Nothing
-      ["committed", text2int -> Just n] -> Just (Just n)
-      _ -> Nothing
+  [headLine, ranCommitAtLine, undosLine] <- Just (Text.lines contents)
   ["head", head] <- Just (Text.words headLine)
+  ranCommitAt <-
+    case Text.words ranCommitAtLine of
+      ["committed-at"] -> Just Nothing
+      ["committed-at", text2int -> Just n] -> Just (Just n)
+      _ -> Nothing
   undos <- Text.stripPrefix "undos " undosLine >>= parseUndos
-  pure MitState {committed, head, undos}
+  pure MitState {ranCommitAt, head, undos}
 
 readMitState :: Context -> IO (Maybe MitState)
 readMitState context =
@@ -613,15 +650,16 @@ readMitState context =
           pure Nothing
         Just state -> pure (Just state)
 
-writeMitState :: Text -> MitState -> IO ()
-writeMitState branch64 state =
-  Text.writeFile (mitfile branch64) contents `catch` \(_ :: IOException) -> pure ()
+-- FIXME just call git rev-parse HEAD inside here?
+writeMitState :: Context -> MitState -> IO ()
+writeMitState context state =
+  Text.writeFile (mitfile context.branch64) contents `catch` \(_ :: IOException) -> pure ()
   where
     contents :: Text
     contents =
       Text.unlines
-        [ "committed " <> maybe Text.empty int2text state.committed,
-          "head " <> state.head,
+        [ "head " <> state.head,
+          "ran-commit-at " <> maybe Text.empty int2text state.ranCommitAt,
           "undos " <> showUndos state.undos
         ]
 
@@ -898,32 +936,38 @@ gitMerge me target = do
           fromMaybe target (Text.stripPrefix "origin/" target)
 
 -- FIXME document what this does
-gitMerge' :: Text -> Text -> IO [GitConflict]
-gitMerge' me target = do
-  git ["merge", "--ff", "--no-commit", target] >>= \case
-    False -> gitConflicts
-    True -> do
-      whenM gitMergeInProgress (git_ ["commit", "--message", mergeMessage []])
-      pure []
-  where
-    mergeMessage :: [GitConflict] -> Text
-    mergeMessage conflicts =
-      -- FIXME use builder
-      fold
-        [ "⅄",
-          if null conflicts then "" else "\x0338",
-          " ",
-          if target' == me then me else target' <> " → " <> me,
-          if null conflicts
-            then ""
-            else
-              " (conflicts)\n\nConflicting files:\n"
-                <> Text.intercalate "\n" (map (("  " <>) . showGitConflict) conflicts)
-        ]
-      where
-        target' :: Text
-        target' =
-          fromMaybe target (Text.stripPrefix "origin/" target)
+-- gitMerge' :: Text -> Text -> IO [GitConflict]
+-- gitMerge' _ target = do
+--   git ["merge", "--ff", "--no-commit", target] >>= \case
+--     False -> gitConflicts
+--     True -> undefined
+
+-- gitMerge' :: Text -> Text -> IO [GitConflict]
+-- gitMerge' me target = do
+--   git ["merge", "--ff", "--no-commit", target] >>= \case
+--     False -> gitConflicts
+--     True -> do
+--       whenM gitMergeInProgress (git_ ["commit", "--message", mergeMessage []])
+--       pure []
+--   where
+--     mergeMessage :: [GitConflict] -> Text
+--     mergeMessage conflicts =
+--       -- FIXME use builder
+--       fold
+--         [ "⅄",
+--           if null conflicts then "" else "\x0338",
+--           " ",
+--           if target' == me then me else target' <> " → " <> me,
+--           if null conflicts
+--             then ""
+--             else
+--               " (conflicts)\n\nConflicting files:\n"
+--                 <> Text.intercalate "\n" (map (("  " <>) . showGitConflict) conflicts)
+--         ]
+--       where
+--         target' :: Text
+--         target' =
+--           fromMaybe target (Text.stripPrefix "origin/" target)
 
 gitMergeInProgress :: IO Bool
 gitMergeInProgress =
