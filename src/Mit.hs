@@ -1,7 +1,7 @@
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fplugin=RecordDotPreprocessor #-}
 
-module Main where
+module Mit where
 
 import Control.Category ((>>>))
 import Control.Exception (AsyncException (UserInterrupt), IOException, catch, evaluate, throwIO, try)

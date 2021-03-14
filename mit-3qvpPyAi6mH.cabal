@@ -49,11 +49,14 @@ library
     text,
     text-ansi,
     unix,
-  hs-source-dir: src
+  exposed-modules:
+    Mit
+  hs-source-dirs: src
 
 executable mit
   import: component
   build-depends:
+    base,
     mit-3qvpPyAi6mH,
-  hs-source-dir: app
+  hs-source-dirs: app
   main-is: Main.hs
