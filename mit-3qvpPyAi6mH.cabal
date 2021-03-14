@@ -14,18 +14,7 @@ stability: experimental
 synopsis: A git wrapper with a streamlined UX
 version: 2
 
-executable mit
-  build-depends:
-    base < 5,
-    base64,
-    clock,
-    directory,
-    process,
-    record-dot-preprocessor,
-    record-hasfield,
-    text,
-    text-ansi,
-    unix,
+common component
   default-extensions:
     BlockArguments
     DataKinds
@@ -46,4 +35,25 @@ executable mit
     ViewPatterns
   default-language: Haskell2010
   ghc-options: -Wall
+
+library
+  import: component
+  build-depends:
+    base < 5,
+    base64,
+    clock,
+    directory,
+    process,
+    record-dot-preprocessor,
+    record-hasfield,
+    text,
+    text-ansi,
+    unix,
+  hs-source-dir: src
+
+executable mit
+  import: component
+  build-depends:
+    mit-3qvpPyAi6mH,
+  hs-source-dir: app
   main-is: Main.hs
