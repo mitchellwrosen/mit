@@ -1,0 +1,15 @@
+#!/bin/bash
+
+PACKAGE=mit-3qvpPyAi6mH
+CABAL_FILE=${PACKAGE}.cabal
+
+if [ $# -eq 0 ]; then
+  ghcid \
+    --command "cabal repl -O0 --repl-options=-fno-code ${PACKAGE}:lib:${PACKAGE}" \
+    --restart "${CABAL_FILE}"
+else
+  ghcid \
+    --command "cabal repl --enable-tests -O0 ${PACKAGE}:test:tests" \
+    --restart "${CABAL_FILE}" \
+    --test "Main.main"
+fi

@@ -15,9 +15,21 @@ synopsis: A git wrapper with a streamlined UX
 version: 2
 
 common component
+  build-depends:
+    base < 5,
+    base64,
+    clock,
+    directory,
+    process,
+    record-dot-preprocessor,
+    record-hasfield,
+    text,
+    text-ansi,
+    unix,
   default-extensions:
     BlockArguments
     DataKinds
+    DeriveFunctor
     DerivingStrategies
     DuplicateRecordFields
     FlexibleInstances
@@ -38,17 +50,6 @@ common component
 
 library
   import: component
-  build-depends:
-    base < 5,
-    base64,
-    clock,
-    directory,
-    process,
-    record-dot-preprocessor,
-    record-hasfield,
-    text,
-    text-ansi,
-    unix,
   exposed-modules:
     Mit
   hs-source-dirs: src
@@ -56,7 +57,16 @@ library
 executable mit
   import: component
   build-depends:
-    base,
     mit-3qvpPyAi6mH,
   hs-source-dirs: app
   main-is: Main.hs
+
+test-suite tests
+  import: component
+  build-depends:
+    free,
+    mit-3qvpPyAi6mH,
+    temporary,
+  hs-source-dirs: test
+  main-is: Main.hs
+  type: exitcode-stdio-1.0
