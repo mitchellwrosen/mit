@@ -7,7 +7,7 @@ import Control.Category ((>>>))
 import Control.Exception (AsyncException (UserInterrupt), IOException, catch, evaluate, throwIO, try)
 import Control.Monad
 import Data.Char
-import Data.Foldable (fold, for_)
+import Data.Foldable (asum, fold, for_)
 import Data.Function
 import qualified Data.List as List
 import qualified Data.List.NonEmpty as List1
@@ -148,7 +148,7 @@ mitBranch branch = do
 
 mitClone :: Text -> Text -> IO ()
 mitClone url name =
-  -- FIXME use 'git config --get init.defaultBranch
+  -- FIXME use 'git config --get init.defaultBranch'
   git ["clone", url, "--separate-git-dir", name <> "/.git", name <> "/master"]
 
 mitCommit :: IO ()
@@ -165,7 +165,7 @@ mitCommit = do
 
 mitCommitMerge :: Context -> IO ()
 mitCommitMerge context = do
-  maybeState0 <- readMitState context
+  maybeState0 <- readMitState context.branch64
   let maybeMerging = do
         state0 <- maybeState0
         state0.merging
@@ -210,7 +210,7 @@ mitCommitWith context = do
       Just upstreamHead -> gitCommitsBetween (Just context.head) upstreamHead
 
   localCommits0 <- gitCommitsBetween maybeUpstreamHead "HEAD"
-  maybeState0 <- readMitState context
+  maybeState0 <- readMitState context.branch64
 
   shouldWarnAboutFork <- do
     let wouldFork = not (null remoteCommits) && null localCommits0
@@ -544,10 +544,9 @@ mitUndo = do
 
   branch64 <- Text.encodeBase64 <$> gitCurrentBranch
 
-  readUndoFile branch64 >>= \case
+  readMitState branch64 >>= \case
     Nothing -> exitFailure
-    Just undos -> do
-      deleteUndoFile branch64
+    Just MitState {undos} -> do
       for_ undos \case
         Apply commit -> do
           -- This should never return conflicts
@@ -652,9 +651,9 @@ data MitState a = MitState
     undos :: [Undo]
   }
 
-deleteMitState :: Context -> IO ()
-deleteMitState context =
-  removeFile (mitfile context.branch64) `catch` \(_ :: IOException) -> pure ()
+deleteMitState :: Text -> IO ()
+deleteMitState branch64 =
+  removeFile (mitfile branch64) `catch` \(_ :: IOException) -> pure ()
 
 parseMitState :: Text -> Maybe (MitState Text)
 parseMitState contents = do
@@ -673,18 +672,19 @@ parseMitState contents = do
   undos <- Text.stripPrefix "undos " undosLine >>= parseUndos
   pure MitState {head, merging, ranCommitAt, undos}
 
-readMitState :: Context -> IO (Maybe (MitState ()))
-readMitState context =
-  try (Text.readFile (mitfile context.branch64)) >>= \case
+readMitState :: Text -> IO (Maybe (MitState ()))
+readMitState branch64 = do
+  head <- git ["rev-parse", "HEAD"]
+  try (Text.readFile (mitfile branch64)) >>= \case
     Left (_ :: IOException) -> pure Nothing
     Right contents -> do
       let maybeState = do
             state <- parseMitState contents
-            guard (context.head == state.head)
+            guard (head == state.head)
             pure state
       case maybeState of
         Nothing -> do
-          deleteMitState context
+          deleteMitState branch64
           pure Nothing
         Just state -> pure (Just (state {head = ()} :: MitState ()))
 
@@ -718,49 +718,21 @@ showUndos =
   where
     showUndo :: Undo -> Text
     showUndo = \case
-      Apply commit -> "apply " <> commit
-      Reset commit -> "reset " <> commit
-      Revert commit -> "revert " <> commit
+      Apply commit -> "apply/" <> commit
+      Reset commit -> "reset/" <> commit
+      Revert commit -> "revert/" <> commit
 
 parseUndos :: Text -> Maybe [Undo]
 parseUndos =
-  Text.split (== ',') >>> traverse parseUndo
+  Text.words >>> traverse parseUndo
   where
     parseUndo :: Text -> Maybe Undo
-    parseUndo =
-      Text.words >>> \case
-        ["apply", commit] -> Just (Apply commit)
-        ["reset", commit] -> Just (Reset commit)
-        ["revert", commit] -> Just (Revert commit)
-        _ -> Nothing
-
-deleteUndoFile :: Text -> IO ()
-deleteUndoFile branch64 =
-  removeFile (undofile branch64) `catch` \(_ :: IOException) -> pure ()
-
-readUndoFile :: Text -> IO (Maybe [Undo])
-readUndoFile branch64 =
-  try (Text.readFile file) >>= \case
-    Left (_ :: IOException) -> pure Nothing
-    Right contents ->
-      case parseUndos contents of
-        Nothing -> do
-          when debug (putStrLn ("Corrupt undo file: " ++ file))
-          pure Nothing
-        Just undos -> pure (Just undos)
-  where
-    file :: FilePath
-    file =
-      undofile branch64
-
--- Record a file for 'mit undo' to use, if invoked.
-recordUndoFile :: Text -> [Undo] -> IO ()
-recordUndoFile branch64 undos = do
-  Text.writeFile (undofile branch64) (showUndos undos) `catch` \(_ :: IOException) -> pure ()
-
-undofile :: Text -> FilePath
-undofile branch64 =
-  Text.unpack (gitdir <> "/.mit-" <> branch64)
+    parseUndo text =
+      asum
+        [ Apply <$> Text.stripPrefix "apply/" text,
+          Reset <$> Text.stripPrefix "reset/" text,
+          Revert <$> Text.stripPrefix "revert/" text
+        ]
 
 -- Globals
 
