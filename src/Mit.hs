@@ -7,7 +7,7 @@ import Control.Category ((>>>))
 import Control.Exception (AsyncException (UserInterrupt), IOException, catch, evaluate, throwIO, try)
 import Control.Monad
 import Data.Char
-import Data.Foldable (asum, fold, for_)
+import Data.Foldable
 import Data.Function
 import qualified Data.List as List
 import qualified Data.List.NonEmpty as List1
@@ -547,14 +547,9 @@ mitUndo = do
   readMitState branch64 >>= \case
     Nothing -> exitFailure
     Just MitState {undos} -> do
-      for_ undos \case
-        Apply commit -> do
-          -- This should never return conflicts
-          -- FIXME assert?
-          _conflicts <- gitApplyStash commit
-          pure ()
-        Reset commit -> gitResetHard commit
-        Revert commit -> git_ ["revert", commit]
+      case List1.nonEmpty undos of
+        Nothing -> exitFailure
+        Just undos1 -> applyUndos undos1
       when (undosContainRevert undos) mitSync
   where
     undosContainRevert :: [Undo] -> Bool
@@ -650,6 +645,7 @@ data MitState a = MitState
     ranCommitAt :: Maybe Integer,
     undos :: [Undo]
   }
+  deriving stock (Eq, Show)
 
 deleteMitState :: Text -> IO ()
 deleteMitState branch64 =
@@ -666,8 +662,8 @@ parseMitState contents = do
       _ -> Nothing
   ranCommitAt <-
     case Text.words ranCommitAtLine of
-      ["committed-at"] -> Just Nothing
-      ["committed-at", text2int -> Just n] -> Just (Just n)
+      ["ran-commit-at"] -> Just Nothing
+      ["ran-commit-at", text2int -> Just n] -> Just (Just n)
       _ -> Nothing
   undos <- Text.stripPrefix "undos " undosLine >>= parseUndos
   pure MitState {head, merging, ranCommitAt, undos}
@@ -711,6 +707,7 @@ data Undo
   = Apply Text -- apply stash
   | Reset Text -- reset to commit
   | Revert Text -- revert commit
+  deriving stock (Eq, Show)
 
 showUndos :: [Undo] -> Text
 showUndos =
@@ -723,16 +720,28 @@ showUndos =
       Revert commit -> "revert/" <> commit
 
 parseUndos :: Text -> Maybe [Undo]
-parseUndos =
-  Text.words >>> traverse parseUndo
+parseUndos t0 = do
+  (Text.words >>> traverse parseUndo) t0
   where
     parseUndo :: Text -> Maybe Undo
     parseUndo text =
       asum
         [ Apply <$> Text.stripPrefix "apply/" text,
           Reset <$> Text.stripPrefix "reset/" text,
-          Revert <$> Text.stripPrefix "revert/" text
+          Revert <$> Text.stripPrefix "revert/" text,
+          error (show text)
         ]
+
+applyUndos :: List1 Undo -> IO ()
+applyUndos =
+  traverse_ \case
+    Apply commit -> do
+      -- This should never return conflicts
+      -- FIXME assert?
+      _conflicts <- gitApplyStash commit
+      pure ()
+    Reset commit -> gitResetHard commit
+    Revert commit -> git_ ["revert", commit]
 
 -- Globals
 
