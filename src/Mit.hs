@@ -10,12 +10,14 @@ import Data.Char
 import Data.Foldable (fold, for_)
 import Data.Function
 import qualified Data.List as List
+import qualified Data.List.NonEmpty as List1
 import Data.Maybe
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.ANSI as Text
 import qualified Data.Text.Encoding.Base64 as Text
 import qualified Data.Text.IO as Text
+import Data.Traversable
 import qualified System.Clock as Clock
 import System.Directory (doesDirectoryExist, doesFileExist, removeFile, withCurrentDirectory)
 import System.Environment (getArgs, lookupEnv)
@@ -329,57 +331,88 @@ mitMerge target = do
           Right commit -> pure commit
       Right commit -> pure commit
 
-  (targetCommits, mergeConflicts, stashConflicts, canUndo) <-
-    gitCommitsBetween (Just context.head) targetCommit >>= \case
-      [] -> pure ([], [], [], False)
-      targetCommits -> do
-        maybeStash <- gitStash
-        mergeConflicts <-
-          git ["merge", "--ff", "--no-commit", targetCommit] >>= \case
-            False -> gitConflicts
-            True -> do
-              let message = "⅄ " <> target <> " → " <> context.branch
-              whenM gitMergeInProgress (git_ ["commit", "--message", message])
-              pure []
-        stashConflicts <-
-          case mergeConflicts of
-            [] ->
-              case maybeStash of
-                Nothing -> pure []
-                Just stash -> gitApplyStash stash
-            _ -> pure []
-        head <-
-          case mergeConflicts of
-            [] -> git ["rev-parse", "HEAD"]
-            _ -> pure context.head
-        writeMitState
-          context
-          MitState
-            { head,
-              merging =
-                case mergeConflicts of
-                  [] -> Nothing
-                  _ -> Just target,
-              ranCommitAt = Nothing,
-              undos = Reset context.head : maybeToList (Apply <$> maybeStash)
-            }
-        pure (targetCommits, mergeConflicts, stashConflicts, True)
+  mergeStatus <- mitMerge' ("⅄ " <> target <> " → " <> context.branch) targetCommit
+
+  head <-
+    case mergeStatus of
+      MergeStatus'Merge _ (MergeResult'StashConflicts _) _ -> git ["rev-parse", "HEAD"]
+      MergeStatus'Merge _ (MergeResult'MergeConflicts _) _ -> pure context.head
+      MergeStatus'NoMerge -> pure context.head
+
+  writeMitState
+    context
+    MitState
+      { head,
+        merging =
+          case mergeStatus of
+            MergeStatus'Merge _ (MergeResult'MergeConflicts _) _ -> Just target
+            MergeStatus'Merge _ (MergeResult'StashConflicts _) _ -> Nothing
+            MergeStatus'NoMerge -> Nothing,
+        ranCommitAt = Nothing,
+        undos =
+          case mergeStatus of
+            MergeStatus'Merge _ _ undos -> undos
+            MergeStatus'NoMerge -> []
+      }
 
   putSummary
     Summary
       { branch = context.branch,
-        canUndo,
+        canUndo =
+          case mergeStatus of
+            MergeStatus'Merge _ _ _ -> True
+            MergeStatus'NoMerge -> False,
         -- At most one of stash/merge conflicts is non-null, so just appending them makes some sense
-        conflicts = stashConflicts ++ mergeConflicts,
+        conflicts =
+          case mergeStatus of
+            MergeStatus'Merge _commits result _undos ->
+              case result of
+                MergeResult'MergeConflicts conflicts -> List1.toList conflicts
+                MergeResult'StashConflicts conflicts -> conflicts
+            MergeStatus'NoMerge -> [],
         syncs =
-          [ Sync
-              { commits = targetCommits,
-                result = if null mergeConflicts then Success else Failure,
-                source = target,
-                target = context.branch
-              }
-          ]
+          case mergeStatus of
+            MergeStatus'NoMerge -> []
+            MergeStatus'Merge commits result _undos ->
+              [ Sync
+                  { commits = commits,
+                    result =
+                      case result of
+                        MergeResult'MergeConflicts _ -> Failure
+                        -- Even if we have conflicts from unstashing, we call this merge a success.
+                        MergeResult'StashConflicts _ -> Success,
+                    source = target,
+                    target = context.branch
+                  }
+              ]
       }
+
+data MergeStatus
+  = MergeStatus'NoMerge
+  | MergeStatus'Merge [GitCommitInfo {- nonempty -}] MergeResult [Undo]
+
+data MergeResult
+  = MergeResult'MergeConflicts (List1 GitConflict)
+  | MergeResult'StashConflicts [GitConflict]
+
+mitMerge' :: Text -> Text -> IO MergeStatus
+mitMerge' message target = do
+  head <- git ["rev-parse", "HEAD"]
+  gitCommitsBetween (Just head) target >>= \case
+    [] -> pure MergeStatus'NoMerge
+    commits -> do
+      maybeStash <- gitStash
+      let undos = Reset head : maybeToList (Apply <$> maybeStash)
+      result <-
+        git ["merge", "--ff", "--no-commit", target] >>= \case
+          False -> do
+            conflicts <- gitConflicts
+            pure (MergeResult'MergeConflicts (List1.fromList conflicts))
+          True -> do
+            whenM gitMergeInProgress (git_ ["commit", "--message", message])
+            maybeConflicts <- for maybeStash gitApplyStash
+            pure (MergeResult'StashConflicts (fromMaybe [] maybeConflicts))
+      pure (MergeStatus'Merge commits result undos)
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
 mitSync :: IO ()
@@ -506,6 +539,7 @@ mitUndo = do
   dieIfNotInGitDir
 
   branch64 <- Text.encodeBase64 <$> gitCurrentBranch
+
   readUndoFile branch64 >>= \case
     Nothing -> exitFailure
     Just undos -> do
@@ -1116,6 +1150,9 @@ debugPrintGit args stdoutLines stderrLines exitCode =
         ExitSuccess -> "✓"
 
 -- Mini prelude extensions
+
+type List1 =
+  List1.NonEmpty
 
 (<&>) :: Functor f => f a -> (a -> b) -> f b
 (<&>) =

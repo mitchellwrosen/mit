@@ -1,11 +1,10 @@
 module Main where
 
--- import Control.Exception (IOException, catch)
+import Control.Monad
 import Control.Monad.Free.Church
-import Data.Functor
+import Data.Foldable
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Data.Foldable
 import qualified Data.Text.IO as Text
 import Mit hiding (main)
 import System.Directory
@@ -13,80 +12,72 @@ import System.IO.Temp
 
 main :: IO ()
 main =
-  run setup
+  when False do
+    test
+      "no remote branch"
+      setupRemote0
+      setupLocal0
+      [ ("test 1", \() -> putStrLn "hi 1"),
+        ("test 2", \() -> putStrLn "hi 2"),
+        ("test 3", \() -> putStrLn "hi 3")
+      ]
 
-run :: F I a -> IO a
-run =
-  iterM \case
-    Gitcommit files k -> do
-      for_ files \(path, contents) -> Text.writeFile path (Text.unlines contents)
-      git_ ["add", "--all"]
-      git_ ["commit", "--message", "commit"]
-      commit <- git ["rev-parse", "HEAD"]
-      k commit
-    Gitinit k -> do
-      git_ ["init", "--initial-branch=master"]
-      k
-    Indir path program k ->
-      withCurrentDirectory path (run program) >>= k
-    Mkdir path k -> do
-      createDirectoryIfMissing True path
-      k
-    Rmdir path k -> do
-      removeDirectoryRecursive path
-      k
-    Tmpdir k -> createTempDirectory "." "mit-tests" >>= k
+setupRemote0 :: F I ()
+setupRemote0 = do
+  icommit_ [("1.txt", ["1", "2", "3"]), ("2.txt", ["1", "2", "3"])]
+
+setupLocal0 :: () -> F I ()
+setupLocal0 () = do
+  ionBranch "feature" do
+    pure ()
+
+test :: Text -> F I a -> (a -> F I b) -> [(Text, b -> IO ())] -> IO ()
+test groupName setupRemote setupLocal actions =
+  for_ actions \(testName, action) -> do
+    tmpdir <- createTempDirectory "." "mit-test"
+    createDirectoryIfMissing True (tmpdir ++ "/remote")
+    setupRemoteResult <-
+      withCurrentDirectory (tmpdir ++ "/remote") do
+        git_ ["init", "--initial-branch=master"]
+        run0 setupRemote
+    withCurrentDirectory tmpdir (git_ ["clone", "remote", "local"])
+    withCurrentDirectory (tmpdir ++ "/local") do
+      Text.putStrLn ("[" <> groupName <> ", " <> testName <> "]")
+      setupLocalResult <- run0 (setupLocal setupRemoteResult)
+      action setupLocalResult
+    removeDirectoryRecursive tmpdir
+  where
+    run0 :: F I a -> IO a
+    run0 =
+      iterM \case
+        Commit files k -> do
+          for_ files \(path, contents) -> Text.writeFile path (Text.unlines contents)
+          git_ ["add", "--all"]
+          git_ ["commit", "--message", "commit"]
+          commit <- git ["rev-parse", "HEAD"]
+          k commit
+        OnBranch branch action k -> do
+          exists <- git ["show-branch", branch]
+          if exists then git_ ["switch", branch] else git_ ["switch", "--create", branch]
+          run0 action >>= k
 
 data I a
-  = Gitcommit [(FilePath, [Text])] (Text -> a)
-  | Gitinit a
-  | forall x. Indir FilePath (F I x) (x -> a)
-  | Mkdir FilePath a
-  | Rmdir FilePath a
-  | Tmpdir (FilePath -> a)
+  = Commit [(FilePath, [Text])] (Text -> a)
+  | forall x. OnBranch Text (F I x) (x -> a)
 
 instance Functor I where
   fmap f = \case
-    Gitcommit a b -> Gitcommit a (f . b)
-    Gitinit a -> Gitinit (f a)
-    Indir a b c -> Indir a b (f . c)
-    Mkdir a b -> Mkdir a (f b)
-    Rmdir a b -> Rmdir a (f b)
-    Tmpdir a -> Tmpdir (f . a)
+    Commit a b -> Commit a (f . b)
+    OnBranch a b c -> OnBranch a b (f . c)
 
-igitcommit :: [(FilePath, [Text])] -> F I Text
-igitcommit files =
-  liftF (Gitcommit files id)
+icommit :: [(FilePath, [Text])] -> F I Text
+icommit files =
+  liftF (Commit files id)
 
-igitcommit_ :: [(FilePath, [Text])] -> F I ()
-igitcommit_ files =
-  void (igitcommit files)
+icommit_ :: [(FilePath, [Text])] -> F I ()
+icommit_ files =
+  void (icommit files)
 
-igitinit :: F I ()
-igitinit =
-  liftF (Gitinit ())
-
-iindir :: FilePath -> F I a -> F I a
-iindir path program =
-  liftF (Indir path program id)
-
-imkdir :: FilePath -> F I ()
-imkdir path =
-  liftF (Mkdir path ())
-
-irmdir :: FilePath -> F I ()
-irmdir path =
-  liftF (Rmdir path ())
-
-itmpdir :: F I FilePath
-itmpdir =
-  liftF (Tmpdir id)
-
-setup :: F I ()
-setup = do
-  dir <- itmpdir
-  imkdir (dir ++ "/local")
-  iindir (dir ++ "/local") do
-    igitinit
-    igitcommit_ [("1.txt", ["1", "2", "3"]), ("2.txt", ["1", "2", "3"])]
-  irmdir dir
+ionBranch :: Text -> F I a -> F I a
+ionBranch branch action =
+  liftF (OnBranch branch action id)
