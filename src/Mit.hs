@@ -171,7 +171,14 @@ mitCommitMerge context = do
         state0.merging
   case maybeMerging of
     Nothing -> git_ ["commit", "--all", "--no-edit"]
-    Just merging -> git_ ["commit", "--all", "--message", "⅄ " <> merging <> " → " <> context.branch]
+    Just merging ->
+      let message =
+            fold
+              [ "⅄ ",
+                if merging == context.branch then "" else (merging <> " → "),
+                context.branch
+              ]
+       in git_ ["commit", "--all", "--message", message]
   let undos = maybe [] (.undos) maybeState0
   case [commit | Apply commit <- undos] of
     [] -> mitSyncWith context (Just [Reset context.head])
@@ -368,7 +375,7 @@ mitMerge target = do
             MergeStatus'NoMerge -> []
             MergeStatus'Merge commits result _undos ->
               [ Sync
-                  { commits = commits,
+                  { commits = List1.toList commits,
                     result =
                       case result of
                         MergeResult'MergeConflicts _ -> Failure
@@ -382,7 +389,7 @@ mitMerge target = do
 
 data MergeStatus
   = MergeStatus'NoMerge
-  | MergeStatus'Merge [GitCommitInfo {- nonempty -}] MergeResult [Undo]
+  | MergeStatus'Merge (List1 GitCommitInfo) MergeResult [Undo]
 
 data MergeResult
   = MergeResult'MergeConflicts (List1 GitConflict)
@@ -391,9 +398,9 @@ data MergeResult
 mitMerge' :: Text -> Text -> IO MergeStatus
 mitMerge' message target = do
   head <- git ["rev-parse", "HEAD"]
-  gitCommitsBetween (Just head) target >>= \case
-    [] -> pure MergeStatus'NoMerge
-    commits -> do
+  (List1.nonEmpty <$> gitCommitsBetween (Just head) target) >>= \case
+    Nothing -> pure MergeStatus'NoMerge
+    Just commits -> do
       maybeStash <- gitStash
       let undos = Reset head : maybeToList (Apply <$> maybeStash)
       result <-
@@ -443,77 +450,81 @@ mitSyncWith context maybeUndos = do
       Left _ -> Nothing
       Right upstreamHead -> Just upstreamHead
 
-  remoteCommits :: [GitCommitInfo] <-
-    case maybeUpstreamHead of
-      Nothing -> pure []
-      Just upstreamHead -> gitCommitsBetween (Just context.head) upstreamHead
-
-  maybeStash :: Maybe Text <-
-    case null remoteCommits of
-      False -> gitStash
-      True -> pure Nothing
-
-  mergeConflicts :: Maybe [GitConflict] <-
-    case remoteCommits of
-      [] -> pure Nothing
-      _ ->
-        fmap Just do
-          gitMerge context.branch context.upstream >>= \case
-            Left commitConflicts -> commitConflicts
-            Right () -> pure []
+  maybeMergeStatus <- for maybeUpstreamHead (mitMerge' ("⅄ " <> context.branch))
 
   localCommits :: [GitCommitInfo] <-
     gitCommitsBetween maybeUpstreamHead "HEAD"
-
-  stashConflicts :: [GitConflict] <-
-    case maybeStash of
-      Nothing -> pure []
-      Just stash -> gitApplyStash stash
 
   pushResult :: PushResult <-
     case localCommits of
       [] -> pure (PushNotAttempted PushNoCommits)
       _ ->
-        case mergeConflicts of
+        case maybeMergeStatus of
           Nothing ->
             case context.fetchFailed of
               False -> PushAttempted <$> gitPush context.branch
               True -> pure (PushNotAttempted PushOffline)
-          Just [] -> pure (PushNotAttempted PushNewCommits)
-          Just (_ : _) -> pure (PushNotAttempted PushWouldConflict)
+          Just MergeStatus'NoMerge ->
+            case context.fetchFailed of
+              False -> PushAttempted <$> gitPush context.branch
+              True -> pure (PushNotAttempted PushOffline)
+          Just (MergeStatus'Merge _commits result _undos) ->
+            case result of
+              MergeResult'MergeConflicts _conflicts -> pure (PushNotAttempted PushWouldConflict) -- FIXME better reason
+              MergeResult'StashConflicts _conflicts -> pure (PushNotAttempted PushNewCommits)
 
-  canUndo <- do
-    let onPushDidntHappen = do
-          head2 <- git ["rev-parse", "HEAD"]
-          if context.head == head2
-            then pure False -- head didn't move; nothing to undo
-            else do
-              recordUndoFile context.branch64
-                ( case maybeUndos of
-                    Nothing -> Reset context.head : maybeToList (Apply <$> maybeStash)
-                    Just undos -> undos
-                )
-              pure True
-    case pushResult of
-      PushAttempted True -> do
-        deleteUndoFile context.branch64
-        pure False
-      PushAttempted False -> onPushDidntHappen
-      PushNotAttempted _ -> onPushDidntHappen
+  let undos =
+        let undoMerge =
+              case maybeMergeStatus of
+                Nothing -> []
+                Just MergeStatus'NoMerge -> []
+                Just (MergeStatus'Merge _commits _result us) -> us
+         in case pushResult of
+              PushAttempted True -> []
+              PushAttempted False -> fromMaybe undoMerge maybeUndos
+              PushNotAttempted _ -> fromMaybe undoMerge maybeUndos
+
+  writeMitState
+    context
+    MitState
+      { head = (),
+        merging =
+          case maybeMergeStatus of
+            Nothing -> Nothing
+            Just (MergeStatus'Merge _ (MergeResult'MergeConflicts _) _) -> Just context.branch
+            Just (MergeStatus'Merge _ (MergeResult'StashConflicts _) _) -> Nothing
+            Just MergeStatus'NoMerge -> Nothing,
+        ranCommitAt = Nothing,
+        undos
+      }
 
   putSummary
     Summary
       { branch = context.branch,
-        canUndo,
-        -- FIXME this is dubious, nub made more sense when conflicts were just filenames...
-        conflicts = List.nub (stashConflicts ++ fromMaybe [] mergeConflicts),
+        canUndo = not (null undos),
+        conflicts =
+          case maybeMergeStatus of
+            Nothing -> []
+            Just (MergeStatus'Merge _commits result _undos) ->
+              case result of
+                MergeResult'MergeConflicts conflicts -> List1.toList conflicts
+                MergeResult'StashConflicts conflicts -> conflicts
+            Just MergeStatus'NoMerge -> [],
         syncs =
           [ Sync
-              { commits = remoteCommits,
+              { commits =
+                  case maybeMergeStatus of
+                    Nothing -> []
+                    Just MergeStatus'NoMerge -> []
+                    Just (MergeStatus'Merge commits _result _undos) -> List1.toList commits,
                 result =
-                  case mergeConflicts of
-                    Just (_ : _) -> Failure
-                    _ -> Success,
+                  case maybeMergeStatus of
+                    Nothing -> Success
+                    Just MergeStatus'NoMerge -> Success
+                    Just (MergeStatus'Merge _commits result _undos) ->
+                      case result of
+                        MergeResult'MergeConflicts _ -> Failure
+                        MergeResult'StashConflicts _ -> Success,
                 source = context.upstream,
                 target = context.branch
               },
