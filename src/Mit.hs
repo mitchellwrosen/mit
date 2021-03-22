@@ -44,6 +44,7 @@ import Prelude hiding (head)
 -- TODO undo in more cases?
 -- TODO recommend merging master if it conflicts
 -- TODO mit log
+-- TODO optparse-applicative
 
 main :: IO ()
 main = do
@@ -235,23 +236,21 @@ mitCommitWith context = do
           case commitResult of
             False -> Just . Clock.toNanoSecs <$> Clock.getTime Clock.Realtime
             True -> pure Nothing
-        head <-
-          case commitResult of
-            False -> pure context.head
-            True -> git ["rev-parse", "HEAD"]
-        let undos =
-              let onDidntPush =
-                    if head == context.head
-                      then maybe [] (.undos) maybeState0
-                      else [Reset context.head, Apply stash]
-               in case pushResult of
-                    PushAttempted True ->
-                      case (commitResult, localCommits) of
-                        (True, [_]) -> [Revert head, Apply stash]
-                        _ -> []
-                    PushAttempted False -> onDidntPush
-                    PushNotAttempted _ -> onDidntPush
-        pure MitState {head, merging = Nothing, ranCommitAt, undos}
+        undos <-
+          let onDidntPush =
+                case commitResult of
+                  False -> maybe [] (.undos) maybeState0
+                  True -> [Reset context.head, Apply stash]
+           in case pushResult of
+                PushAttempted True ->
+                  case (commitResult, localCommits) of
+                    (True, [_]) -> do
+                      head <- git ["rev-parse", "HEAD"]
+                      pure [Revert head, Apply stash]
+                    _ -> pure []
+                PushAttempted False -> pure onDidntPush
+                PushNotAttempted _ -> pure onDidntPush
+        pure MitState {head = (), merging = Nothing, ranCommitAt, undos}
 
       writeMitState context state1
 
@@ -264,7 +263,7 @@ mitCommitWith context = do
             -- In this case, the underlying state hasn't changed, so 'mit undo' will still work as if the 'mit commit'
             -- was never run, we merely don't want to *say* "run 'mit undo' to undo" as feedback, because that sounds as
             -- if it would undo the last command run, namely the 'mit commit' that was aborted.
-            canUndo = not (null state1.undos) && state1.head /= context.head,
+            canUndo = not (null state1.undos) && commitResult,
             conflicts = [],
             syncs =
               [ Sync
@@ -279,7 +278,7 @@ mitCommitWith context = do
       ranCommitAt <- Just . Clock.toNanoSecs <$> Clock.getTime Clock.Realtime
       let state0 =
             case maybeState0 of
-              Nothing -> MitState {head = context.head, merging = Nothing, ranCommitAt, undos = []}
+              Nothing -> MitState {head = (), merging = Nothing, ranCommitAt, undos = []}
               Just s0 -> s0 {ranCommitAt}
       writeMitState context state0
       putLines
@@ -333,16 +332,10 @@ mitMerge target = do
 
   mergeStatus <- mitMerge' ("⅄ " <> target <> " → " <> context.branch) targetCommit
 
-  head <-
-    case mergeStatus of
-      MergeStatus'Merge _ (MergeResult'StashConflicts _) _ -> git ["rev-parse", "HEAD"]
-      MergeStatus'Merge _ (MergeResult'MergeConflicts _) _ -> pure context.head
-      MergeStatus'NoMerge -> pure context.head
-
   writeMitState
     context
     MitState
-      { head,
+      { head = (),
         merging =
           case mergeStatus of
             MergeStatus'Merge _ (MergeResult'MergeConflicts _) _ -> Just target
@@ -641,8 +634,8 @@ putSummary summary =
 
 -- State file
 
-data MitState = MitState
-  { head :: Text,
+data MitState a = MitState
+  { head :: a,
     merging :: Maybe Text,
     ranCommitAt :: Maybe Integer,
     undos :: [Undo]
@@ -652,7 +645,7 @@ deleteMitState :: Context -> IO ()
 deleteMitState context =
   removeFile (mitfile context.branch64) `catch` \(_ :: IOException) -> pure ()
 
-parseMitState :: Text -> Maybe MitState
+parseMitState :: Text -> Maybe (MitState Text)
 parseMitState contents = do
   [headLine, mergingLine, ranCommitAtLine, undosLine] <- Just (Text.lines contents)
   ["head", head] <- Just (Text.words headLine)
@@ -669,7 +662,7 @@ parseMitState contents = do
   undos <- Text.stripPrefix "undos " undosLine >>= parseUndos
   pure MitState {head, merging, ranCommitAt, undos}
 
-readMitState :: Context -> IO (Maybe MitState)
+readMitState :: Context -> IO (Maybe (MitState ()))
 readMitState context =
   try (Text.readFile (mitfile context.branch64)) >>= \case
     Left (_ :: IOException) -> pure Nothing
@@ -682,21 +675,20 @@ readMitState context =
         Nothing -> do
           deleteMitState context
           pure Nothing
-        Just state -> pure (Just state)
+        Just state -> pure (Just (state {head = ()} :: MitState ()))
 
--- FIXME just call git rev-parse HEAD inside here?
-writeMitState :: Context -> MitState -> IO ()
-writeMitState context state =
+writeMitState :: Context -> MitState () -> IO ()
+writeMitState context state = do
+  head <- git ["rev-parse", "HEAD"]
+  let contents :: Text
+      contents =
+        Text.unlines
+          [ "head " <> head,
+            "merging " <> fromMaybe Text.empty state.merging,
+            "ran-commit-at " <> maybe Text.empty int2text state.ranCommitAt,
+            "undos " <> showUndos state.undos
+          ]
   Text.writeFile (mitfile context.branch64) contents `catch` \(_ :: IOException) -> pure ()
-  where
-    contents :: Text
-    contents =
-      Text.unlines
-        [ "head " <> state.head,
-          "merging " <> fromMaybe Text.empty state.merging,
-          "ran-commit-at " <> maybe Text.empty int2text state.ranCommitAt,
-          "undos " <> showUndos state.undos
-        ]
 
 mitfile :: Text -> FilePath
 mitfile branch64 =
