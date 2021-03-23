@@ -212,13 +212,16 @@ mitCommit_ = do
             canUndo = not (null undos) && committed,
             conflicts = [],
             syncs =
-              [ Sync
-                  { commits = localCommits,
-                    result = pushResultToSyncResult pushResult,
-                    source = branch,
-                    target = "origin/" <> branch
-                  }
-              ]
+              case List1.nonEmpty localCommits of
+                Nothing -> []
+                Just commits ->
+                  [ Sync
+                      { commits,
+                        result = pushResultToSyncResult pushResult,
+                        source = branch,
+                        target = "origin/" <> branch
+                      }
+                  ]
           }
     True -> do
       ranCommitAt <- Just . Clock.toNanoSecs <$> Clock.getTime Clock.Realtime
@@ -345,7 +348,7 @@ mitMerge target = do
             MergeStatus'NoMerge -> []
             MergeStatus'Merge commits result _undos ->
               [ Sync
-                  { commits = List1.toList commits,
+                  { commits,
                     result =
                       case result of
                         MergeResult'MergeConflicts _ -> Failure
@@ -477,28 +480,35 @@ mitSyncWith context maybeUndos = do
                 MergeResult'StashConflicts conflicts -> conflicts
             MergeStatus'NoMerge -> [],
         syncs =
-          [ Sync
-              { commits =
+          catMaybes
+            [ do
+                commits <-
                   case mergeStatus of
-                    MergeStatus'Merge commits _result _undos -> List1.toList commits
-                    MergeStatus'NoMerge -> [],
-                result =
-                  case mergeStatus of
-                    MergeStatus'Merge _commits result _undos ->
-                      case result of
-                        MergeResult'MergeConflicts _ -> Failure
-                        MergeResult'StashConflicts _ -> Success
-                    MergeStatus'NoMerge -> Success,
-                source = context.upstream,
-                target = context.branch
-              },
-            Sync
-              { commits = localCommits,
-                result = pushResultToSyncResult pushResult,
-                source = context.branch,
-                target = context.upstream
-              }
-          ]
+                    MergeStatus'Merge commits _result _undos -> Just commits
+                    MergeStatus'NoMerge -> Nothing
+                pure
+                  Sync
+                    { commits,
+                      result =
+                        case mergeStatus of
+                          MergeStatus'Merge _commits result _undos ->
+                            case result of
+                              MergeResult'MergeConflicts _ -> Failure
+                              MergeResult'StashConflicts _ -> Success
+                          MergeStatus'NoMerge -> Success,
+                      source = context.upstream,
+                      target = context.branch
+                    },
+              do
+                commits <- List1.nonEmpty localCommits
+                pure
+                  Sync
+                    { commits,
+                      result = pushResultToSyncResult pushResult,
+                      source = context.branch,
+                      target = context.upstream
+                    }
+            ]
       }
 
 -- FIXME output what we just undid
@@ -552,7 +562,7 @@ data Summary = Summary
   }
 
 data Sync = Sync
-  { commits :: [GitCommitInfo],
+  { commits :: List1 GitCommitInfo,
     result :: SyncResult,
     source :: Text,
     target :: Text
@@ -579,12 +589,9 @@ putSummary summary =
           map (("    " <>) . Text.red . showGitConflict) summary.conflicts ++ [""]
     syncLines :: Sync -> [Text]
     syncLines sync =
-      if null sync.commits
-        then []
-        else
-          colorize (Text.italic ("  " <> sync.source <> " → " <> sync.target)) :
-          map (("  " <>) . prettyGitCommitInfo) sync.commits
-            ++ [""]
+      colorize (Text.italic ("  " <> sync.source <> " → " <> sync.target)) :
+      map (("  " <>) . prettyGitCommitInfo) (List1.toList sync.commits)
+        ++ [""]
       where
         colorize :: Text -> Text
         colorize =
