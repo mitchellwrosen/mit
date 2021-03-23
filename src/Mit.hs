@@ -319,15 +319,15 @@ mitMerge target = do
     MitState
       { head = (),
         merging = do
-          MergeStatus _commits result _undos <- maybeMergeStatus
-          case result of
+          mergeStatus <- maybeMergeStatus
+          case mergeStatus.result of
             MergeResult'MergeConflicts _ -> Just target
             MergeResult'StashConflicts _ -> Nothing,
         ranCommitAt = Nothing,
         undos =
           case maybeMergeStatus of
             Nothing -> []
-            Just (MergeStatus _commits _result undos) -> undos
+            Just mergeStatus -> mergeStatus.undos
       }
 
   putSummary
@@ -337,29 +337,30 @@ mitMerge target = do
         conflicts =
           case maybeMergeStatus of
             Nothing -> []
-            Just (MergeStatus _commits result _undos) ->
-              case result of
+            Just mergeStatus ->
+              case mergeStatus.result of
                 MergeResult'MergeConflicts conflicts -> List1.toList conflicts
                 MergeResult'StashConflicts conflicts -> conflicts,
-        syncs =
-          case maybeMergeStatus of
-            Nothing -> []
-            Just (MergeStatus commits result _undos) ->
-              [ Sync
-                  { commits,
-                    result =
-                      case result of
-                        MergeResult'MergeConflicts _ -> Failure
-                        -- Even if we have conflicts from unstashing, we call this merge a success.
-                        MergeResult'StashConflicts _ -> Success,
-                    source = target,
-                    target = branch
-                  }
-              ]
+        syncs = do
+          mergeStatus <- maybeToList maybeMergeStatus
+          pure
+            Sync
+              { commits = mergeStatus.commits,
+                result =
+                  case mergeStatus.result of
+                    MergeResult'MergeConflicts _ -> Failure
+                    -- Even if we have conflicts from unstashing, we call this merge a success.
+                    MergeResult'StashConflicts _ -> Success,
+                source = target,
+                target = branch
+              }
       }
 
-data MergeStatus
-  = MergeStatus (List1 GitCommitInfo) MergeResult [Undo]
+data MergeStatus = MergeStatus
+  { commits :: List1 GitCommitInfo,
+    result :: MergeResult,
+    undos :: [Undo] -- FIXME List1
+  }
 
 data MergeResult
   = MergeResult'MergeConflicts (List1 GitConflict)
@@ -382,7 +383,7 @@ mitMerge' message target = do
             whenM gitMergeInProgress (git_ ["commit", "--message", message])
             maybeConflicts <- for maybeStash gitApplyStash
             pure (MergeResult'StashConflicts (fromMaybe [] maybeConflicts))
-      pure (Just (MergeStatus commits result undos))
+      pure (Just MergeStatus {commits, result, undos})
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
 mitSync :: IO ()
@@ -437,8 +438,8 @@ mitSyncWith context maybeUndos = do
             case context.fetchFailed of
               False -> PushAttempted <$> gitPush context.branch
               True -> pure (PushNotAttempted PushOffline)
-          Just (MergeStatus _commits result _undos) ->
-            case result of
+          Just mergeStatus ->
+            case mergeStatus.result of
               MergeResult'MergeConflicts _conflicts -> pure (PushNotAttempted PushWouldConflict) -- FIXME better reason
               MergeResult'StashConflicts _conflicts -> pure (PushNotAttempted PushNewCommits)
 
@@ -446,7 +447,7 @@ mitSyncWith context maybeUndos = do
         let undoMerge =
               case maybeMergeStatus of
                 Nothing -> []
-                Just (MergeStatus _commits _result us) -> us
+                Just mergeStatus -> mergeStatus.undos
          in case pushResult of
               PushAttempted True -> []
               PushAttempted False -> fromMaybe undoMerge maybeUndos
@@ -457,8 +458,8 @@ mitSyncWith context maybeUndos = do
     MitState
       { head = (),
         merging = do
-          MergeStatus _commits result _undos <- maybeMergeStatus
-          case result of
+          mergeStatus <- maybeMergeStatus
+          case mergeStatus.result of
             MergeResult'MergeConflicts _ -> Just context.branch
             MergeResult'StashConflicts _ -> Nothing,
         ranCommitAt = Nothing,
@@ -472,27 +473,21 @@ mitSyncWith context maybeUndos = do
         conflicts =
           case maybeMergeStatus of
             Nothing -> []
-            Just (MergeStatus _commits result _undos) ->
-              case result of
+            Just mergeStatus ->
+              case mergeStatus.result of
                 MergeResult'MergeConflicts conflicts -> List1.toList conflicts
                 MergeResult'StashConflicts conflicts -> conflicts,
         syncs =
           catMaybes
             [ do
-                commits <-
-                  case maybeMergeStatus of
-                    Nothing -> Nothing
-                    Just (MergeStatus commits _result _undos) -> Just commits
+                mergeStatus <- maybeMergeStatus
                 pure
                   Sync
-                    { commits,
+                    { commits = mergeStatus.commits,
                       result =
-                        case maybeMergeStatus of
-                          Nothing -> bug "no merge"
-                          Just (MergeStatus _commits result _undos) ->
-                            case result of
-                              MergeResult'MergeConflicts _ -> Failure
-                              MergeResult'StashConflicts _ -> Success,
+                        case mergeStatus.result of
+                          MergeResult'MergeConflicts _ -> Failure
+                          MergeResult'StashConflicts _ -> Success,
                       source = context.upstream,
                       target = context.branch
                     },
