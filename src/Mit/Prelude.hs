@@ -27,6 +27,10 @@ type List1 =
 (<&>) =
   flip fmap
 
+bug :: Text -> a
+bug =
+  error . Text.unpack
+
 drainTextHandle :: Handle -> IO [Text]
 drainTextHandle handle = do
   let loop acc =
