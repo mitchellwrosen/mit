@@ -4,7 +4,6 @@ author: Mitchell Rosen
 bug-reports: https://github.com/mitchellwrosen/mit/issues
 category: CLI
 copyright: Copyright (C) 2020 Mitchell Rosen
-description: A git wrapper with a streamlined UX.
 homepage: https://github.com/mitchellwrosen/mit
 license: MIT
 license-file: LICENSE
@@ -12,7 +11,15 @@ maintainer: Mitchell Rosen <mitchellwrosen@gmail.com>
 name: mit-3qvpPyAi6mH
 stability: experimental
 synopsis: A git wrapper with a streamlined UX
-version: 2
+version: 3
+
+description:
+  A git wrapper with a streamlined UX.
+
+  To install the @mit@ command-line tool, run @cabal install mit-3qvpPyAi6mH@.
+
+  This package's library component does not follow the Package Versioning Policy, and is only exposed for the test
+  suite.
 
 common component
   build-depends:
