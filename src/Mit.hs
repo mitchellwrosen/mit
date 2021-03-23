@@ -145,7 +145,7 @@ mitCommit = do
 
 mitCommit_ :: IO ()
 mitCommit_ = do
-  fetched <- git ["fetch", "origin"]
+  fetched <- gitFetch "origin"
   branch <- gitCurrentBranch
   let branch64 = Text.encodeBase64 branch
   head <- gitHead
@@ -174,11 +174,11 @@ mitCommit_ = do
       localCommits <- gitCommitsBetween maybeUpstreamHead "HEAD"
 
       pushResult <-
-        if
-            | null localCommits -> pure (PushNotAttempted PushNoCommits)
-            | existRemoteCommits -> pure (PushNotAttempted PushWouldConflict)
-            | not fetched -> pure (PushNotAttempted PushOffline)
-            | otherwise -> PushAttempted <$> gitPush branch
+        case (localCommits, existRemoteCommits, fetched) of
+          ([], _, _) -> pure (PushNotAttempted NothingToPush)
+          (_ : _, True, _) -> pure (PushNotAttempted ForkedHistory)
+          (_ : _, False, False) -> pure (PushNotAttempted Offline)
+          (_ : _, False, True) -> PushAttempted <$> gitPush branch
 
       let pushed =
             case pushResult of
@@ -244,8 +244,11 @@ mitCommit_ = do
 
 mitCommitMerge :: IO ()
 mitCommitMerge = do
-  context <- makeContext
-  maybeState0 <- readMitState context.branch64
+  branch <- gitCurrentBranch
+  let branch64 = Text.encodeBase64 branch
+  head <- gitHead
+
+  maybeState0 <- readMitState branch64
   let maybeMerging = do
         state0 <- maybeState0
         state0.merging
@@ -255,22 +258,22 @@ mitCommitMerge = do
       let message =
             fold
               [ "⅄ ",
-                if merging == context.branch then "" else (merging <> " → "),
-                context.branch
+                if merging == branch then "" else (merging <> " → "),
+                branch
               ]
        in git_ ["commit", "--all", "--message", message]
   let undos = maybe [] (.undos) maybeState0
   case [commit | Apply commit <- undos] of
-    [] -> mitSyncWith context (Just [Reset context.head])
+    [] -> mitSyncWith (Just [Reset head])
     stash : _ ->
       gitApplyStash stash >>= \case
         -- FIXME we just unstashed, now we're about to stash again :/
-        [] -> mitSyncWith context (Just [Reset context.head, Apply stash])
+        [] -> mitSyncWith (Just [Reset head, Apply stash])
         stashConflicts -> do
-          writeMitState context.branch64 MitState {head = (), merging = Nothing, ranCommitAt = Nothing, undos}
+          writeMitState branch64 MitState {head = (), merging = Nothing, ranCommitAt = Nothing, undos}
           putSummary
             Summary
-              { branch = context.branch,
+              { branch,
                 canUndo = not (null undos),
                 conflicts = stashConflicts,
                 syncs = []
@@ -281,21 +284,19 @@ data PushResult
   | PushNotAttempted PushNotAttemptedReason
 
 data PushNotAttemptedReason
-  = PushCommitHasConflicts -- local commit has conflict markers
-  | PushNewCommits -- we just pulled remote commits; don't push in case there's something local to address
-  | PushNoCommits -- no commits to push
-  | PushOffline -- fetch failed, so we seem offline
-  | PushWouldConflict -- local history has forked, need to sync
+  = ForkedHistory -- local history has forked, need to sync
+  | NothingToPush -- no commits to push
+  | Offline -- fetch failed, so we seem offline
+  | UnseenCommits -- we just pulled remote commits; don't push in case there's something local to address
 
 pushResultToSyncResult :: PushResult -> SyncResult
 pushResultToSyncResult = \case
-  PushAttempted True -> Success
-  PushAttempted False -> Failure
-  PushNotAttempted PushCommitHasConflicts -> Failure
-  PushNotAttempted PushNewCommits -> Pending
-  PushNotAttempted PushNoCommits -> Success -- doesnt matter, wont be shown
-  PushNotAttempted PushOffline -> Offline
-  PushNotAttempted PushWouldConflict -> Failure
+  PushAttempted False -> SyncResult'Failure
+  PushAttempted True -> SyncResult'Success
+  PushNotAttempted ForkedHistory -> SyncResult'Failure
+  PushNotAttempted NothingToPush -> SyncResult'Success -- doesnt matter, wont be shown
+  PushNotAttempted Offline -> SyncResult'Offline
+  PushNotAttempted UnseenCommits -> SyncResult'Pending
 
 -- FIXME if on branch 'foo', handle 'mitMerge foo' or 'mitMerge origin/foo' as 'mitSync'?
 mitMerge :: Text -> IO ()
@@ -348,9 +349,9 @@ mitMerge target = do
               { commits = mergeStatus.commits,
                 result =
                   case mergeStatus.result of
-                    MergeResult'MergeConflicts _ -> Failure
+                    MergeResult'MergeConflicts _ -> SyncResult'Failure
                     -- Even if we have conflicts from unstashing, we call this merge a success.
-                    MergeResult'StashConflicts _ -> Success,
+                    MergeResult'StashConflicts _ -> SyncResult'Success,
                 source = target,
                 target = branch
               }
@@ -391,10 +392,9 @@ mitSync = do
   dieIfNotInGitDir
   dieIfMergeInProgress
   whenM gitExistUntrackedFiles dieIfBuggyGit
-  context <- makeContext
-  mitSyncWith context Nothing
+  mitSyncWith Nothing
 
--- | @mitSyncWith context maybeUndos@
+-- | @mitSyncWith maybeUndos@
 --
 -- Whenever recording what 'mit undo' should do after 'mit sync', if 'maybeUndos' is provided, we use them instead.
 -- This is pulled into a function argument to get better undo behavior after committing a merge.
@@ -414,53 +414,49 @@ mitSync = do
 --
 -- Instead, we want to undo to the point before running the 'mit merge' that caused the conflicts, which were later
 -- resolved by 'mit commit'.
-mitSyncWith :: Context -> Maybe [Undo] -> IO ()
-mitSyncWith context maybeUndos = do
-  maybeUpstreamHead :: Maybe Text <-
-    git ["rev-parse", "refs/remotes/" <> context.upstream] <&> \case
-      Left _ -> Nothing
-      Right upstreamHead -> Just upstreamHead
+mitSyncWith :: Maybe [Undo] -> IO ()
+mitSyncWith maybeUndos = do
+  fetched <- gitFetch "origin"
+  branch <- gitCurrentBranch
+  let branch64 = Text.encodeBase64 branch
+  maybeUpstreamHead <- gitRemoteBranchHead "origin" branch
 
   maybeMergeStatus <-
     case maybeUpstreamHead of
       Nothing -> pure Nothing
-      Just upstreamHead -> mitMerge' ("⅄ " <> context.branch) upstreamHead
+      Just upstreamHead -> mitMerge' ("⅄ " <> branch) upstreamHead
 
-  localCommits :: [GitCommitInfo] <-
-    gitCommitsBetween maybeUpstreamHead "HEAD"
+  localCommits <- gitCommitsBetween maybeUpstreamHead "HEAD"
 
-  pushResult :: PushResult <-
-    case localCommits of
-      [] -> pure (PushNotAttempted PushNoCommits)
-      _ ->
-        case maybeMergeStatus of
-          Nothing ->
-            case context.fetchFailed of
-              False -> PushAttempted <$> gitPush context.branch
-              True -> pure (PushNotAttempted PushOffline)
-          Just mergeStatus ->
-            case mergeStatus.result of
-              MergeResult'MergeConflicts _conflicts -> pure (PushNotAttempted PushWouldConflict) -- FIXME better reason
-              MergeResult'StashConflicts _conflicts -> pure (PushNotAttempted PushNewCommits)
+  pushResult <-
+    case (localCommits, (.result) <$> maybeMergeStatus, fetched) of
+      ([], _, _) -> pure (PushNotAttempted NothingToPush)
+      -- "forked history" is ok - a bit different than history *already* having forked, in which case a push
+      -- would just fail, whereas this is just us choosing not to push while in the middle of a merge due to a
+      -- previous fork in the history
+      (_ : _, Just (MergeResult'MergeConflicts _), _) -> pure (PushNotAttempted ForkedHistory)
+      (_ : _, Just (MergeResult'StashConflicts _), _) -> pure (PushNotAttempted UnseenCommits)
+      (_ : _, Nothing, False) -> pure (PushNotAttempted Offline)
+      (_ : _, Nothing, True) -> PushAttempted <$> gitPush branch
+
+  let pushed =
+        case pushResult of
+          PushAttempted success -> success
+          PushNotAttempted _ -> False
 
   let undos =
-        let undoMerge =
-              case maybeMergeStatus of
-                Nothing -> []
-                Just mergeStatus -> mergeStatus.undos
-         in case pushResult of
-              PushAttempted True -> []
-              PushAttempted False -> fromMaybe undoMerge maybeUndos
-              PushNotAttempted _ -> fromMaybe undoMerge maybeUndos
+        case pushed of
+          False -> fromMaybe (maybe [] (.undos) maybeMergeStatus) maybeUndos
+          True -> []
 
   writeMitState
-    context.branch64
+    branch64
     MitState
       { head = (),
         merging = do
           mergeStatus <- maybeMergeStatus
           case mergeStatus.result of
-            MergeResult'MergeConflicts _ -> Just context.branch
+            MergeResult'MergeConflicts _ -> Just branch
             MergeResult'StashConflicts _ -> Nothing,
         ranCommitAt = Nothing,
         undos
@@ -468,7 +464,7 @@ mitSyncWith context maybeUndos = do
 
   putSummary
     Summary
-      { branch = context.branch,
+      { branch,
         canUndo = not (null undos),
         conflicts =
           case maybeMergeStatus of
@@ -486,10 +482,10 @@ mitSyncWith context maybeUndos = do
                     { commits = mergeStatus.commits,
                       result =
                         case mergeStatus.result of
-                          MergeResult'MergeConflicts _ -> Failure
-                          MergeResult'StashConflicts _ -> Success,
-                      source = context.upstream,
-                      target = context.branch
+                          MergeResult'MergeConflicts _ -> SyncResult'Failure
+                          MergeResult'StashConflicts _ -> SyncResult'Success,
+                      source = "origin/" <> branch,
+                      target = branch
                     },
               do
                 commits <- List1.nonEmpty localCommits
@@ -497,8 +493,8 @@ mitSyncWith context maybeUndos = do
                   Sync
                     { commits,
                       result = pushResultToSyncResult pushResult,
-                      source = context.branch,
-                      target = context.upstream
+                      source = branch,
+                      target = "origin/" <> branch
                     }
             ]
       }
@@ -524,28 +520,6 @@ mitUndo = do
       Revert _ : _ -> True
       _ : undos -> undosContainRevert undos
 
-data Context = Context
-  { branch :: Text,
-    branch64 :: Text,
-    fetchFailed :: Bool,
-    head :: Text,
-    upstream :: Text
-  }
-
-makeContext :: IO Context
-makeContext = do
-  branch <- gitCurrentBranch
-  head <- gitHead
-  fetchFailed <- not <$> git ["fetch", "origin"]
-  pure
-    Context
-      { branch,
-        branch64 = Text.encodeBase64 branch,
-        fetchFailed,
-        head,
-        upstream = "origin/" <> branch
-      }
-
 data Summary = Summary
   { branch :: Text,
     canUndo :: Bool,
@@ -561,10 +535,10 @@ data Sync = Sync
   }
 
 data SyncResult
-  = Offline
-  | Failure
-  | Pending
-  | Success
+  = SyncResult'Failure
+  | SyncResult'Offline
+  | SyncResult'Pending
+  | SyncResult'Success
 
 -- FIXME show some graph of where local/remote is at
 putSummary :: Summary -> IO ()
@@ -588,10 +562,10 @@ putSummary summary =
         colorize :: Text -> Text
         colorize =
           case sync.result of
-            Offline -> Text.brightBlack
-            Failure -> Text.red
-            Pending -> Text.yellow
-            Success -> Text.green
+            SyncResult'Failure -> Text.red
+            SyncResult'Offline -> Text.brightBlack
+            SyncResult'Pending -> Text.yellow
+            SyncResult'Success -> Text.green
     undoLines :: [Text]
     undoLines =
       if summary.canUndo
@@ -698,4 +672,4 @@ applyUndos =
   traverse_ \case
     Apply commit -> void (gitApplyStash commit)
     Reset commit -> gitResetHard commit
-    Revert commit -> git_ ["revert", commit]
+    Revert commit -> gitRevert commit

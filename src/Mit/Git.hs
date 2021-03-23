@@ -286,6 +286,10 @@ gitResetHard commit = do
   git_ ["clean", "-d", "--force"]
   git ["reset", "--hard", commit]
 
+gitRevert :: Text -> IO ()
+gitRevert commit =
+  git_ ["revert", commit]
+
 -- | Stash uncommitted changes (if any).
 gitStash :: IO (Maybe Text)
 gitStash = do
