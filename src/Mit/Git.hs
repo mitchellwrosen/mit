@@ -116,10 +116,17 @@ gitBranch :: Text -> IO ()
 gitBranch branch =
   git_ ["branch", "--no-track", branch]
 
--- | Does the given branch (refs/heads/...) exist?
+-- | Does the given local branch (refs/heads/...) exist?
 gitBranchExists :: Text -> IO Bool
 gitBranchExists branch =
   git ["rev-parse", "--verify", "refs/heads/" <> branch]
+
+-- | Get the head of a local branch (refs/heads/...).
+gitBranchHead :: Text -> IO (Maybe Text)
+gitBranchHead branch =
+  git ["rev-parse", "refs/heads/" <> branch] <&> \case
+    Left _ -> Nothing
+    Right head -> Just head
 
 -- | Get the directory a branch's worktree is checked out in, if it exists.
 gitBranchWorktreeDir :: Text -> IO (Maybe Text)
@@ -192,6 +199,12 @@ gitDiff = do
     False -> Differences
     True -> NoDifferences
 
+gitExistCommitsBetween :: Text -> Text -> IO Bool
+gitExistCommitsBetween commit1 commit2 =
+  if commit1 == commit2
+    then pure False
+    else isJust <$> git ["rev-list", "--max-count=1", commit1 <> ".." <> commit2]
+
 -- | Do any untracked files exist?
 gitExistUntrackedFiles :: IO Bool
 gitExistUntrackedFiles =
@@ -204,6 +217,10 @@ gitFetch remote =
 gitFetch_ :: Text -> IO ()
 gitFetch_ =
   void . gitFetch
+
+gitHead :: IO Text
+gitHead =
+  git ["rev-parse", "HEAD"]
 
 -- | List all untracked files.
 gitListUntrackedFiles :: IO [Text]
@@ -255,6 +272,13 @@ gitPush branch =
 gitRemoteBranchExists :: Text -> Text -> IO Bool
 gitRemoteBranchExists remote branch =
   git ["rev-parse", "--verify", "refs/remotes/" <> remote <> "/" <> branch]
+
+-- | Get the head of a remote branch.
+gitRemoteBranchHead :: Text -> Text -> IO (Maybe Text)
+gitRemoteBranchHead remote branch =
+  git ["rev-parse", "refs/remotes/" <> remote <> "/" <> branch] <&> \case
+    Left _ -> Nothing
+    Right head -> Just head
 
 -- | Blow away untracked files, and hard-reset to the given commit
 gitResetHard :: Text -> IO ()

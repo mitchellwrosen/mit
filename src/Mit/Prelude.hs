@@ -55,6 +55,14 @@ text2int :: Text -> Maybe Integer
 text2int =
   readMaybe . Text.unpack
 
+onLeftM :: Monad m => (a -> m b) -> m (Either a b) -> m b
+onLeftM mx my =
+  my >>= either mx pure
+
+onNothingM :: Monad m => m a -> m (Maybe a) -> m a
+onNothingM mx my =
+  my >>= maybe mx pure
+
 unlessM :: Monad m => m Bool -> m () -> m ()
 unlessM mx action =
   mx >>= \case

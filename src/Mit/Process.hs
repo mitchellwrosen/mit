@@ -37,3 +37,8 @@ instance a ~ ExitCode => ProcessOutput (Either a Text) where
         case out of
           [] -> throwIO (userError "no stdout")
           line : _ -> pure (Right line)
+
+instance a ~ Text => ProcessOutput (Maybe a) where
+  fromProcessOutput out _ code = do
+    when (code /= ExitSuccess) (exitWith code)
+    pure (listToMaybe out)

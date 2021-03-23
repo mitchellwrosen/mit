@@ -137,15 +137,109 @@ mitCommit = do
   dieIfNotInGitDir
   whenM gitExistUntrackedFiles dieIfBuggyGit
   gitDiff >>= \case
-    Differences -> pure ()
+    Differences ->
+      gitMergeInProgress >>= \case
+        False -> mitCommit_
+        True -> mitCommitMerge
     NoDifferences -> exitFailure
-  context <- makeContext
-  gitMergeInProgress >>= \case
-    False -> mitCommitWith context
-    True -> mitCommitMerge context
 
-mitCommitMerge :: Context -> IO ()
-mitCommitMerge context = do
+mitCommit_ :: IO ()
+mitCommit_ = do
+  fetched <- git ["fetch", "origin"]
+  branch <- gitCurrentBranch
+  let branch64 = Text.encodeBase64 branch
+  head <- gitHead
+  maybeUpstreamHead <- gitRemoteBranchHead "origin" branch
+  existRemoteCommits <- maybe (pure False) (gitExistCommitsBetween head) maybeUpstreamHead
+  existLocalCommits <- maybe (pure True) (\upstreamHead -> gitExistCommitsBetween upstreamHead "HEAD") maybeUpstreamHead
+  maybeState0 <- readMitState branch64
+
+  shouldWarnAboutFork <- do
+    case existRemoteCommits && not existLocalCommits of
+      False -> pure False
+      True -> do
+        let theyRanMitCommitRecently =
+              case maybeState0 of
+                Just MitState {ranCommitAt = Just t0} -> do
+                  t1 <- Clock.toNanoSecs <$> Clock.getTime Clock.Realtime
+                  pure ((t1 - t0) < 10_000_000_000)
+                _ -> pure False
+        not <$> theyRanMitCommitRecently
+
+  case shouldWarnAboutFork of
+    False -> do
+      stash <- gitCreateStash
+      committed <- gitCommit
+      localCommits <- gitCommitsBetween maybeUpstreamHead "HEAD"
+
+      pushResult <-
+        if
+            | null localCommits -> pure (PushNotAttempted PushNoCommits)
+            | existRemoteCommits -> pure (PushNotAttempted PushWouldConflict)
+            | not fetched -> pure (PushNotAttempted PushOffline)
+            | otherwise -> PushAttempted <$> gitPush branch
+
+      let pushed =
+            case pushResult of
+              PushAttempted success -> success
+              PushNotAttempted _ -> False
+
+      ranCommitAt <-
+        case committed of
+          False -> Just . Clock.toNanoSecs <$> Clock.getTime Clock.Realtime
+          True -> pure Nothing
+
+      undos <-
+        case (pushed, committed, localCommits) of
+          (False, False, _) -> pure (maybe [] (.undos) maybeState0)
+          (False, True, _) -> pure [Reset head, Apply stash]
+          (True, True, [_]) -> do
+            head1 <- gitHead
+            pure [Revert head1, Apply stash]
+          (True, _, _) -> pure []
+
+      writeMitState branch64 MitState {head = (), merging = Nothing, ranCommitAt, undos}
+
+      putSummary
+        Summary
+          { branch,
+            -- Whether we "can undo" from here is not exactly if the state says we can undo, because of one corner case:
+            -- we ran 'mit commit', then aborted the commit, and ultimately didn't push any other local changes.
+            --
+            -- In this case, the underlying state hasn't changed, so 'mit undo' will still work as if the 'mit commit'
+            -- was never run, we merely don't want to *say* "run 'mit undo' to undo" as feedback, because that sounds as
+            -- if it would undo the last command run, namely the 'mit commit' that was aborted.
+            canUndo = not (null undos) && committed,
+            conflicts = [],
+            syncs =
+              [ Sync
+                  { commits = localCommits,
+                    result = pushResultToSyncResult pushResult,
+                    source = branch,
+                    target = "origin/" <> branch
+                  }
+              ]
+          }
+    True -> do
+      ranCommitAt <- Just . Clock.toNanoSecs <$> Clock.getTime Clock.Realtime
+      let state0 =
+            case maybeState0 of
+              Nothing -> MitState {head = (), merging = Nothing, ranCommitAt, undos = []}
+              Just s0 -> s0 {ranCommitAt}
+      writeMitState branch64 state0
+      putLines
+        [ "",
+          "  " <> Text.italic branch <> " is not up to date.",
+          "",
+          "  Run " <> Text.bold (Text.blue "mit sync") <> " first, or run " <> Text.bold (Text.blue "mit commit")
+            <> " again to record a commit anyway.",
+          ""
+        ]
+      exitFailure
+
+mitCommitMerge :: IO ()
+mitCommitMerge = do
+  context <- makeContext
   maybeState0 <- readMitState context.branch64
   let maybeMerging = do
         state0 <- maybeState0
@@ -168,8 +262,7 @@ mitCommitMerge context = do
         -- FIXME we just unstashed, now we're about to stash again :/
         [] -> mitSyncWith context (Just [Reset context.head, Apply stash])
         stashConflicts -> do
-          head <- git ["rev-parse", "HEAD"]
-          writeMitState context MitState {head, merging = Nothing, ranCommitAt = Nothing, undos}
+          writeMitState context.branch64 MitState {head = (), merging = Nothing, ranCommitAt = Nothing, undos}
           putSummary
             Summary
               { branch = context.branch,
@@ -177,107 +270,6 @@ mitCommitMerge context = do
                 conflicts = stashConflicts,
                 syncs = []
               }
-
-mitCommitWith :: Context -> IO ()
-mitCommitWith context = do
-  maybeUpstreamHead :: Maybe Text <-
-    git ["rev-parse", "refs/remotes/" <> context.upstream] <&> \case
-      Left _ -> Nothing
-      Right upstreamHead -> Just upstreamHead
-
-  remoteCommits :: [GitCommitInfo] <-
-    case maybeUpstreamHead of
-      Nothing -> pure []
-      Just upstreamHead -> gitCommitsBetween (Just context.head) upstreamHead
-
-  localCommits0 <- gitCommitsBetween maybeUpstreamHead "HEAD"
-  maybeState0 <- readMitState context.branch64
-
-  shouldWarnAboutFork <- do
-    let wouldFork = not (null remoteCommits) && null localCommits0
-    case wouldFork of
-      False -> pure False
-      True -> do
-        let theyRanMitCommitRecently =
-              case maybeState0 of
-                Just MitState {ranCommitAt = Just t0} -> do
-                  t1 <- Clock.toNanoSecs <$> Clock.getTime Clock.Realtime
-                  pure ((t1 - t0) < 10_000_000_000)
-                _ -> pure False
-        not <$> theyRanMitCommitRecently
-
-  case shouldWarnAboutFork of
-    False -> do
-      stash <- gitCreateStash
-      commitResult <- gitCommit
-      localCommits <- if commitResult then gitCommitsBetween maybeUpstreamHead "HEAD" else pure localCommits0
-
-      pushResult <-
-        if
-            | null localCommits -> pure (PushNotAttempted PushNoCommits)
-            | not (null remoteCommits) -> pure (PushNotAttempted PushWouldConflict)
-            | context.fetchFailed -> pure (PushNotAttempted PushOffline)
-            | otherwise -> PushAttempted <$> gitPush context.branch
-
-      state1 <- do
-        ranCommitAt <-
-          case commitResult of
-            False -> Just . Clock.toNanoSecs <$> Clock.getTime Clock.Realtime
-            True -> pure Nothing
-        undos <-
-          let onDidntPush =
-                case commitResult of
-                  False -> maybe [] (.undos) maybeState0
-                  True -> [Reset context.head, Apply stash]
-           in case pushResult of
-                PushAttempted True ->
-                  case (commitResult, localCommits) of
-                    (True, [_]) -> do
-                      head <- git ["rev-parse", "HEAD"]
-                      pure [Revert head, Apply stash]
-                    _ -> pure []
-                PushAttempted False -> pure onDidntPush
-                PushNotAttempted _ -> pure onDidntPush
-        pure MitState {head = (), merging = Nothing, ranCommitAt, undos}
-
-      writeMitState context state1
-
-      putSummary
-        Summary
-          { branch = context.branch,
-            -- Whether we "can undo" from here is not exactly if the state says we can undo, because of one corner case:
-            -- we ran 'mit commit', then aborted the commit, and ultimately didn't push any other local changes.
-            --
-            -- In this case, the underlying state hasn't changed, so 'mit undo' will still work as if the 'mit commit'
-            -- was never run, we merely don't want to *say* "run 'mit undo' to undo" as feedback, because that sounds as
-            -- if it would undo the last command run, namely the 'mit commit' that was aborted.
-            canUndo = not (null state1.undos) && commitResult,
-            conflicts = [],
-            syncs =
-              [ Sync
-                  { commits = localCommits,
-                    result = pushResultToSyncResult pushResult,
-                    source = context.branch,
-                    target = context.upstream
-                  }
-              ]
-          }
-    True -> do
-      ranCommitAt <- Just . Clock.toNanoSecs <$> Clock.getTime Clock.Realtime
-      let state0 =
-            case maybeState0 of
-              Nothing -> MitState {head = (), merging = Nothing, ranCommitAt, undos = []}
-              Just s0 -> s0 {ranCommitAt}
-      writeMitState context state0
-      putLines
-        [ "",
-          "  " <> Text.italic context.branch <> " is not up to date.",
-          "",
-          "  Run " <> Text.bold (Text.blue "mit sync") <> " first, or run " <> Text.bold (Text.blue "mit commit")
-            <> " again to record a commit anyway.",
-          ""
-        ]
-      exitFailure
 
 data PushResult
   = PushAttempted Bool
@@ -307,21 +299,18 @@ mitMerge target = do
   dieIfMergeInProgress
   whenM gitExistUntrackedFiles dieIfBuggyGit
 
-  context <- makeContext
+  branch <- gitCurrentBranch
+  let branch64 = Text.encodeBase64 branch
 
   -- When given 'mit merge foo', prefer merging 'origin/foo' over 'foo'
   targetCommit <- do
-    git ["rev-parse", "origin/" <> target] >>= \case
-      Left _ ->
-        git ["rev-parse", target] >>= \case
-          Left _ -> exitFailure
-          Right commit -> pure commit
-      Right commit -> pure commit
+    _fetched <- gitFetch "origin"
+    gitRemoteBranchHead "origin" target & onNothingM (git ["rev-parse", target] & onLeftM \_ -> exitFailure)
 
-  mergeStatus <- mitMerge' ("⅄ " <> target <> " → " <> context.branch) targetCommit
+  mergeStatus <- mitMerge' ("⅄ " <> target <> " → " <> branch) targetCommit
 
   writeMitState
-    context
+    branch64
     MitState
       { head = (),
         merging =
@@ -338,7 +327,7 @@ mitMerge target = do
 
   putSummary
     Summary
-      { branch = context.branch,
+      { branch,
         canUndo =
           case mergeStatus of
             MergeStatus'Merge _ _ _ -> True
@@ -363,7 +352,7 @@ mitMerge target = do
                         -- Even if we have conflicts from unstashing, we call this merge a success.
                         MergeResult'StashConflicts _ -> Success,
                     source = target,
-                    target = context.branch
+                    target = branch
                   }
               ]
       }
@@ -378,7 +367,7 @@ data MergeResult
 
 mitMerge' :: Text -> Text -> IO MergeStatus
 mitMerge' message target = do
-  head <- git ["rev-parse", "HEAD"]
+  head <- gitHead
   (List1.nonEmpty <$> gitCommitsBetween (Just head) target) >>= \case
     Nothing -> pure MergeStatus'NoMerge
     Just commits -> do
@@ -464,7 +453,7 @@ mitSyncWith context maybeUndos = do
               PushNotAttempted _ -> fromMaybe undoMerge maybeUndos
 
   writeMitState
-    context
+    context.branch64
     MitState
       { head = (),
         merging =
@@ -544,7 +533,7 @@ data Context = Context
 makeContext :: IO Context
 makeContext = do
   branch <- gitCurrentBranch
-  head <- git ["rev-parse", "HEAD"]
+  head <- gitHead
   fetchFailed <- not <$> git ["fetch", "origin"]
   pure
     Context
@@ -645,7 +634,7 @@ parseMitState contents = do
 
 readMitState :: Text -> IO (Maybe (MitState ()))
 readMitState branch64 = do
-  head <- git ["rev-parse", "HEAD"]
+  head <- gitHead
   try (Text.readFile (mitfile branch64)) >>= \case
     Left (_ :: IOException) -> pure Nothing
     Right contents -> do
@@ -659,9 +648,9 @@ readMitState branch64 = do
           pure Nothing
         Just state -> pure (Just (state {head = ()} :: MitState ()))
 
-writeMitState :: Context -> MitState () -> IO ()
-writeMitState context state = do
-  head <- git ["rev-parse", "HEAD"]
+writeMitState :: Text -> MitState () -> IO ()
+writeMitState branch64 state = do
+  head <- gitHead
   let contents :: Text
       contents =
         Text.unlines
@@ -670,7 +659,7 @@ writeMitState context state = do
             "ran-commit-at " <> maybe Text.empty int2text state.ranCommitAt,
             "undos " <> showUndos state.undos
           ]
-  Text.writeFile (mitfile context.branch64) contents `catch` \(_ :: IOException) -> pure ()
+  Text.writeFile (mitfile branch64) contents `catch` \(_ :: IOException) -> pure ()
 
 mitfile :: Text -> FilePath
 mitfile branch64 =
