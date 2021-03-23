@@ -2,6 +2,7 @@
 
 module Mit.Git where
 
+import qualified Data.List as List
 import qualified Data.Text as Text
 import qualified Data.Text.ANSI as Text
 import Mit.Globals (debug)
@@ -110,6 +111,24 @@ gitApplyStash stash = do
   gitUnstageChanges
   pure conflicts
 
+-- | Create a branch.
+gitBranch :: Text -> IO ()
+gitBranch branch =
+  git_ ["branch", "--no-track", branch]
+
+-- | Does the given branch (refs/heads/...) exist?
+gitBranchExists :: Text -> IO Bool
+gitBranchExists branch =
+  git ["rev-parse", "--verify", "refs/heads/" <> branch]
+
+-- | Get the directory a branch's worktree is checked out in, if it exists.
+gitBranchWorktreeDir :: Text -> IO (Maybe Text)
+gitBranchWorktreeDir branch = do
+  worktrees <- gitWorktreeList
+  case List.find (\worktree -> worktree.branch == Just branch) worktrees of
+    Nothing -> pure Nothing
+    Just worktree -> pure (Just worktree.directory)
+
 gitCommit :: IO Bool
 gitCommit =
   queryTerminal 0 >>= \case
@@ -149,6 +168,10 @@ gitCommitsBetween commit1 commit2 =
         [author, date, hash, shorthash, subject] -> GitCommitInfo {author, date, hash, shorthash, subject}
         _ -> error (Text.unpack line)
 
+gitConflicts :: IO [GitConflict]
+gitConflicts =
+  mapMaybe parseGitConflict <$> git ["status", "--no-renames", "--porcelain=v1"]
+
 gitCreateStash :: IO Text
 gitCreateStash = do
   git_ ["add", "--all"] -- it seems certain things (like renames), unless staged, cannot be stashed
@@ -174,9 +197,13 @@ gitExistUntrackedFiles :: IO Bool
 gitExistUntrackedFiles =
   not . null <$> gitListUntrackedFiles
 
-gitConflicts :: IO [GitConflict]
-gitConflicts =
-  mapMaybe parseGitConflict <$> git ["status", "--no-renames", "--porcelain=v1"]
+gitFetch :: Text -> IO Bool
+gitFetch remote =
+  git ["fetch", remote]
+
+gitFetch_ :: Text -> IO ()
+gitFetch_ =
+  void . gitFetch
 
 -- | List all untracked files.
 gitListUntrackedFiles :: IO [Text]
@@ -224,6 +251,11 @@ gitPush :: Text -> IO Bool
 gitPush branch =
   git ["push", "--set-upstream", "origin", branch <> ":" <> branch]
 
+-- | Does the given remote branch (refs/remotes/...) exist?
+gitRemoteBranchExists :: Text -> Text -> IO Bool
+gitRemoteBranchExists remote branch =
+  git ["rev-parse", "--verify", "refs/remotes/" <> remote <> "/" <> branch]
+
 -- | Blow away untracked files, and hard-reset to the given commit
 gitResetHard :: Text -> IO ()
 gitResetHard commit = do
@@ -239,6 +271,10 @@ gitStash = do
       gitResetHard "HEAD"
       pure (Just stash)
     NoDifferences -> pure Nothing
+
+gitSwitch :: Text -> IO ()
+gitSwitch branch =
+  git_ ["switch", branch]
 
 gitUnstageChanges :: IO ()
 gitUnstageChanges = do
@@ -257,17 +293,23 @@ gitVersion = do
     z <- readMaybe (Text.unpack sz)
     pure (pure (GitVersion x y z))
 
+data GitWorktree = GitWorktree
+  { branch :: Maybe Text,
+    commit :: Text,
+    directory :: Text
+  }
+
 -- /dir/one 0efd393c35 [oingo]         -> ("/dir/one", "0efd393c35", Just "oingo")
 -- /dir/two dc0c114266 (detached HEAD) -> ("/dir/two", "dc0c114266", Nothing)
-gitWorktreeList :: IO [(Text, Text, Maybe Text)]
+gitWorktreeList :: IO [GitWorktree]
 gitWorktreeList = do
   map f <$> git ["worktree", "list"]
   where
-    f :: Text -> (Text, Text, Maybe Text)
+    f :: Text -> GitWorktree
     f line =
       case Text.words line of
-        [dir, commit, stripBrackets -> Just branch] -> (dir, commit, Just branch)
-        [dir, commit, "(detached", "HEAD)"] -> (dir, commit, Nothing)
+        [directory, commit, stripBrackets -> Just branch] -> GitWorktree {branch = Just branch, commit, directory}
+        [directory, commit, "(detached", "HEAD)"] -> GitWorktree {branch = Nothing, commit, directory}
         _ -> error (Text.unpack line)
       where
         stripBrackets :: Text -> Maybe Text

@@ -3,7 +3,6 @@
 
 module Mit where
 
-import qualified Data.List as List
 import qualified Data.List.NonEmpty as List1
 import qualified Data.Text as Text
 import qualified Data.Text.ANSI as Text
@@ -100,30 +99,25 @@ mitBranch :: Text -> IO ()
 mitBranch branch = do
   dieIfNotInGitDir
 
-  unlessM (doesDirectoryExist (Text.unpack worktreeDir)) do
-    worktrees :: [(Text, Text, Maybe Text)] <-
-      gitWorktreeList
-
-    case List.find (\(_, _, worktreeBranch) -> worktreeBranch == Just branch) worktrees of
-      Nothing -> do
-        git_ ["worktree", "add", "--detach", worktreeDir]
-        withCurrentDirectory (Text.unpack worktreeDir) do
-          git ["rev-parse", "--verify", "refs/heads/" <> branch] >>= \case
-            False -> do
-              git_ ["branch", "--no-track", branch]
-              git_ ["switch", branch]
-
-              _fetchResult :: Bool <-
-                git ["fetch", "origin"]
-
-              whenM (git ["rev-parse", "--verify", "refs/remotes/" <> upstream]) do
-                git_ ["reset", "--hard", upstream]
-                git_ ["branch", "--set-upstream-to", upstream]
-            True -> git_ ["switch", branch]
-      Just (dir, _, _) ->
-        unless (worktreeDir == dir) do
-          Text.putStrLn ("Branch " <> Text.bold branch <> " is already checked out in " <> Text.bold dir)
-          exitFailure
+  gitBranchWorktreeDir branch >>= \case
+    Nothing ->
+      doesDirectoryExist (Text.unpack worktreeDir) >>= \case
+        False -> do
+          git_ ["worktree", "add", "--detach", worktreeDir]
+          withCurrentDirectory (Text.unpack worktreeDir) do
+            gitBranchExists branch >>= \case
+              False -> do
+                gitBranch branch
+                gitSwitch branch
+                gitFetch_ "origin"
+                whenM (gitRemoteBranchExists "origin" branch) do
+                  git_ ["reset", "--hard", upstream]
+                  git_ ["branch", "--set-upstream-to", upstream]
+              True -> gitSwitch branch
+        True -> die ["Directory " <> Text.bold worktreeDir <> " already exists."]
+    Just directory ->
+      unless (directory == worktreeDir) do
+        die [Text.bold branch <> " is already checked out in " <> Text.bold directory <> "."]
   where
     upstream :: Text
     upstream =
