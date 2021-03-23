@@ -437,7 +437,10 @@ mitSyncWith context maybeUndos = do
       Left _ -> Nothing
       Right upstreamHead -> Just upstreamHead
 
-  maybeMergeStatus <- for maybeUpstreamHead (mitMerge' ("⅄ " <> context.branch))
+  mergeStatus <-
+    case maybeUpstreamHead of
+      Nothing -> pure MergeStatus'NoMerge
+      Just upstreamHead -> mitMerge' ("⅄ " <> context.branch) upstreamHead
 
   localCommits :: [GitCommitInfo] <-
     gitCommitsBetween maybeUpstreamHead "HEAD"
@@ -446,26 +449,21 @@ mitSyncWith context maybeUndos = do
     case localCommits of
       [] -> pure (PushNotAttempted PushNoCommits)
       _ ->
-        case maybeMergeStatus of
-          Nothing ->
+        case mergeStatus of
+          MergeStatus'NoMerge ->
             case context.fetchFailed of
               False -> PushAttempted <$> gitPush context.branch
               True -> pure (PushNotAttempted PushOffline)
-          Just MergeStatus'NoMerge ->
-            case context.fetchFailed of
-              False -> PushAttempted <$> gitPush context.branch
-              True -> pure (PushNotAttempted PushOffline)
-          Just (MergeStatus'Merge _commits result _undos) ->
+          MergeStatus'Merge _commits result _undos ->
             case result of
               MergeResult'MergeConflicts _conflicts -> pure (PushNotAttempted PushWouldConflict) -- FIXME better reason
               MergeResult'StashConflicts _conflicts -> pure (PushNotAttempted PushNewCommits)
 
   let undos =
         let undoMerge =
-              case maybeMergeStatus of
-                Nothing -> []
-                Just MergeStatus'NoMerge -> []
-                Just (MergeStatus'Merge _commits _result us) -> us
+              case mergeStatus of
+                MergeStatus'Merge _commits _result us -> us
+                MergeStatus'NoMerge -> []
          in case pushResult of
               PushAttempted True -> []
               PushAttempted False -> fromMaybe undoMerge maybeUndos
@@ -476,11 +474,10 @@ mitSyncWith context maybeUndos = do
     MitState
       { head = (),
         merging =
-          case maybeMergeStatus of
-            Nothing -> Nothing
-            Just (MergeStatus'Merge _ (MergeResult'MergeConflicts _) _) -> Just context.branch
-            Just (MergeStatus'Merge _ (MergeResult'StashConflicts _) _) -> Nothing
-            Just MergeStatus'NoMerge -> Nothing,
+          case mergeStatus of
+            MergeStatus'Merge _ (MergeResult'MergeConflicts _) _ -> Just context.branch
+            MergeStatus'Merge _ (MergeResult'StashConflicts _) _ -> Nothing
+            MergeStatus'NoMerge -> Nothing,
         ranCommitAt = Nothing,
         undos
       }
@@ -490,28 +487,25 @@ mitSyncWith context maybeUndos = do
       { branch = context.branch,
         canUndo = not (null undos),
         conflicts =
-          case maybeMergeStatus of
-            Nothing -> []
-            Just (MergeStatus'Merge _commits result _undos) ->
+          case mergeStatus of
+            MergeStatus'Merge _commits result _undos ->
               case result of
                 MergeResult'MergeConflicts conflicts -> List1.toList conflicts
                 MergeResult'StashConflicts conflicts -> conflicts
-            Just MergeStatus'NoMerge -> [],
+            MergeStatus'NoMerge -> [],
         syncs =
           [ Sync
               { commits =
-                  case maybeMergeStatus of
-                    Nothing -> []
-                    Just MergeStatus'NoMerge -> []
-                    Just (MergeStatus'Merge commits _result _undos) -> List1.toList commits,
+                  case mergeStatus of
+                    MergeStatus'Merge commits _result _undos -> List1.toList commits
+                    MergeStatus'NoMerge -> [],
                 result =
-                  case maybeMergeStatus of
-                    Nothing -> Success
-                    Just MergeStatus'NoMerge -> Success
-                    Just (MergeStatus'Merge _commits result _undos) ->
+                  case mergeStatus of
+                    MergeStatus'Merge _commits result _undos ->
                       case result of
                         MergeResult'MergeConflicts _ -> Failure
-                        MergeResult'StashConflicts _ -> Success,
+                        MergeResult'StashConflicts _ -> Success
+                    MergeStatus'NoMerge -> Success,
                 source = context.upstream,
                 target = context.branch
               },
