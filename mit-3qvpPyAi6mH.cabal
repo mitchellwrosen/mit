@@ -38,6 +38,7 @@ common component
     MultiParamTypeClasses
     MultiWayIf
     NamedFieldPuns
+    NoImplicitPrelude
     NumericUnderscores
     OverloadedStrings
     ScopedTypeVariables
@@ -52,6 +53,10 @@ library
   import: component
   exposed-modules:
     Mit
+    Mit.Git
+    Mit.Globals
+    Mit.Prelude
+    Mit.Process
   hs-source-dirs: src
 
 executable mit
