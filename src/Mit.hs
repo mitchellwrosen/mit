@@ -133,12 +133,12 @@ mitCommit :: IO ()
 mitCommit = do
   dieIfNotInGitDir
   whenM gitExistUntrackedFiles dieIfBuggyGit
-  gitDiff >>= \case
-    Differences ->
-      gitMergeInProgress >>= \case
-        False -> mitCommit_
-        True -> mitCommitMerge
-    NoDifferences -> exitFailure
+  gitMergeInProgress >>= \case
+    False ->
+      gitDiff >>= \case
+        Differences -> mitCommit_
+        NoDifferences -> exitFailure
+    True -> mitCommitMerge
 
 mitCommit_ :: IO ()
 mitCommit_ = do
