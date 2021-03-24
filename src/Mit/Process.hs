@@ -2,11 +2,12 @@
 
 module Mit.Process where
 
+import qualified Data.Sequence as Seq
 import Mit.Prelude
 import System.Exit (ExitCode (..), exitWith)
 
 class ProcessOutput a where
-  fromProcessOutput :: [Text] -> [Text] -> ExitCode -> IO a
+  fromProcessOutput :: Seq Text -> Seq Text -> ExitCode -> IO a
 
 instance ProcessOutput () where
   fromProcessOutput _ _ code =
@@ -21,13 +22,12 @@ instance ProcessOutput Text where
   fromProcessOutput out _ code = do
     when (code /= ExitSuccess) (exitWith code)
     case out of
-      [] -> throwIO (userError "no stdout")
-      line : _ -> pure line
+      Seq.Empty -> throwIO (userError "no stdout")
+      line Seq.:<| _ -> pure line
 
 instance a ~ Text => ProcessOutput [a] where
-  fromProcessOutput out _ code = do
-    when (code /= ExitSuccess) (exitWith code)
-    pure out
+  fromProcessOutput out err code =
+    toList @Seq <$> fromProcessOutput out err code
 
 instance a ~ ExitCode => ProcessOutput (Either a Text) where
   fromProcessOutput out _ code =
@@ -35,10 +35,17 @@ instance a ~ ExitCode => ProcessOutput (Either a Text) where
       ExitFailure _ -> pure (Left code)
       ExitSuccess ->
         case out of
-          [] -> throwIO (userError "no stdout")
-          line : _ -> pure (Right line)
+          Seq.Empty -> throwIO (userError "no stdout")
+          line Seq.:<| _ -> pure (Right line)
 
 instance a ~ Text => ProcessOutput (Maybe a) where
   fromProcessOutput out _ code = do
     when (code /= ExitSuccess) (exitWith code)
-    pure (listToMaybe out)
+    case out of
+      Seq.Empty -> pure Nothing
+      line Seq.:<| _ -> pure (Just line)
+
+instance a ~ Text => ProcessOutput (Seq a) where
+  fromProcessOutput out _ code = do
+    when (code /= ExitSuccess) (exitWith code)
+    pure out

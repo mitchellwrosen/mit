@@ -12,11 +12,12 @@ import Data.Foldable as X
 import Data.Function as X
 import qualified Data.List.NonEmpty as List1
 import Data.Maybe as X
+import Data.Sequence as X (Seq)
 import Data.Text as X (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
 import Data.Traversable as X
-import System.IO (Handle, hIsEOF)
+import Mit.Seq1 as X (Seq1)
 import Text.Read as X (readMaybe)
 import Prelude as X hiding (head, id)
 
@@ -30,16 +31,6 @@ type List1 =
 bug :: Text -> a
 bug =
   error . Text.unpack
-
-drainTextHandle :: Handle -> IO [Text]
-drainTextHandle handle = do
-  let loop acc =
-        hIsEOF handle >>= \case
-          False -> do
-            line <- Text.hGetLine handle
-            loop (line : acc)
-          True -> pure (reverse acc)
-  loop []
 
 -- FIXME make this faster
 int2text :: Integer -> Text

@@ -25,6 +25,7 @@ common component
   build-depends:
     base < 5,
     base64,
+    containers,
     clock,
     directory,
     process,
@@ -41,6 +42,7 @@ common component
     DuplicateRecordFields
     FlexibleInstances
     GADTs
+    GeneralizedNewtypeDeriving
     LambdaCase
     MultiParamTypeClasses
     MultiWayIf
@@ -64,6 +66,7 @@ library
     Mit.Globals
     Mit.Prelude
     Mit.Process
+    Mit.Seq1
   hs-source-dirs: src
 
 executable mit

@@ -4,12 +4,14 @@
 module Mit where
 
 import qualified Data.List.NonEmpty as List1
+import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
 import qualified Data.Text.ANSI as Text
 import qualified Data.Text.Encoding.Base64 as Text
 import qualified Data.Text.IO as Text
 import Mit.Git
 import Mit.Prelude
+import qualified Mit.Seq1 as Seq1
 import qualified System.Clock as Clock
 import System.Directory (doesDirectoryExist, removeFile, withCurrentDirectory)
 import System.Environment (getArgs)
@@ -18,8 +20,7 @@ import System.Exit (ExitCode (..), exitFailure)
 -- FIXME: nicer "git status" story. in particular the conflict markers in the commits after a merge are a bit
 -- ephemeral feeling
 -- FIXME bail if active cherry-pick, active revert, active rebase, what else?
--- FIXME rev-list max 11, use ellipses after 10
--- FIXME test file deleted by us/them conflict
+-- FIXME more Seq, less []
 
 -- TODO mit init
 -- TODO mit delete-branch
@@ -184,10 +185,10 @@ mitCommit_ = do
 
   pushResult <-
     case (localCommits, existRemoteCommits, fetched) of
-      ([], _, _) -> pure (PushNotAttempted NothingToPush)
-      (_ : _, True, _) -> pure (PushNotAttempted ForkedHistory)
-      (_ : _, False, False) -> pure (PushNotAttempted Offline)
-      (_ : _, False, True) -> PushAttempted <$> gitPush branch
+      (Seq.Empty, _, _) -> pure (PushNotAttempted NothingToPush)
+      (_ Seq.:<| _, True, _) -> pure (PushNotAttempted ForkedHistory)
+      (_ Seq.:<| _, False, False) -> pure (PushNotAttempted Offline)
+      (_ Seq.:<| _, False, True) -> PushAttempted <$> gitPush branch
 
   let pushed =
         case pushResult of
@@ -204,7 +205,7 @@ mitCommit_ = do
     case (pushed, committed, localCommits) of
       (False, False, _) -> pure state0.undos
       (False, True, _) -> pure [Reset head, Apply stash]
-      (True, True, [_]) -> do
+      (True, True, _ Seq.:<| Seq.Empty) -> do
         head1 <- gitHead
         pure [Revert head1, Apply stash]
       (True, _, _) -> pure []
@@ -223,7 +224,7 @@ mitCommit_ = do
         canUndo = not (null undos) && committed,
         conflicts = [],
         syncs =
-          case List1.nonEmpty localCommits of
+          case Seq1.fromSeq localCommits of
             Nothing -> []
             Just commits ->
               [ Sync
@@ -342,7 +343,7 @@ mitMerge target = do
       }
 
 data MergeStatus = MergeStatus
-  { commits :: List1 GitCommitInfo,
+  { commits :: Seq1 GitCommitInfo,
     result :: MergeResult,
     undos :: [Undo] -- FIXME List1
   }
@@ -354,7 +355,7 @@ data MergeResult
 mitMerge' :: Text -> Text -> IO (Maybe MergeStatus)
 mitMerge' message target = do
   head <- gitHead
-  (List1.nonEmpty <$> gitCommitsBetween (Just head) target) >>= \case
+  (Seq1.fromSeq <$> gitCommitsBetween (Just head) target) >>= \case
     Nothing -> pure Nothing
     Just commits -> do
       maybeStash <- gitStash
@@ -414,14 +415,14 @@ mitSyncWith maybeUndos = do
 
   pushResult <-
     case (localCommits, (.result) <$> maybeMergeStatus, fetched) of
-      ([], _, _) -> pure (PushNotAttempted NothingToPush)
+      (Seq.Empty, _, _) -> pure (PushNotAttempted NothingToPush)
       -- "forked history" is ok - a bit different than history *already* having forked, in which case a push
       -- would just fail, whereas this is just us choosing not to push while in the middle of a merge due to a
       -- previous fork in the history
-      (_ : _, Just (MergeResult'MergeConflicts _), _) -> pure (PushNotAttempted ForkedHistory)
-      (_ : _, Just (MergeResult'StashConflicts _), _) -> pure (PushNotAttempted UnseenCommits)
-      (_ : _, Nothing, False) -> pure (PushNotAttempted Offline)
-      (_ : _, Nothing, True) -> PushAttempted <$> gitPush branch
+      (_ Seq.:<| _, Just (MergeResult'MergeConflicts _), _) -> pure (PushNotAttempted ForkedHistory)
+      (_ Seq.:<| _, Just (MergeResult'StashConflicts _), _) -> pure (PushNotAttempted UnseenCommits)
+      (_ Seq.:<| _, Nothing, False) -> pure (PushNotAttempted Offline)
+      (_ Seq.:<| _, Nothing, True) -> PushAttempted <$> gitPush branch
 
   let pushed =
         case pushResult of
@@ -472,7 +473,7 @@ mitSyncWith maybeUndos = do
                       target = branch
                     },
               do
-                commits <- List1.nonEmpty localCommits
+                commits <- Seq1.fromSeq localCommits
                 pure
                   Sync
                     { commits,
@@ -509,7 +510,7 @@ data Summary = Summary
   }
 
 data Sync = Sync
-  { commits :: List1 GitCommitInfo,
+  { commits :: Seq1 GitCommitInfo,
     result :: SyncResult,
     source :: Text,
     target :: Text
@@ -537,8 +538,8 @@ putSummary summary =
     syncLines :: Sync -> [Text]
     syncLines sync =
       colorize (Text.italic ("  " <> sync.source <> " → " <> sync.target)) :
-      map (("  " <>) . prettyGitCommitInfo) (List1.toList sync.commits)
-        ++ [""]
+      map (("  " <>) . prettyGitCommitInfo) (toList @Seq commits')
+        ++ (if more then ["  ...", ""] else [""])
       where
         colorize :: Text -> Text
         colorize =
@@ -547,6 +548,10 @@ putSummary summary =
             SyncResult'Offline -> Text.brightBlack
             SyncResult'Pending -> Text.yellow
             SyncResult'Success -> Text.green
+        (commits', more) =
+          case Seq1.length sync.commits > 10 of
+            False -> (Seq1.toSeq sync.commits, False)
+            True -> (Seq1.dropEnd 1 sync.commits, True)
     undoLines :: [Text]
     undoLines =
       if summary.canUndo

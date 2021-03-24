@@ -3,14 +3,17 @@
 module Mit.Git where
 
 import qualified Data.List as List
+import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
 import qualified Data.Text.ANSI as Text
+import qualified Data.Text.IO as Text
 import Mit.Globals (debug)
 import Mit.Prelude
 import Mit.Process
 import System.Directory (doesFileExist)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
+import System.IO (Handle, hIsEOF)
 import System.IO.Unsafe (unsafePerformIO)
 import System.Posix.Terminal (queryTerminal)
 import System.Process
@@ -147,10 +150,10 @@ gitCommit =
         ExitFailure _ -> False
         ExitSuccess -> True
 
-gitCommitsBetween :: Maybe Text -> Text -> IO [GitCommitInfo]
+gitCommitsBetween :: Maybe Text -> Text -> IO (Seq GitCommitInfo)
 gitCommitsBetween commit1 commit2 =
   if commit1 == Just commit2
-    then pure []
+    then pure Seq.empty
     else do
       commits <-
         -- --first-parent seems desirable for topic branches
@@ -159,15 +162,15 @@ gitCommitsBetween commit1 commit2 =
             "--color=always",
             "--date=human",
             "--format=format:%an\xFEFF%ad\xFEFF%H\xFEFF%h\xFEFF%s",
-            "--max-count=10",
+            "--max-count=11",
             maybe id (\c1 c2 -> c1 <> ".." <> c2) commit1 commit2
           ]
-      pure (map parseCommitInfo (dropEvens commits))
+      pure (parseCommitInfo <$> dropEvens commits)
   where
     -- git rev-list with a custom format prefixes every commit with a redundant line :|
-    dropEvens :: [a] -> [a]
+    dropEvens :: Seq a -> Seq a
     dropEvens = \case
-      _ : x : xs -> x : dropEvens xs
+      _ Seq.:<| x Seq.:<| xs -> x Seq.<| dropEvens xs
       xs -> xs
     parseCommitInfo :: Text -> GitCommitInfo
     parseCommitInfo line =
@@ -410,16 +413,16 @@ git2 args = do
       UserInterrupt -> pure (ExitFailure (-130))
       exception -> throwIO exception
   stderrLines <- drainTextHandle stderrHandle
-  debugPrintGit args [] stderrLines exitCode
+  debugPrintGit args Seq.empty stderrLines exitCode
   pure exitCode
 
-debugPrintGit :: [Text] -> [Text] -> [Text] -> ExitCode -> IO ()
+debugPrintGit :: [Text] -> Seq Text -> Seq Text -> ExitCode -> IO ()
 debugPrintGit args stdoutLines stderrLines exitCode =
   when debug do
     putLines do
       let output :: [Text]
           output =
-            map (Text.brightBlack . ("    " <>)) (stdoutLines ++ stderrLines)
+            map (Text.brightBlack . ("    " <>)) (toList @Seq (stdoutLines <> stderrLines))
       Text.bold (Text.brightBlack (Text.unwords (marker <> " git" : map quoteText args))) : output
   where
     marker :: Text
@@ -427,3 +430,13 @@ debugPrintGit args stdoutLines stderrLines exitCode =
       case exitCode of
         ExitFailure _ -> "✗"
         ExitSuccess -> "✓"
+
+drainTextHandle :: Handle -> IO (Seq Text)
+drainTextHandle handle = do
+  let loop acc =
+        hIsEOF handle >>= \case
+          False -> do
+            line <- Text.hGetLine handle
+            loop $! acc Seq.|> line
+          True -> pure acc
+  loop Seq.empty
