@@ -28,6 +28,7 @@ common component
     containers,
     clock,
     directory,
+    ki,
     process,
     record-dot-preprocessor,
     record-hasfield,
@@ -73,6 +74,7 @@ executable mit
   import: component
   build-depends:
     mit-3qvpPyAi6mH,
+  ghc-options: -threaded -with-rtsopts=-N2
   hs-source-dirs: app
   main-is: Main.hs
 

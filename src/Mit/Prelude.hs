@@ -64,6 +64,10 @@ unlessM mx action =
     False -> action
     True -> pure ()
 
+whenJust :: Applicative m => Maybe a -> (a -> m ()) -> m ()
+whenJust =
+  for_
+
 whenM :: Monad m => m Bool -> m () -> m ()
 whenM mx action =
   mx >>= \case

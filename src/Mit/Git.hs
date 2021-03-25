@@ -7,16 +7,20 @@ import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
 import qualified Data.Text.ANSI as Text
 import qualified Data.Text.IO as Text
+import qualified Ki
 import Mit.Globals (debug)
 import Mit.Prelude
 import Mit.Process
 import System.Directory (doesFileExist)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
-import System.IO (Handle, hIsEOF)
+import System.IO (Handle, hClose, hIsEOF)
 import System.IO.Unsafe (unsafePerformIO)
+import System.Posix.Process (getProcessGroupIDOf)
+import System.Posix.Signals
 import System.Posix.Terminal (queryTerminal)
 import System.Process
+import System.Process.Internals
 
 -- FIXME this finds the wrong dir for worktrees
 gitdir :: Text
@@ -355,31 +359,54 @@ parseGitRepo url = do
 
 git :: ProcessOutput a => [Text] -> IO a
 git args = do
-  (Nothing, Just stdoutHandle, Just stderrHandle, processHandle) <-
-    createProcess
-      CreateProcess
-        { child_group = Nothing,
-          child_user = Nothing,
-          close_fds = True,
-          cmdspec = RawCommand "git" (map Text.unpack args),
-          create_group = False,
-          cwd = Nothing,
-          delegate_ctlc = False,
-          env = Nothing,
-          new_session = False,
-          std_err = CreatePipe,
-          std_in = NoStream,
-          std_out = CreatePipe,
-          -- windows-only
-          create_new_console = False,
-          detach_console = False,
-          use_process_jobs = False
-        }
-  exitCode <- waitForProcess processHandle
-  stdoutLines <- drainTextHandle stdoutHandle
-  stderrLines <- drainTextHandle stderrHandle
-  debugPrintGit args stdoutLines stderrLines exitCode
-  fromProcessOutput stdoutLines stderrLines exitCode
+  let spec :: CreateProcess
+      spec =
+        CreateProcess
+          { child_group = Nothing,
+            child_user = Nothing,
+            close_fds = True,
+            cmdspec = RawCommand "git" (map Text.unpack args),
+            create_group = False,
+            cwd = Nothing,
+            delegate_ctlc = False,
+            env = Nothing,
+            new_session = False,
+            std_err = CreatePipe,
+            std_in = NoStream,
+            std_out = CreatePipe,
+            -- windows-only
+            create_new_console = False,
+            detach_console = False,
+            use_process_jobs = False
+          }
+  bracket (createProcess spec) cleanup \(_maybeStdin, maybeStdout, maybeStderr, processHandle) ->
+    Ki.scoped \scope -> do
+      stdoutThread <- Ki.fork scope (drainTextHandle (fromJust maybeStdout))
+      stderrThread <- Ki.fork scope (drainTextHandle (fromJust maybeStderr))
+      exitCode <- waitForProcess processHandle
+      stdoutLines <- Ki.await stdoutThread
+      stderrLines <- Ki.await stderrThread
+      debugPrintGit args stdoutLines stderrLines exitCode
+      fromProcessOutput stdoutLines stderrLines exitCode
+  where
+    cleanup :: (Maybe Handle, Maybe Handle, Maybe Handle, ProcessHandle) -> IO ()
+    cleanup (maybeStdin, maybeStdout, maybeStderr, process) =
+      void @_ @ExitCode terminate `finally` closeHandles
+      where
+        closeHandles :: IO ()
+        closeHandles =
+          whenJust maybeStdin hClose
+            `finally` whenJust maybeStdout hClose
+            `finally` whenJust maybeStderr hClose
+        terminate :: IO ExitCode
+        terminate = do
+          withProcessHandle process \case
+            ClosedHandle _ -> pure ()
+            OpenExtHandle {} -> bug "OpenExtHandle is Windows-only"
+            OpenHandle pid -> do
+              pgid <- getProcessGroupIDOf pid
+              signalProcessGroup sigTERM pgid
+          waitForProcess process
 
 git_ :: [Text] -> IO ()
 git_ =

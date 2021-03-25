@@ -171,7 +171,7 @@ mitCommit_ = do
     writeMitState branch64 state0 {ranCommitAt}
     putLines
       [ "",
-        "  " <> Text.italic branch <> " is not up to date.",
+        "  " <> Text.yellow (Text.italic branch <> " is not up to date."),
         "",
         "  Run " <> Text.bold (Text.blue "mit sync") <> " first, or run " <> Text.bold (Text.blue "mit commit")
           <> " again to record a commit anyway.",
