@@ -364,6 +364,25 @@ mitMerge' message target = do
         git ["merge", "--ff", "--no-commit", target] >>= \case
           False -> do
             conflicts <- gitConflicts
+            -- error: The following untracked working tree files would be overwritten by merge:
+            --         administration-client/administration-client.cabal
+            --         aeson-simspace/aeson-simspace.cabal
+            --         attack-designer/api/attack-designer-api.cabal
+            --         attack-designer/db/attack-designer-db.cabal
+            --         attack-designer/server/attack-designer-server.cabal
+            --         attack-integrations/attack-integrations.cabal
+            --         authz/simspace-authz.cabal
+            --         caching/caching.cabal
+            --         common-testlib/common-testlib.cabal
+            --         db-infra/db-infra.cabal
+            --         db-infra/migrations/0_migrate-rich-text-images-to-minio/migrate-rich-text-images-to-minio.cabal
+            --         db-infra/migrations/2.0.0.1010_migrate-questions-into-content-modules/range-data-server-migrate-questions-into-content-modules.cabal
+            --         db-infra/migrations/2.0.0.19_migrate-hello-table/range-data-server-migrate-hello-table.cabal
+            --         db-infra/migrations/2.0.0.21_migrate-puppet-yaml-to-text/range-data-server-migrate-puppet-yaml-to-text.cabal
+            --         db-infra/migrations/2.0.0.9015_migrate-refresh-stocks/range-data-server-migrate-refresh-stocks.cabal
+            --         db-infra/migrations/shared/range-data-server-migration.cabal
+            -- Please move or remove them before you merge.
+            -- Aborting
             pure (MergeResult'MergeConflicts (List1.fromList conflicts))
           True -> do
             whenM gitMergeInProgress (git_ ["commit", "--message", message])
