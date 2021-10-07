@@ -22,11 +22,16 @@ import System.Posix.Terminal (queryTerminal)
 import System.Process
 import System.Process.Internals
 
--- FIXME this finds the wrong dir for worktrees
 gitdir :: Text
 gitdir =
   unsafePerformIO (git ["rev-parse", "--absolute-git-dir"])
 {-# NOINLINE gitdir #-}
+
+-- | The root of this git worktree.
+rootdir :: Text
+rootdir =
+  unsafePerformIO (git ["rev-parse", "--show-toplevel"])
+{-# NOINLINE rootdir #-}
 
 data DiffResult
   = Differences

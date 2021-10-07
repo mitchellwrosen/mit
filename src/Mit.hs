@@ -123,7 +123,7 @@ mitBranch branch = do
   where
     worktreeDir :: Text
     worktreeDir =
-      Text.dropWhileEnd (/= '/') gitdir <> branch
+      Text.dropWhileEnd (/= '/') rootdir <> branch
 
 mitClone :: Text -> Text -> IO ()
 mitClone url name =
