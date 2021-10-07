@@ -15,10 +15,6 @@ and it is perfectly okay to have points in the history that do not even build, l
 
 TODO document this
 
-### `mit clone`
-
-TODO document this
-
 ### `mit commit`
 
 TODO document this

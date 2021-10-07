@@ -37,7 +37,6 @@ main :: IO ()
 main = do
   getArgs >>= \case
     ["branch", branch] -> mitBranch (Text.pack branch)
-    ["clone", parseGitRepo . Text.pack -> Just (url, name)] -> mitClone url name
     ["commit"] -> mitCommit
     ["merge", branch] -> mitMerge (Text.pack branch)
     ["sync"] -> mitSync
@@ -124,11 +123,6 @@ mitBranch branch = do
     worktreeDir :: Text
     worktreeDir =
       Text.dropWhileEnd (/= '/') rootdir <> branch
-
-mitClone :: Text -> Text -> IO ()
-mitClone url name =
-  -- FIXME use 'git config --get init.defaultBranch'
-  git ["clone", url, "--separate-git-dir", name <> "/.git", name <> "/master"]
 
 mitCommit :: IO ()
 mitCommit = do
