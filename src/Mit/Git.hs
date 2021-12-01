@@ -6,7 +6,11 @@ import qualified Data.List as List
 import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
 import qualified Data.Text.ANSI as Text
+import qualified Data.Text.Builder.ANSI as Text.Builder
 import qualified Data.Text.IO as Text
+import qualified Data.Text.Lazy as Text.Lazy
+import qualified Data.Text.Lazy.Builder as Text (Builder)
+import qualified Data.Text.Lazy.Builder as Text.Builder
 import qualified Ki
 import Mit.Globals (debug)
 import Mit.Prelude
@@ -46,17 +50,16 @@ data GitCommitInfo = GitCommitInfo
   }
   deriving stock (Show)
 
-prettyGitCommitInfo :: GitCommitInfo -> Text
+prettyGitCommitInfo :: GitCommitInfo -> Text.Builder
 prettyGitCommitInfo info =
-  -- FIXME use builder
   fold
-    [ Text.bold (Text.black info.shorthash),
+    [ Text.Builder.bold (Text.Builder.black (Text.Builder.fromText info.shorthash)),
       " ",
-      Text.bold (Text.white info.subject),
+      Text.Builder.bold (Text.Builder.white (Text.Builder.fromText info.subject)),
       " - ",
-      Text.italic (Text.white info.author),
+      Text.Builder.italic (Text.Builder.white (Text.Builder.fromText info.author)),
       " ",
-      Text.italic (Text.yellow info.date) -- FIXME some other color, magenta?
+      Text.Builder.italic (Text.Builder.yellow (Text.Builder.fromText info.date)) -- FIXME some other color, magenta?
     ]
 
 data GitConflict
@@ -68,10 +71,9 @@ parseGitConflict line = do
   [xy, name] <- Just (Text.words line)
   GitConflict <$> parseGitConflictXY xy <*> Just name
 
--- FIXME builder
-showGitConflict :: GitConflict -> Text
+showGitConflict :: GitConflict -> Text.Builder
 showGitConflict (GitConflict xy name) =
-  name <> " (" <> showGitConflictXY xy <> ")"
+  Text.Builder.fromText name <> " (" <> showGitConflictXY xy <> ")"
 
 data GitConflictXY
   = AA -- both added
@@ -94,8 +96,7 @@ parseGitConflictXY = \case
   "UU" -> Just UU
   _ -> Nothing
 
--- FIXME builder
-showGitConflictXY :: GitConflictXY -> Text
+showGitConflictXY :: GitConflictXY -> Text.Builder
 showGitConflictXY = \case
   AA -> "both added"
   AU -> "added by us"
@@ -255,17 +256,18 @@ gitMerge me target = do
   where
     mergeMessage :: [GitConflict] -> Text
     mergeMessage conflicts =
-      -- FIXME use builder
-      fold
+      (Text.Lazy.toStrict . Text.Builder.toLazyText . fold)
         [ "⅄",
           if null conflicts then "" else "\x0338",
           " ",
-          if target' == me then me else target' <> " → " <> me,
+          if target' == me
+            then Text.Builder.fromText me
+            else Text.Builder.fromText target' <> " → " <> Text.Builder.fromText me,
           if null conflicts
             then ""
             else
               " (conflicts)\n\nConflicting files:\n"
-                <> Text.intercalate "\n" (map (("  " <>) . showGitConflict) conflicts)
+                <> mconcat (List.intersperse "\n" (map (("  " <>) . showGitConflict) conflicts))
         ]
       where
         target' :: Text

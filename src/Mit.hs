@@ -7,8 +7,12 @@ import qualified Data.List.NonEmpty as List1
 import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
 import qualified Data.Text.ANSI as Text
+import qualified Data.Text.Builder.ANSI as Text.Builder
 import qualified Data.Text.Encoding.Base64 as Text
 import qualified Data.Text.IO as Text
+import qualified Data.Text.Lazy as Text.Lazy
+import qualified Data.Text.Lazy.Builder as Text (Builder)
+import qualified Data.Text.Lazy.Builder as Text.Builder
 import Mit.Git
 import Mit.Prelude
 import qualified Mit.Seq1 as Seq1
@@ -539,36 +543,39 @@ data SyncResult
 putSummary :: Summary -> IO ()
 putSummary summary =
   let output = concatMap syncLines summary.syncs ++ conflictsLines ++ undoLines
-   in if null output then pure () else putLines ("" : output)
+   in if null output then pure () else putLines (map (Text.Lazy.toStrict . Text.Builder.toLazyText) ("" : output))
   where
-    conflictsLines :: [Text]
+    conflictsLines :: [Text.Builder]
     conflictsLines =
       if null summary.conflicts
         then []
         else
           "  The following files have conflicts." :
-          map (("    " <>) . Text.red . showGitConflict) summary.conflicts ++ [""]
-    syncLines :: Sync -> [Text]
+          map (("    " <>) . Text.Builder.red . showGitConflict) summary.conflicts ++ [""]
+    syncLines :: Sync -> [Text.Builder]
     syncLines sync =
-      colorize (Text.italic ("  " <> sync.source <> " → " <> sync.target)) :
+      colorize
+        ( Text.Builder.italic
+            ("  " <> Text.Builder.fromText sync.source <> " → " <> Text.Builder.fromText sync.target)
+        ) :
       map (("  " <>) . prettyGitCommitInfo) (toList @Seq commits')
         ++ (if more then ["  ...", ""] else [""])
       where
-        colorize :: Text -> Text
+        colorize :: Text.Builder -> Text.Builder
         colorize =
           case sync.result of
-            SyncResult'Failure -> Text.red
-            SyncResult'Offline -> Text.brightBlack
-            SyncResult'Pending -> Text.yellow
-            SyncResult'Success -> Text.green
+            SyncResult'Failure -> Text.Builder.red
+            SyncResult'Offline -> Text.Builder.brightBlack
+            SyncResult'Pending -> Text.Builder.yellow
+            SyncResult'Success -> Text.Builder.green
         (commits', more) =
           case Seq1.length sync.commits > 10 of
             False -> (Seq1.toSeq sync.commits, False)
             True -> (Seq1.dropEnd 1 sync.commits, True)
-    undoLines :: [Text]
+    undoLines :: [Text.Builder]
     undoLines =
       if summary.canUndo
-        then ["  Run " <> Text.bold (Text.blue "mit undo") <> " to undo this change.", ""]
+        then ["  Run " <> Text.Builder.bold (Text.Builder.blue "mit undo") <> " to undo this change.", ""]
         else []
 
 -- State file
