@@ -107,7 +107,7 @@ mitBranch branch = do
     Nothing ->
       doesDirectoryExist (Text.unpack worktreeDir) >>= \case
         False -> do
-          git_ ["worktree", "add", "--detach", worktreeDir]
+          gitl_ ["worktree", "add", "--detach", worktreeDir]
           withCurrentDirectory (Text.unpack worktreeDir) do
             gitBranchExists branch >>= \case
               False -> do
@@ -116,8 +116,8 @@ mitBranch branch = do
                 gitFetch_ "origin"
                 whenM (gitRemoteBranchExists "origin" branch) do
                   let upstream = "origin/" <> branch
-                  git_ ["reset", "--hard", upstream]
-                  git_ ["branch", "--set-upstream-to", upstream]
+                  gitl_ ["reset", "--hard", upstream]
+                  gitl_ ["branch", "--set-upstream-to", upstream]
               True -> gitSwitch branch
         True -> die ["Directory " <> Text.bold worktreeDir <> " already exists."]
     Just directory ->
@@ -152,9 +152,8 @@ mitCommit_ = do
 
   let wouldFork = existRemoteCommits && not existLocalCommits
   let shouldWarnAboutFork =
-        case wouldFork of
-          False -> pure False
-          True -> do
+        if wouldFork
+          then do
             let theyRanMitCommitRecently =
                   case state0.ranCommitAt of
                     Nothing -> pure False
@@ -162,6 +161,7 @@ mitCommit_ = do
                       t1 <- Clock.toNanoSecs <$> Clock.getTime Clock.Realtime
                       pure ((t1 - t0) < 10_000_000_000)
             not <$> theyRanMitCommitRecently
+          else pure False
 
   -- Bail out early if we should warn that this commit would fork history
   whenM shouldWarnAboutFork do
@@ -242,10 +242,10 @@ mitCommitMerge = do
   state0 <- readMitState branch64
 
   case state0.merging of
-    Nothing -> git_ ["commit", "--all", "--no-edit"]
+    Nothing -> gitl_ ["commit", "--all", "--no-edit"]
     Just merging ->
       let message = fold ["⅄ ", if merging == branch then "" else merging <> " → ", branch]
-       in git_ ["commit", "--all", "--message", message]
+       in gitl_ ["commit", "--all", "--message", message]
   case listToMaybe [commit | Apply commit <- state0.undos] of
     Nothing -> mitSyncWith (Just [Reset head])
     Just stash ->
@@ -359,7 +359,7 @@ mitMerge' message target = do
       maybeStash <- gitStash
       let undos = Reset head : maybeToList (Apply <$> maybeStash)
       result <-
-        git ["merge", "--ff", "--no-commit", target] >>= \case
+        gitl ["merge", "--ff", "--no-commit", target] >>= \case
           False -> do
             conflicts <- gitConflicts
             -- error: The following untracked working tree files would be overwritten by merge:
@@ -383,7 +383,7 @@ mitMerge' message target = do
             -- Aborting
             pure (MergeResult'MergeConflicts (List1.fromList conflicts))
           True -> do
-            whenM gitMergeInProgress (git_ ["commit", "--message", message])
+            whenM gitMergeInProgress (gitl_ ["commit", "--message", message])
             maybeConflicts <- for maybeStash gitApplyStash
             pure (MergeResult'StashConflicts (fromMaybe [] maybeConflicts))
       pure (Just MergeStatus {commits, result, undos})

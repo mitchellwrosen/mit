@@ -118,7 +118,7 @@ showGitVersion (GitVersion x y z) =
 gitApplyStash :: Text -> IO [GitConflict]
 gitApplyStash stash = do
   conflicts <-
-    git ["stash", "apply", stash] >>= \case
+    gitl ["stash", "apply", stash] >>= \case
       False -> gitConflicts
       True -> pure []
   gitUnstageChanges
@@ -127,7 +127,7 @@ gitApplyStash stash = do
 -- | Create a branch.
 gitBranch :: Text -> IO ()
 gitBranch branch =
-  git_ ["branch", "--no-track", branch]
+  gitl_ ["branch", "--no-track", branch]
 
 -- | Does the given local branch (refs/heads/...) exist?
 gitBranchExists :: Text -> IO Bool
@@ -145,18 +145,18 @@ gitBranchHead branch =
 gitBranchWorktreeDir :: Text -> IO (Maybe Text)
 gitBranchWorktreeDir branch = do
   worktrees <- gitWorktreeList
-  case List.find (\worktree -> worktree.branch == Just branch) worktrees of
-    Nothing -> pure Nothing
-    Just worktree -> pure (Just worktree.directory)
+  pure case List.find (\worktree -> worktree.branch == Just branch) worktrees of
+    Nothing -> Nothing
+    Just worktree -> Just worktree.directory
 
 gitCommit :: IO Bool
 gitCommit =
   queryTerminal 0 >>= \case
     False -> do
       message <- lookupEnv "MIT_COMMIT_MESSAGE"
-      git ["commit", "--all", "--message", maybe "" Text.pack message]
+      gitl ["commit", "--all", "--message", maybe "" Text.pack message]
     True ->
-      git2 ["commit", "--patch", "--quiet"] <&> \case
+      gitl2 ["commit", "--patch", "--quiet"] <&> \case
         ExitFailure _ -> False
         ExitSuccess -> True
 
@@ -195,7 +195,7 @@ gitConflicts =
 gitCreateStash :: IO Text
 gitCreateStash = do
   git_ ["add", "--all"] -- it seems certain things (like renames), unless staged, cannot be stashed
-  stash <- git ["stash", "create"]
+  stash <- gitl ["stash", "create"]
   gitUnstageChanges
   pure stash
 
@@ -225,7 +225,7 @@ gitExistUntrackedFiles =
 
 gitFetch :: Text -> IO Bool
 gitFetch remote =
-  git ["fetch", remote]
+  gitl ["fetch", remote]
 
 gitFetch_ :: Text -> IO ()
 gitFetch_ =
@@ -243,15 +243,15 @@ gitListUntrackedFiles =
 -- FIXME document what this does
 gitMerge :: Text -> Text -> IO (Either (IO [GitConflict]) ())
 gitMerge me target = do
-  git ["merge", "--ff", "--no-commit", target] >>= \case
+  gitl ["merge", "--ff", "--no-commit", target] >>= \case
     False ->
       (pure . Left) do
         conflicts <- gitConflicts
-        git_ ["add", "--all"]
-        git_ ["commit", "--no-edit", "--message", mergeMessage conflicts]
+        gitl_ ["add", "--all"]
+        gitl_ ["commit", "--no-edit", "--message", mergeMessage conflicts]
         pure conflicts
     True -> do
-      whenM gitMergeInProgress (git_ ["commit", "--message", mergeMessage []])
+      whenM gitMergeInProgress (gitl_ ["commit", "--message", mergeMessage []])
       pure (Right ())
   where
     mergeMessage :: [GitConflict] -> Text
@@ -280,7 +280,7 @@ gitMergeInProgress =
 
 gitPush :: Text -> IO Bool
 gitPush branch =
-  git ["push", "--set-upstream", "origin", branch <> ":" <> branch]
+  gitl ["push", "--set-upstream", "origin", branch <> ":" <> branch]
 
 -- | Does the given remote branch (refs/remotes/...) exist?
 gitRemoteBranchExists :: Text -> Text -> IO Bool
@@ -297,12 +297,12 @@ gitRemoteBranchHead remote branch =
 -- | Blow away untracked files, and hard-reset to the given commit
 gitResetHard :: Text -> IO ()
 gitResetHard commit = do
-  git_ ["clean", "-d", "--force"]
-  git ["reset", "--hard", commit]
+  gitl_ ["clean", "-d", "--force"]
+  gitl ["reset", "--hard", commit]
 
 gitRevert :: Text -> IO ()
 gitRevert commit =
-  git_ ["revert", commit]
+  gitl_ ["revert", commit]
 
 -- | Stash uncommitted changes (if any).
 gitStash :: IO (Maybe Text)
@@ -320,9 +320,9 @@ gitSwitch branch =
 
 gitUnstageChanges :: IO ()
 gitUnstageChanges = do
-  git_ ["reset", "--mixed"]
+  gitl_ ["reset", "--mixed"]
   untrackedFiles <- gitListUntrackedFiles
-  unless (null untrackedFiles) (git_ ("add" : "--intent-to-add" : untrackedFiles))
+  unless (null untrackedFiles) (gitl_ ("add" : "--intent-to-add" : untrackedFiles))
 
 gitVersion :: IO GitVersion
 gitVersion = do
@@ -365,7 +365,15 @@ parseGitRepo url = do
   pure (url, Text.takeWhileEnd (/= '/') url')
 
 git :: ProcessOutput a => [Text] -> IO a
-git args = do
+git =
+  git' False
+
+gitl :: ProcessOutput a => [Text] -> IO a
+gitl =
+  git' True
+
+git' :: ProcessOutput a => Bool -> [Text] -> IO a
+git' effectful args = do
   let spec :: CreateProcess
       spec =
         CreateProcess
@@ -386,6 +394,7 @@ git args = do
             detach_console = False,
             use_process_jobs = False
           }
+  when effectful (logProcess "git" args)
   bracket (createProcess spec) cleanup \(_maybeStdin, maybeStdout, maybeStderr, processHandle) ->
     Ki.scoped \scope -> do
       stdoutThread <- Ki.fork scope (drainTextHandle (fromJust maybeStdout))
@@ -419,9 +428,14 @@ git_ :: [Text] -> IO ()
 git_ =
   git
 
+gitl_ :: [Text] -> IO ()
+gitl_ =
+  gitl
+
 -- Yucky interactive/inherity variant (so 'git commit' can open an editor).
-git2 :: [Text] -> IO ExitCode
-git2 args = do
+gitl2 :: [Text] -> IO ExitCode
+gitl2 args = do
+  logProcess "git" args
   (Nothing, Nothing, Just stderrHandle, processHandle) <-
     createProcess
       CreateProcess
