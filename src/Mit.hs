@@ -1,8 +1,6 @@
-{-# LANGUAGE TypeApplications #-}
-{-# OPTIONS_GHC -fplugin=RecordDotPreprocessor #-}
-
 module Mit where
 
+import Data.List.NonEmpty (NonEmpty ((:|)))
 import qualified Data.List.NonEmpty as List1
 import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
@@ -13,11 +11,14 @@ import qualified Data.Text.IO as Text
 import qualified Data.Text.Lazy as Text.Lazy
 import qualified Data.Text.Lazy.Builder as Text (Builder)
 import qualified Data.Text.Lazy.Builder as Text.Builder
+import Mit.Clock (getCurrentTime)
+import Mit.Directory
 import Mit.Git
 import Mit.Prelude
+import qualified Mit.Seq as Seq
 import qualified Mit.Seq1 as Seq1
-import qualified System.Clock as Clock
-import System.Directory (doesDirectoryExist, removeFile, withCurrentDirectory)
+import Mit.State
+import Mit.Undo
 import System.Environment (getArgs)
 import System.Exit (ExitCode (..), exitFailure)
 
@@ -60,7 +61,8 @@ main = do
 dieIfBuggyGit :: IO ()
 dieIfBuggyGit = do
   version <- gitVersion
-  case foldr (\(ver, err) acc -> if version < ver then (ver, err) : acc else acc) [] validations of
+  let validate (ver, err) = if version < ver then ((ver, err) :) else id
+  case foldr validate [] validations of
     [] -> pure ()
     errors ->
       die $
@@ -104,24 +106,20 @@ mitBranch branch = do
   dieIfNotInGitDir
 
   gitBranchWorktreeDir branch >>= \case
-    Nothing ->
-      doesDirectoryExist (Text.unpack worktreeDir) >>= \case
-        False -> do
-          gitl_ ["worktree", "add", "--detach", worktreeDir]
-          withCurrentDirectory (Text.unpack worktreeDir) do
-            gitBranchExists branch >>= \case
-              False -> do
-                gitBranch branch
-                gitSwitch branch
-                gitFetch_ "origin"
-                whenM (gitRemoteBranchExists "origin" branch) do
-                  let upstream = "origin/" <> branch
-                  gitl_ ["reset", "--hard", upstream]
-                  gitl_ ["branch", "--set-upstream-to", upstream]
-              True -> gitSwitch branch
-        True -> die ["Directory " <> Text.bold worktreeDir <> " already exists."]
+    Nothing -> do
+      whenM (doesDirectoryExist worktreeDir) (die ["Directory " <> Text.bold worktreeDir <> " already exists."])
+      gitl_ ["worktree", "add", "--detach", worktreeDir]
+      withCurrentDirectory worktreeDir do
+        whenNotM (gitSwitch branch) do
+          gitBranch branch
+          gitSwitch_ branch
+          gitFetch_ "origin"
+          whenM (gitRemoteBranchExists "origin" branch) do
+            let upstream = "origin/" <> branch
+            gitl_ ["reset", "--hard", upstream]
+            gitl_ ["branch", "--set-upstream-to", upstream]
     Just directory ->
-      unless (directory == worktreeDir) do
+      when (directory /= worktreeDir) do
         die [Text.bold branch <> " is already checked out in " <> Text.bold directory <> "."]
   where
     worktreeDir :: Text
@@ -158,14 +156,14 @@ mitCommit_ = do
                   case state0.ranCommitAt of
                     Nothing -> pure False
                     Just t0 -> do
-                      t1 <- Clock.toNanoSecs <$> Clock.getTime Clock.Realtime
+                      t1 <- getCurrentTime
                       pure ((t1 - t0) < 10_000_000_000)
             not <$> theyRanMitCommitRecently
           else pure False
 
   -- Bail out early if we should warn that this commit would fork history
   whenM shouldWarnAboutFork do
-    ranCommitAt <- Just . Clock.toNanoSecs <$> Clock.getTime Clock.Realtime
+    ranCommitAt <- Just <$> getCurrentTime
     writeMitState branch64 state0 {ranCommitAt}
     putLines
       [ "",
@@ -184,9 +182,9 @@ mitCommit_ = do
   pushResult <-
     case (localCommits, existRemoteCommits, fetched) of
       (Seq.Empty, _, _) -> pure (PushNotAttempted NothingToPush)
-      (_ Seq.:<| _, True, _) -> pure (PushNotAttempted ForkedHistory)
-      (_ Seq.:<| _, False, False) -> pure (PushNotAttempted Offline)
-      (_ Seq.:<| _, False, True) -> PushAttempted <$> gitPush branch
+      (Seq.NonEmpty, True, _) -> pure (PushNotAttempted ForkedHistory)
+      (Seq.NonEmpty, False, False) -> pure (PushNotAttempted Offline)
+      (Seq.NonEmpty, False, True) -> PushAttempted <$> gitPush branch
 
   let pushed =
         case pushResult of
@@ -196,17 +194,17 @@ mitCommit_ = do
   -- Only bother resetting the "ran commit at" if we would fork and the commit was aborted
   ranCommitAt <-
     case (wouldFork, committed) of
-      (True, False) -> Just . Clock.toNanoSecs <$> Clock.getTime Clock.Realtime
+      (True, False) -> Just <$> getCurrentTime
       _ -> pure Nothing
 
   undos <-
     case (pushed, committed, localCommits) of
       (False, False, _) -> pure state0.undos
       (False, True, _) -> pure [Reset head, Apply stash]
-      (True, True, _ Seq.:<| Seq.Empty) -> do
+      (True, True, Seq.Singleton) -> do
         head1 <- gitHead
         pure [Revert head1, Apply stash]
-      (True, _, _) -> pure []
+      _ -> pure []
 
   writeMitState branch64 MitState {head = (), merging = Nothing, ranCommitAt, undos}
 
@@ -311,7 +309,7 @@ mitMerge target = do
         undos =
           case maybeMergeStatus of
             Nothing -> []
-            Just mergeStatus -> mergeStatus.undos
+            Just mergeStatus -> List1.toList mergeStatus.undos
       }
 
   putSummary
@@ -343,7 +341,7 @@ mitMerge target = do
 data MergeStatus = MergeStatus
   { commits :: Seq1 GitCommitInfo,
     result :: MergeResult,
-    undos :: [Undo] -- FIXME List1
+    undos :: List1 Undo
   }
 
 data MergeResult
@@ -357,7 +355,7 @@ mitMerge' message target = do
     Nothing -> pure Nothing
     Just commits -> do
       maybeStash <- gitStash
-      let undos = Reset head : maybeToList (Apply <$> maybeStash)
+      let undos = Reset head :| maybeToList (Apply <$> maybeStash)
       result <-
         gitl ["merge", "--ff", "--no-commit", target] >>= \case
           False -> do
@@ -436,10 +434,10 @@ mitSyncWith maybeUndos = do
       -- "forked history" is ok - a bit different than history *already* having forked, in which case a push
       -- would just fail, whereas this is just us choosing not to push while in the middle of a merge due to a
       -- previous fork in the history
-      (_ Seq.:<| _, Just (MergeResult'MergeConflicts _), _) -> pure (PushNotAttempted ForkedHistory)
-      (_ Seq.:<| _, Just (MergeResult'StashConflicts _), _) -> pure (PushNotAttempted UnseenCommits)
-      (_ Seq.:<| _, Nothing, False) -> pure (PushNotAttempted Offline)
-      (_ Seq.:<| _, Nothing, True) -> PushAttempted <$> gitPush branch
+      (Seq.NonEmpty, Just (MergeResult'MergeConflicts _), _) -> pure (PushNotAttempted ForkedHistory)
+      (Seq.NonEmpty, Just (MergeResult'StashConflicts _), _) -> pure (PushNotAttempted UnseenCommits)
+      (Seq.NonEmpty, Nothing, False) -> pure (PushNotAttempted Offline)
+      (Seq.NonEmpty, Nothing, True) -> PushAttempted <$> gitPush branch
 
   let pushed =
         case pushResult of
@@ -448,7 +446,7 @@ mitSyncWith maybeUndos = do
 
   let undos =
         case pushed of
-          False -> fromMaybe (maybe [] (.undos) maybeMergeStatus) maybeUndos
+          False -> fromMaybe (maybe [] (List1.toList . (.undos)) maybeMergeStatus) maybeUndos
           True -> []
 
   writeMitState
@@ -578,108 +576,4 @@ putSummary summary =
         then ["  Run " <> Text.Builder.bold (Text.Builder.blue "mit undo") <> " to undo this change.", ""]
         else []
 
--- State file
-
-data MitState a = MitState
-  { head :: a,
-    merging :: Maybe Text,
-    ranCommitAt :: Maybe Integer,
-    undos :: [Undo]
-  }
-  deriving stock (Eq, Show)
-
-emptyMitState :: MitState ()
-emptyMitState =
-  MitState {head = (), merging = Nothing, ranCommitAt = Nothing, undos = []}
-
-deleteMitState :: Text -> IO ()
-deleteMitState branch64 =
-  removeFile (mitfile branch64) `catch` \(_ :: IOException) -> pure ()
-
-parseMitState :: Text -> Maybe (MitState Text)
-parseMitState contents = do
-  [headLine, mergingLine, ranCommitAtLine, undosLine] <- Just (Text.lines contents)
-  ["head", head] <- Just (Text.words headLine)
-  merging <-
-    case Text.words mergingLine of
-      ["merging"] -> Just Nothing
-      ["merging", branch] -> Just (Just branch)
-      _ -> Nothing
-  ranCommitAt <-
-    case Text.words ranCommitAtLine of
-      ["ran-commit-at"] -> Just Nothing
-      ["ran-commit-at", text2int -> Just n] -> Just (Just n)
-      _ -> Nothing
-  undos <- Text.stripPrefix "undos " undosLine >>= parseUndos
-  pure MitState {head, merging, ranCommitAt, undos}
-
-readMitState :: Text -> IO (MitState ())
-readMitState branch64 = do
-  head <- gitHead
-  try (Text.readFile (mitfile branch64)) >>= \case
-    Left (_ :: IOException) -> pure emptyMitState
-    Right contents -> do
-      let maybeState = do
-            state <- parseMitState contents
-            guard (head == state.head)
-            pure state
-      case maybeState of
-        Nothing -> do
-          deleteMitState branch64
-          pure emptyMitState
-        Just state -> pure (state {head = ()} :: MitState ())
-
-writeMitState :: Text -> MitState () -> IO ()
-writeMitState branch64 state = do
-  head <- gitHead
-  let contents :: Text
-      contents =
-        Text.unlines
-          [ "head " <> head,
-            "merging " <> fromMaybe Text.empty state.merging,
-            "ran-commit-at " <> maybe Text.empty int2text state.ranCommitAt,
-            "undos " <> showUndos state.undos
-          ]
-  Text.writeFile (mitfile branch64) contents `catch` \(_ :: IOException) -> pure ()
-
-mitfile :: Text -> FilePath
-mitfile branch64 =
-  Text.unpack (gitdir <> "/.mit-" <> branch64)
-
 -- Undo file utils
-
-data Undo
-  = Apply Text -- apply stash
-  | Reset Text -- reset to commit
-  | Revert Text -- revert commit
-  deriving stock (Eq, Show)
-
-showUndos :: [Undo] -> Text
-showUndos =
-  Text.intercalate " " . map showUndo
-  where
-    showUndo :: Undo -> Text
-    showUndo = \case
-      Apply commit -> "apply/" <> commit
-      Reset commit -> "reset/" <> commit
-      Revert commit -> "revert/" <> commit
-
-parseUndos :: Text -> Maybe [Undo]
-parseUndos t0 = do
-  (Text.words >>> traverse parseUndo) t0
-  where
-    parseUndo :: Text -> Maybe Undo
-    parseUndo text =
-      asum
-        [ Apply <$> Text.stripPrefix "apply/" text,
-          Reset <$> Text.stripPrefix "reset/" text,
-          Revert <$> Text.stripPrefix "revert/" text,
-          error (show text)
-        ]
-
-applyUndos :: List1 Undo -> IO ()
-applyUndos =
-  traverse_ \case
-    Apply commit -> void (gitApplyStash commit)
-    Reset commit -> gitResetHard commit
-    Revert commit -> gitRevert commit

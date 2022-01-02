@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fplugin=RecordDotPreprocessor #-}
-
 module Mit.Git where
 
 import qualified Data.List as List
@@ -204,6 +202,11 @@ gitCurrentBranch :: IO Text
 gitCurrentBranch =
   git ["branch", "--show-current"]
 
+gitDefaultBranch :: Text -> IO Text
+gitDefaultBranch remote = do
+  ref <- git ["symbolic-ref", "refs/remotes/" <> remote <> "/HEAD"]
+  pure (Text.drop (14 + Text.length remote) ref)
+
 -- FIXME document this
 gitDiff :: IO DiffResult
 gitDiff = do
@@ -314,8 +317,12 @@ gitStash = do
       pure (Just stash)
     NoDifferences -> pure Nothing
 
-gitSwitch :: Text -> IO ()
+gitSwitch :: Text -> IO Bool
 gitSwitch branch =
+  git ["switch", branch]
+
+gitSwitch_ :: Text -> IO ()
+gitSwitch_ branch =
   git_ ["switch", branch]
 
 gitUnstageChanges :: IO ()

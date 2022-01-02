@@ -17,6 +17,7 @@ import Data.Text as X (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
 import Data.Traversable as X
+import Data.Word as X (Word64)
 import Mit.Seq1 as X (Seq1)
 import Text.Read as X (readMaybe)
 import Prelude as X hiding (head, id)
@@ -33,8 +34,8 @@ bug =
   error . Text.unpack
 
 -- FIXME make this faster
-int2text :: Integer -> Text
-int2text =
+word642text :: Word64 -> Text
+word642text =
   Text.pack . show
 
 putLines :: [Text] -> IO ()
@@ -46,8 +47,8 @@ quoteText s =
   if Text.any isSpace s then "'" <> Text.replace "'" "\\'" s <> "'" else s
 
 -- FIXME make this faster
-text2int :: Text -> Maybe Integer
-text2int =
+text2word64 :: Text -> Maybe Word64
+text2word64 =
   readMaybe . Text.unpack
 
 onLeftM :: Monad m => (a -> m b) -> m (Either a b) -> m b
@@ -73,3 +74,7 @@ whenM mx action =
   mx >>= \case
     False -> pure ()
     True -> action
+
+whenNotM :: Monad m => m Bool -> m () -> m ()
+whenNotM mx =
+  whenM (not <$> mx)

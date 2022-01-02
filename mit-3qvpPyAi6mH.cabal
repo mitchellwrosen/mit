@@ -51,6 +51,7 @@ common component
     NoImplicitPrelude
     NumericUnderscores
     OverloadedStrings
+    PatternSynonyms
     ScopedTypeVariables
     TupleSections
     TypeApplications
@@ -63,11 +64,17 @@ library
   import: component
   exposed-modules:
     Mit
+    Mit.Clock
+    Mit.Directory
     Mit.Git
     Mit.Globals
     Mit.Prelude
     Mit.Process
+    Mit.Seq
     Mit.Seq1
+    Mit.State
+    Mit.Undo
+  ghc-options: -fplugin=RecordDotPreprocessor
   hs-source-dirs: src
 
 executable mit
