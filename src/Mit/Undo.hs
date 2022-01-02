@@ -36,6 +36,10 @@ parseUndos = do
 applyUndos :: List1 Undo -> IO ()
 applyUndos =
   traverse_ \case
-    Apply commit -> void (gitApplyStash commit)
-    Reset commit -> gitResetHard commit
-    Revert commit -> gitRevert commit
+    Apply commit -> do
+      gitl_ ["stash", "apply", commit]
+      gitUnstageChanges
+    Reset commit -> do
+      gitl_ ["clean", "-d", "--force"]
+      gitl ["reset", "--hard", commit]
+    Revert commit -> gitl_ ["revert", commit]

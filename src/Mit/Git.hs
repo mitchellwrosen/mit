@@ -6,7 +6,6 @@ import qualified Data.Text as Text
 import qualified Data.Text.ANSI as Text
 import qualified Data.Text.Builder.ANSI as Text.Builder
 import qualified Data.Text.IO as Text
-import qualified Data.Text.Lazy as Text.Lazy
 import qualified Data.Text.Lazy.Builder as Text (Builder)
 import qualified Data.Text.Lazy.Builder as Text.Builder
 import qualified Ki
@@ -263,23 +262,14 @@ gitRemoteBranchHead remote branch =
     Left _ -> Nothing
     Right head -> Just head
 
--- | Blow away untracked files, and hard-reset to the given commit
-gitResetHard :: Text -> IO ()
-gitResetHard commit = do
-  git_ ["clean", "-d", "--force"]
-  git ["reset", "--hard", commit]
-
-gitRevert :: Text -> IO ()
-gitRevert commit =
-  gitl_ ["revert", commit]
-
 -- | Stash uncommitted changes (if any).
 gitStash :: IO (Maybe Text)
 gitStash = do
   gitDiff >>= \case
     Differences -> do
       stash <- gitCreateStash
-      gitResetHard "HEAD"
+      git_ ["clean", "-d", "--force"]
+      git_ ["reset", "--hard", "HEAD"]
       pure (Just stash)
     NoDifferences -> pure Nothing
 
