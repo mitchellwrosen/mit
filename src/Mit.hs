@@ -148,17 +148,23 @@ mitCommit_ = do
   existLocalCommits <- maybe (pure True) (\upstreamHead -> gitExistCommitsBetween upstreamHead "HEAD") maybeUpstreamHead
   state0 <- readMitState branch64
 
+  stash <- gitCreateStash
+
   let wouldFork = existRemoteCommits && not existLocalCommits
+
   let shouldWarnAboutFork =
         if wouldFork
           then do
-            let theyRanMitCommitRecently =
-                  case state0.ranCommitAt of
-                    Nothing -> pure False
-                    Just t0 -> do
-                      t1 <- getCurrentTime
-                      pure ((t1 - t0) < 10_000_000_000)
-            not <$> theyRanMitCommitRecently
+            ago <- mitStateRanCommitAgo state0
+            if ago < 10_000_000_000
+              then pure False
+              else do
+                git_ ["reset", "--hard", fromJust maybeUpstreamHead]
+                canMergeCleanly <- git ["stash", "apply", stash]
+                git_ ["reset", "--hard", head]
+                git_ ["stash", "apply", stash]
+                gitUnstageChanges
+                pure canMergeCleanly
           else pure False
 
   -- Bail out early if we should warn that this commit would fork history
@@ -167,7 +173,7 @@ mitCommit_ = do
     writeMitState branch64 state0 {ranCommitAt}
     putLines
       [ "",
-        "  " <> Text.yellow (Text.italic branch <> " is not up to date."),
+        "  " <> Text.yellow (Text.italic branch <> " is not up-to-date."),
         "",
         "  Run " <> Text.bold (Text.blue "mit sync") <> " first, or run " <> Text.bold (Text.blue "mit commit")
           <> " again to record a commit anyway.",
@@ -175,7 +181,6 @@ mitCommit_ = do
       ]
     exitFailure
 
-  stash <- gitCreateStash
   committed <- gitCommit
   localCommits <- gitCommitsBetween maybeUpstreamHead "HEAD"
 

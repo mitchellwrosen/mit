@@ -116,7 +116,7 @@ showGitVersion (GitVersion x y z) =
 gitApplyStash :: Text -> IO [GitConflict]
 gitApplyStash stash = do
   conflicts <-
-    gitl ["stash", "apply", stash] >>= \case
+    git ["stash", "apply", stash] >>= \case
       False -> gitConflicts
       True -> pure []
   gitUnstageChanges
@@ -193,7 +193,7 @@ gitConflicts =
 gitCreateStash :: IO Text
 gitCreateStash = do
   git_ ["add", "--all"] -- it seems certain things (like renames), unless staged, cannot be stashed
-  stash <- gitl ["stash", "create"]
+  stash <- git ["stash", "create"]
   gitUnstageChanges
   pure stash
 
@@ -243,40 +243,6 @@ gitListUntrackedFiles :: IO [Text]
 gitListUntrackedFiles =
   git ["ls-files", "--exclude-standard", "--other"]
 
--- FIXME document what this does
-gitMerge :: Text -> Text -> IO (Either (IO [GitConflict]) ())
-gitMerge me target = do
-  gitl ["merge", "--ff", "--no-commit", target] >>= \case
-    False ->
-      (pure . Left) do
-        conflicts <- gitConflicts
-        gitl_ ["add", "--all"]
-        gitl_ ["commit", "--no-edit", "--message", mergeMessage conflicts]
-        pure conflicts
-    True -> do
-      whenM gitMergeInProgress (gitl_ ["commit", "--message", mergeMessage []])
-      pure (Right ())
-  where
-    mergeMessage :: [GitConflict] -> Text
-    mergeMessage conflicts =
-      (Text.Lazy.toStrict . Text.Builder.toLazyText . fold)
-        [ "⅄",
-          if null conflicts then "" else "\x0338",
-          " ",
-          if target' == me
-            then Text.Builder.fromText me
-            else Text.Builder.fromText target' <> " → " <> Text.Builder.fromText me,
-          if null conflicts
-            then ""
-            else
-              " (conflicts)\n\nConflicting files:\n"
-                <> mconcat (List.intersperse "\n" (map (("  " <>) . showGitConflict) conflicts))
-        ]
-      where
-        target' :: Text
-        target' =
-          fromMaybe target (Text.stripPrefix "origin/" target)
-
 gitMergeInProgress :: IO Bool
 gitMergeInProgress =
   doesFileExist (Text.unpack (gitdir <> "/MERGE_HEAD"))
@@ -300,8 +266,8 @@ gitRemoteBranchHead remote branch =
 -- | Blow away untracked files, and hard-reset to the given commit
 gitResetHard :: Text -> IO ()
 gitResetHard commit = do
-  gitl_ ["clean", "-d", "--force"]
-  gitl ["reset", "--hard", commit]
+  git_ ["clean", "-d", "--force"]
+  git ["reset", "--hard", commit]
 
 gitRevert :: Text -> IO ()
 gitRevert commit =
@@ -327,9 +293,9 @@ gitSwitch_ branch =
 
 gitUnstageChanges :: IO ()
 gitUnstageChanges = do
-  gitl_ ["reset", "--mixed"]
+  git_ ["reset", "--mixed"]
   untrackedFiles <- gitListUntrackedFiles
-  unless (null untrackedFiles) (gitl_ ("add" : "--intent-to-add" : untrackedFiles))
+  unless (null untrackedFiles) (git_ ("add" : "--intent-to-add" : untrackedFiles))
 
 gitVersion :: IO GitVersion
 gitVersion = do

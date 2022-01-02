@@ -2,6 +2,7 @@ module Mit.State where
 
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
+import Mit.Clock (getCurrentTime)
 import Mit.Git
 import Mit.Prelude
 import Mit.Undo
@@ -68,6 +69,17 @@ writeMitState branch64 state = do
             "undos " <> showUndos state.undos
           ]
   Text.writeFile (mitfile branch64) contents `catch` \(_ :: IOException) -> pure ()
+
+mitStateRanCommitAgo :: MitState a -> IO Word64
+mitStateRanCommitAgo state =
+  case state.ranCommitAt of
+    Nothing -> pure maxBound
+    Just timestamp0 -> do
+      timestamp1 <- getCurrentTime
+      pure
+        if timestamp1 >= timestamp0
+          then timestamp1 - timestamp0
+          else maxBound -- weird unexpected case
 
 mitfile :: Text -> FilePath
 mitfile branch64 =
