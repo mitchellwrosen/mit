@@ -3,13 +3,13 @@ module Mit.Git where
 import qualified Data.List as List
 import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
-import qualified Data.Text.ANSI as Text
 import qualified Data.Text.Builder.ANSI as Text.Builder
 import qualified Data.Text.IO as Text
 import qualified Data.Text.Lazy.Builder as Text (Builder)
 import qualified Data.Text.Lazy.Builder as Text.Builder
 import qualified Ki
-import Mit.Globals (debug)
+import qualified Mit.Builder as Builder
+import Mit.Config (verbose)
 import Mit.Prelude
 import Mit.Process
 import System.Directory (doesFileExist)
@@ -51,11 +51,11 @@ prettyGitCommitInfo :: GitCommitInfo -> Text.Builder
 prettyGitCommitInfo info =
   fold
     [ Text.Builder.bold (Text.Builder.black (Text.Builder.fromText info.shorthash)),
-      " ",
+      Builder.space,
       Text.Builder.bold (Text.Builder.white (Text.Builder.fromText info.subject)),
       " - ",
       Text.Builder.italic (Text.Builder.white (Text.Builder.fromText info.author)),
-      " ",
+      Builder.space,
       Text.Builder.italic (Text.Builder.yellow (Text.Builder.fromText info.date)) -- FIXME some other color, magenta?
     ]
 
@@ -124,7 +124,7 @@ gitApplyStash stash = do
 -- | Create a branch.
 gitBranch :: Text -> IO ()
 gitBranch branch =
-  gitl_ ["branch", "--no-track", branch]
+  git_ ["branch", "--no-track", branch]
 
 -- | Does the given local branch (refs/heads/...) exist?
 gitBranchExists :: Text -> IO Bool
@@ -151,9 +151,9 @@ gitCommit =
   queryTerminal 0 >>= \case
     False -> do
       message <- lookupEnv "MIT_COMMIT_MESSAGE"
-      gitl ["commit", "--all", "--message", maybe "" Text.pack message]
+      git ["commit", "--all", "--message", maybe "" Text.pack message]
     True ->
-      gitl2 ["commit", "--patch", "--quiet"] <&> \case
+      git2 ["commit", "--patch", "--quiet"] <&> \case
         ExitFailure _ -> False
         ExitSuccess -> True
 
@@ -227,7 +227,7 @@ gitExistUntrackedFiles =
 
 gitFetch :: Text -> IO Bool
 gitFetch remote =
-  gitl ["fetch", remote]
+  git ["fetch", remote]
 
 gitFetch_ :: Text -> IO ()
 gitFetch_ =
@@ -248,7 +248,7 @@ gitMergeInProgress =
 
 gitPush :: Text -> IO Bool
 gitPush branch =
-  gitl ["push", "--set-upstream", "origin", branch <> ":" <> branch]
+  git ["push", "--set-upstream", "origin", branch <> ":" <> branch]
 
 -- | Does the given remote branch (refs/remotes/...) exist?
 gitRemoteBranchExists :: Text -> Text -> IO Bool
@@ -328,15 +328,7 @@ parseGitRepo url = do
   pure (url, Text.takeWhileEnd (/= '/') url')
 
 git :: ProcessOutput a => [Text] -> IO a
-git =
-  git' False
-
-gitl :: ProcessOutput a => [Text] -> IO a
-gitl =
-  git' True
-
-git' :: ProcessOutput a => Bool -> [Text] -> IO a
-git' effectful args = do
+git args = do
   let spec :: CreateProcess
       spec =
         CreateProcess
@@ -357,7 +349,6 @@ git' effectful args = do
             detach_console = False,
             use_process_jobs = False
           }
-  when effectful (logProcess "git" args)
   bracket (createProcess spec) cleanup \(_maybeStdin, maybeStdout, maybeStderr, processHandle) ->
     Ki.scoped \scope -> do
       stdoutThread <- Ki.fork scope (drainTextHandle (fromJust maybeStdout))
@@ -391,14 +382,9 @@ git_ :: [Text] -> IO ()
 git_ =
   git
 
-gitl_ :: [Text] -> IO ()
-gitl_ =
-  gitl
-
 -- Yucky interactive/inherity variant (so 'git commit' can open an editor).
-gitl2 :: [Text] -> IO ExitCode
-gitl2 args = do
-  logProcess "git" args
+git2 :: [Text] -> IO ExitCode
+git2 args = do
   (Nothing, Nothing, Just stderrHandle, processHandle) <-
     createProcess
       CreateProcess
@@ -429,18 +415,25 @@ gitl2 args = do
 
 debugPrintGit :: [Text] -> Seq Text -> Seq Text -> ExitCode -> IO ()
 debugPrintGit args stdoutLines stderrLines exitCode =
-  when debug do
-    putLines do
-      let output :: [Text]
-          output =
-            map (Text.brightBlack . ("    " <>)) (toList @Seq (stdoutLines <> stderrLines))
-      Text.bold (Text.brightBlack (Text.unwords (marker <> " git" : map quoteText args))) : output
+  case verbose of
+    1 -> Builder.putln v1
+    2 -> Builder.putln (v1 <> v2)
+    _ -> pure ()
   where
-    marker :: Text
+    v1 = Text.Builder.bold (marker <> " git " <> Builder.hcat (map quote args))
+    v2 = foldMap (\line -> "\n    " <> Text.Builder.fromText line) (stdoutLines <> stderrLines)
+
+    quote :: Text -> Text.Builder
+    quote s =
+      if Text.any isSpace s
+        then Builder.squoted (Text.Builder.fromText (Text.replace "'" "\\'" s))
+        else Text.Builder.fromText s
+
+    marker :: Text.Builder
     marker =
       case exitCode of
-        ExitFailure _ -> "✗"
-        ExitSuccess -> "✓"
+        ExitFailure _ -> Text.Builder.singleton '✗'
+        ExitSuccess -> Text.Builder.singleton '✓'
 
 drainTextHandle :: Handle -> IO (Seq Text)
 drainTextHandle handle = do

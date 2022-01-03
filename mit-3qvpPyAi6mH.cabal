@@ -66,9 +66,9 @@ library
     Mit
     Mit.Builder
     Mit.Clock
+    Mit.Config
     Mit.Directory
     Mit.Git
-    Mit.Globals
     Mit.Prelude
     Mit.Process
     Mit.Seq

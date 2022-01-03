@@ -4,22 +4,7 @@ module Mit.Process where
 
 import qualified Data.Sequence as Seq
 import Mit.Prelude
-import qualified Data.Text as Text
-import qualified Data.Text.IO as Text
-import qualified Data.Text.Lazy as Text.Lazy
-import qualified Data.List as List
-import qualified Data.Text.Builder.ANSI as Text.Builder
-import qualified Data.Text.Lazy.Builder as Text.Builder
 import System.Exit (ExitCode (..), exitWith)
-
-logProcess :: Text -> [Text] -> IO ()
-logProcess s0 ss =
-  Text.putStrLn (Text.Lazy.toStrict (Text.Builder.toLazyText line))
-  where
-    line = "» " <> Text.Builder.bold (Text.Builder.fromText s0 <> space <> formatArgs ss)
-    formatArgs = mconcat . List.intersperse space . map formatArg
-    formatArg s = Text.Builder.fromText (if Text.elem ' ' s then s else s)
-    space = Text.Builder.singleton ' '
 
 class ProcessOutput a where
   fromProcessOutput :: Seq Text -> Seq Text -> ExitCode -> IO a

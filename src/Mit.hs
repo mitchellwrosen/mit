@@ -8,7 +8,6 @@ import qualified Data.Text.ANSI as Text
 import qualified Data.Text.Builder.ANSI as Text.Builder
 import qualified Data.Text.Encoding.Base64 as Text
 import qualified Data.Text.IO as Text
-import qualified Data.Text.Lazy as Text.Lazy
 import qualified Data.Text.Lazy.Builder as Text (Builder)
 import qualified Data.Text.Lazy.Builder as Text.Builder
 import qualified Mit.Builder as Builder
@@ -109,7 +108,7 @@ mitBranch branch = do
   gitBranchWorktreeDir branch >>= \case
     Nothing -> do
       whenM (doesDirectoryExist worktreeDir) (die ["Directory " <> Text.bold worktreeDir <> " already exists."])
-      gitl_ ["worktree", "add", "--detach", worktreeDir]
+      git_ ["worktree", "add", "--detach", worktreeDir]
       withCurrentDirectory worktreeDir do
         whenNotM (gitSwitch branch) do
           gitBranch branch
@@ -117,8 +116,8 @@ mitBranch branch = do
           gitFetch_ "origin"
           whenM (gitRemoteBranchExists "origin" branch) do
             let upstream = "origin/" <> branch
-            gitl_ ["reset", "--hard", upstream]
-            gitl_ ["branch", "--set-upstream-to", upstream]
+            git_ ["reset", "--hard", upstream]
+            git_ ["branch", "--set-upstream-to", upstream]
     Just directory ->
       when (directory /= worktreeDir) do
         die [Text.bold branch <> " is already checked out in " <> Text.bold directory <> "."]
@@ -143,12 +142,11 @@ mitCommit_ = do
   fetched <- gitFetch "origin"
   branch <- gitCurrentBranch
   let branch64 = Text.encodeBase64 branch
-  head <- gitHead
+  head0 <- gitHead
   maybeUpstreamHead <- gitRemoteBranchHead "origin" branch
-  existRemoteCommits <- maybe (pure False) (gitExistCommitsBetween head) maybeUpstreamHead
-  existLocalCommits <- maybe (pure True) (\upstreamHead -> gitExistCommitsBetween upstreamHead "HEAD") maybeUpstreamHead
+  existRemoteCommits <- maybe (pure False) (gitExistCommitsBetween head0) maybeUpstreamHead
+  existLocalCommits <- maybe (pure True) (\upstreamHead -> gitExistCommitsBetween upstreamHead head0) maybeUpstreamHead
   state0 <- readMitState branch64
-
   stash <- gitCreateStash
 
   let wouldFork = existRemoteCommits && not existLocalCommits
@@ -162,7 +160,7 @@ mitCommit_ = do
               else do
                 git_ ["reset", "--hard", fromJust maybeUpstreamHead]
                 canMergeCleanly <- git ["stash", "apply", stash]
-                git_ ["reset", "--hard", head]
+                git_ ["reset", "--hard", head0]
                 git_ ["stash", "apply", stash]
                 gitUnstageChanges
                 pure canMergeCleanly
@@ -206,7 +204,7 @@ mitCommit_ = do
   undos <-
     case (pushed, committed, localCommits) of
       (False, False, _) -> pure state0.undos
-      (False, True, _) -> pure [Reset head, Apply stash]
+      (False, True, _) -> pure [Reset head0, Apply stash]
       (True, True, Seq.Singleton) -> do
         head1 <- gitHead
         pure [Revert head1, Apply stash]
@@ -249,10 +247,11 @@ mitCommitMerge = do
   state0 <- readMitState branch64
 
   case state0.merging of
-    Nothing -> gitl_ ["commit", "--all", "--no-edit"]
+    Nothing -> git_ ["commit", "--all", "--no-edit"]
     Just merging ->
       let message = fold ["⅄ ", if merging == branch then "" else merging <> " → ", branch]
-       in gitl_ ["commit", "--all", "--message", message]
+       in git_ ["commit", "--all", "--message", message]
+
   case listToMaybe [commit | Apply commit <- state0.undos] of
     Nothing -> mitSyncWith (Just [Reset head])
     Just stash -> do
@@ -287,7 +286,6 @@ pushResultToSyncResult = \case
   PushNotAttempted UnseenCommits -> SyncResult'Pending
 
 -- FIXME if on branch 'foo', handle 'mitMerge foo' or 'mitMerge origin/foo' as 'mitSync'?
--- TODO sync after successful merge
 mitMerge :: Text -> IO ()
 mitMerge target = do
   dieIfNotInGitDir
@@ -362,7 +360,7 @@ mitMerge' message target = do
       maybeStash <- gitStash
       let undos = Reset head :| maybeToList (Apply <$> maybeStash)
       result <-
-        gitl ["merge", "--ff", "--no-commit", target] >>= \case
+        git ["merge", "--ff", "--no-commit", target] >>= \case
           False -> do
             conflicts <- gitConflicts
             -- error: The following untracked working tree files would be overwritten by merge:
@@ -386,7 +384,7 @@ mitMerge' message target = do
             -- Aborting
             pure (MergeResult'MergeConflicts (List1.fromList conflicts))
           True -> do
-            whenM gitMergeInProgress (gitl_ ["commit", "--message", message])
+            whenM gitMergeInProgress (git_ ["commit", "--message", message])
             maybeConflicts <- for maybeStash gitApplyStash
             pure (MergeResult'StashConflicts (fromMaybe [] maybeConflicts))
       pure (Just MergeStatus {commits, result, undos})

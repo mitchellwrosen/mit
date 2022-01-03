@@ -37,9 +37,9 @@ applyUndos :: List1 Undo -> IO ()
 applyUndos =
   traverse_ \case
     Apply commit -> do
-      gitl_ ["stash", "apply", commit]
+      git_ ["stash", "apply", commit]
       gitUnstageChanges
     Reset commit -> do
-      gitl_ ["clean", "-d", "--force"]
-      gitl ["reset", "--hard", commit]
-    Revert commit -> gitl_ ["revert", commit]
+      git_ ["clean", "-d", "--force"]
+      git ["reset", "--hard", commit]
+    Revert commit -> git_ ["revert", commit]
