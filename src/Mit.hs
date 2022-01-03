@@ -277,11 +277,11 @@ data PushNotAttemptedReason
 
 pushResultToSyncResult :: PushResult -> SyncResult
 pushResultToSyncResult = \case
-  PushAttempted False -> SyncResult'Failure
+  PushAttempted False -> SyncResult'Failure SyncFailureReason'PushFailed
   PushAttempted True -> SyncResult'Success
-  PushNotAttempted ForkedHistory -> SyncResult'Failure
+  PushNotAttempted ForkedHistory -> SyncResult'Failure SyncFailureReason'ForkedHistory
   PushNotAttempted NothingToPush -> SyncResult'Success -- doesnt matter, wont be shown
-  PushNotAttempted Offline -> SyncResult'Offline
+  PushNotAttempted Offline -> SyncResult'Failure SyncFailureReason'Offline
   PushNotAttempted UnseenCommits -> SyncResult'Pending
 
 -- FIXME if on branch 'foo', handle 'mitMerge foo' or 'mitMerge origin/foo' as 'mitSync'?
@@ -335,7 +335,7 @@ mitMerge target = do
               { commits = mergeStatus.commits,
                 result =
                   case mergeStatus.result of
-                    MergeResult'MergeConflicts _ -> SyncResult'Failure
+                    MergeResult'MergeConflicts _ -> SyncResult'Failure SyncFailureReason'MergeConflicts
                     -- Even if we have conflicts from unstashing, we call this merge a success.
                     MergeResult'StashConflicts _ -> SyncResult'Success,
                 source = target,
@@ -487,7 +487,7 @@ mitSyncWith maybeUndos = do
                     { commits = mergeStatus.commits,
                       result =
                         case mergeStatus.result of
-                          MergeResult'MergeConflicts _ -> SyncResult'Failure
+                          MergeResult'MergeConflicts _ -> SyncResult'Failure SyncFailureReason'MergeConflicts
                           MergeResult'StashConflicts _ -> SyncResult'Success,
                       source = "origin/" <> branch,
                       target = branch
@@ -536,17 +536,25 @@ data Sync = Sync
     target :: Text
   }
 
+data SyncFailureReason
+  = SyncFailureReason'ForkedHistory
+  | SyncFailureReason'MergeConflicts
+  | SyncFailureReason'PushFailed
+  | SyncFailureReason'Offline
+  deriving stock (Eq)
+
 data SyncResult
-  = SyncResult'Failure
-  | SyncResult'Offline
+  = SyncResult'Failure SyncFailureReason
   | SyncResult'Pending
   | SyncResult'Success
+  deriving stock (Eq)
 
 -- FIXME show some graph of where local/remote is at
 putSummary :: Summary -> IO ()
 putSummary summary =
-  let output = concatMap syncLines summary.syncs ++ conflictsLines ++ undoLines
-   in if null output then pure () else putLines (map (Text.Lazy.toStrict . Text.Builder.toLazyText) ("" : output))
+  let output = concatMap syncLines summary.syncs ++ conflictsLines ++ runSyncLines ++ undoLines
+   in when (not (null output)) do
+        putLines (map (Text.Lazy.toStrict . Text.Builder.toLazyText) ("" : output))
   where
     conflictsLines :: [Text.Builder]
     conflictsLines =
@@ -567,18 +575,42 @@ putSummary summary =
         colorize :: Text.Builder -> Text.Builder
         colorize =
           case sync.result of
-            SyncResult'Failure -> Text.Builder.red
-            SyncResult'Offline -> Text.Builder.brightBlack
+            SyncResult'Failure SyncFailureReason'ForkedHistory -> Text.Builder.red
+            SyncResult'Failure SyncFailureReason'MergeConflicts -> Text.Builder.red
+            SyncResult'Failure SyncFailureReason'PushFailed -> Text.Builder.red
+            SyncResult'Failure SyncFailureReason'Offline -> Text.Builder.brightBlack
             SyncResult'Pending -> Text.Builder.yellow
             SyncResult'Success -> Text.Builder.green
         (commits', more) =
           case Seq1.length sync.commits > 10 of
             False -> (Seq1.toSeq sync.commits, False)
             True -> (Seq1.dropEnd 1 sync.commits, True)
+    runSyncLines :: [Text.Builder]
+    runSyncLines =
+      if shouldSync
+        then
+          [ "  Run " <> Text.Builder.bold (Text.Builder.blue "mit sync")
+              <> " to synchronize with "
+              <> Text.Builder.bold "origin"
+              <> ".",
+            ""
+          ]
+        else []
+      where
+        shouldSync :: Bool
+        shouldSync =
+          any (\sync -> f sync.result) summary.syncs
+          where
+            f :: SyncResult -> Bool
+            f = \case
+              SyncResult'Failure SyncFailureReason'ForkedHistory -> True
+              SyncResult'Failure SyncFailureReason'MergeConflicts -> False
+              SyncResult'Failure SyncFailureReason'PushFailed -> True
+              SyncResult'Failure SyncFailureReason'Offline -> False
+              SyncResult'Pending -> True
+              SyncResult'Success -> False
     undoLines :: [Text.Builder]
     undoLines =
       if summary.canUndo
         then ["  Run " <> Text.Builder.bold (Text.Builder.blue "mit undo") <> " to undo this change.", ""]
         else []
-
--- Undo file utils
