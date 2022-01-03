@@ -177,28 +177,20 @@ mitCommit_ = do
           putStanzas
             if null conflicts
               then
-                [ RawStanza
-                    ( "  "
-                        <> Text.Builder.yellow
-                          ( Text.Builder.italic (Text.Builder.fromText branch)
-                              <> " is not synchronized with "
-                              <> Text.Builder.italic ("origin/" <> Text.Builder.fromText branch)
-                              <> ", but would not become in conflict."
-                          )
-                    ),
-                  RawStanza
+                [ notSynchronizedStanza (Text.Builder.fromText branch) ", but would not become in conflict.",
+                  Just
                     ( "  To avoid a merge bubble, run "
                         <> Text.Builder.bold (Text.Builder.blue "mit sync")
                         <> " first."
                     ),
-                  RawStanza
+                  Just
                     ( "  Otherwise, run "
                         <> Text.Builder.bold (Text.Builder.blue "mit commit")
                         <> " again (within 10 seconds) to record a commit anyway."
                     )
                 ]
               else
-                [ RawStanza
+                [ Just
                     ( Builder.vcat
                         ( "  "
                             <> Text.Builder.yellow
@@ -210,7 +202,7 @@ mitCommit_ = do
                           map (\conflict -> "    " <> Text.Builder.yellow (showGitConflict conflict)) conflicts
                         )
                     ),
-                  RawStanza
+                  Just
                     ( Builder.vcat
                         [ "  To avoid a merge bubble, run "
                             <> Text.Builder.bold (Text.Builder.blue "mit sync")
@@ -220,7 +212,7 @@ mitCommit_ = do
                             <> " to back out)."
                         ]
                     ),
-                  RawStanza
+                  Just
                     ( "  Otherwise, run "
                         <> Text.Builder.bold (Text.Builder.blue "mit commit")
                         <> " again (within 10 seconds) to record a commit anyway."
@@ -263,69 +255,34 @@ mitCommit_ = do
   writeMitState branch64 MitState {head = (), merging = Nothing, ranCommitAt, undos}
 
   putStanzas
-    [ case Seq1.fromSeq localCommits of
-        Nothing -> EmptyStanza
-        Just commits ->
-          SyncStanza
-            Sync
-              { commits,
-                result = pushResultToSyncResult pushResult,
-                source = branch,
-                target = "origin/" <> branch
-              },
+    [ Seq1.fromSeq localCommits <&> \commits ->
+        syncStanza
+          Sync
+            { commits,
+              result = pushResultToSyncResult pushResult,
+              source = branch,
+              target = "origin/" <> branch
+            },
       case pushResult of
         PushAttempted False ->
-          Stanzas
-            [ RawStanza
-                ( "  "
-                    <> Text.Builder.yellow
-                      ( Text.Builder.italic (Text.Builder.fromText branch)
-                          <> " is not synchronized with "
-                          <> Text.Builder.italic ("origin/" <> Text.Builder.fromText branch)
-                          <> " because "
-                          <> Text.Builder.bold "git push"
-                          <> " failed."
-                      )
-                ),
-              RunSyncStanza (Text.Builder.fromText branch)
+          renderStanzas
+            [ notSynchronizedStanza
+                (Text.Builder.fromText branch)
+                (" because " <> Text.Builder.bold "git push" <> " failed."),
+              Just (runSyncStanza (Text.Builder.fromText branch))
             ]
-        PushAttempted True ->
-          RawStanza
-            ( "  "
-                <> Text.Builder.green
-                  ( Text.Builder.italic (Text.Builder.fromText branch)
-                      <> " is synchronized with "
-                      <> Text.Builder.italic ("origin/" <> Text.Builder.fromText branch)
-                      <> "."
-                  )
-            )
+        PushAttempted True -> synchronizedStanza (Text.Builder.fromText branch)
         PushNotAttempted ForkedHistory ->
           -- FIXME we should say whether there would be conflicts
-          Stanzas
-            [ RawStanza
-                ( "  "
-                    <> Text.Builder.yellow
-                      ( Text.Builder.italic (Text.Builder.fromText branch)
-                          <> " is not synchronized with "
-                          <> Text.Builder.italic ("origin/" <> Text.Builder.fromText branch)
-                          <> "."
-                      )
-                ),
-              RunSyncStanza (Text.Builder.fromText branch)
+          renderStanzas
+            [ notSynchronizedStanza (Text.Builder.fromText branch) ".",
+              Just (runSyncStanza (Text.Builder.fromText branch))
             ]
-        PushNotAttempted NothingToPush -> EmptyStanza
+        PushNotAttempted NothingToPush -> Nothing
         PushNotAttempted Offline ->
-          Stanzas
-            [ RawStanza
-                ( "  "
-                    <> Text.Builder.yellow
-                      ( Text.Builder.italic (Text.Builder.fromText branch)
-                          <> " is not synchronized with "
-                          <> Text.Builder.italic ("origin/" <> Text.Builder.fromText branch)
-                          <> " because you appear to be offline."
-                      )
-                ),
-              RunSyncStanza (Text.Builder.fromText branch)
+          renderStanzas
+            [ notSynchronizedStanza (Text.Builder.fromText branch) " because you appear to be offline.",
+              Just (runSyncStanza (Text.Builder.fromText branch))
             ]
         PushNotAttempted UnseenCommits -> error "impossible",
       -- Whether we say we can undo from here is not exactly if the state says we can undo, because of one corner case:
@@ -334,7 +291,7 @@ mitCommit_ = do
       -- In this case, the underlying state hasn't changed, so 'mit undo' will still work as if the 'mit commit' was
       -- never run, we merely don't want to *say* "run 'mit undo' to undo" as feedback, because that sounds as if it
       -- would undo the last command run, namely the 'mit commit' that was aborted.
-      if not (null undos) && committed then CanUndoStanza else EmptyStanza
+      if not (null undos) && committed then Just canUndoStanza else Nothing
     ]
 
 mitCommitMerge :: IO ()
@@ -360,8 +317,8 @@ mitCommitMerge = do
         Just conflicts1 -> do
           writeMitState branch64 state0 {merging = Nothing, ranCommitAt = Nothing}
           putStanzas
-            [ ConflictsStanza conflicts1,
-              if null state0.undos then EmptyStanza else CanUndoStanza
+            [ Just (conflictsStanza conflicts1),
+              if null state0.undos then Nothing else Just canUndoStanza
             ]
 
 data PushResult
@@ -418,28 +375,26 @@ mitMerge target = do
       }
 
   putStanzas
-    [ case maybeMergeStatus of
-        Nothing -> EmptyStanza
-        Just mergeStatus ->
-          SyncStanza
-            Sync
-              { commits = mergeStatus.commits,
-                result =
-                  case mergeStatus.result of
-                    MergeResult'MergeConflicts _ -> SyncResult'Failure SyncFailureReason'MergeConflicts
-                    -- Even if we have conflicts from unstashing, we call this merge a success.
-                    MergeResult'StashConflicts _ -> SyncResult'Success
-                    MergeResult'Success -> SyncResult'Success,
-                source = target,
-                target = branch
-              },
-      fromMaybe EmptyStanza do
+    [ maybeMergeStatus <&> \mergeStatus ->
+        syncStanza
+          Sync
+            { commits = mergeStatus.commits,
+              result =
+                case mergeStatus.result of
+                  MergeResult'MergeConflicts _ -> SyncResult'Failure SyncFailureReason'MergeConflicts
+                  -- Even if we have conflicts from unstashing, we call this merge a success.
+                  MergeResult'StashConflicts _ -> SyncResult'Success
+                  MergeResult'Success -> SyncResult'Success,
+              source = target,
+              target = branch
+            },
+      do
         mergeStatus <- maybeMergeStatus
         case mergeStatus.result of
-          MergeResult'MergeConflicts conflicts -> Just (ConflictsStanza conflicts)
-          MergeResult'StashConflicts conflicts -> Just (ConflictsStanza conflicts)
+          MergeResult'MergeConflicts conflicts -> Just (conflictsStanza conflicts)
+          MergeResult'StashConflicts conflicts -> Just (conflictsStanza conflicts)
           MergeResult'Success -> Nothing,
-      if isJust maybeMergeStatus then CanUndoStanza else EmptyStanza
+      if isJust maybeMergeStatus then Just canUndoStanza else Nothing
     ]
 
 data MergeStatus = MergeStatus
@@ -574,44 +529,40 @@ mitSyncWith maybeUndos = do
       }
 
   putStanzas
-    [ case maybeMergeStatus of
-        Nothing -> EmptyStanza
-        Just mergeStatus ->
-          SyncStanza
-            Sync
-              { commits = mergeStatus.commits,
-                result =
-                  case mergeStatus.result of
-                    MergeResult'MergeConflicts _ -> SyncResult'Failure SyncFailureReason'MergeConflicts
-                    MergeResult'StashConflicts _ -> SyncResult'Success
-                    MergeResult'Success -> SyncResult'Success,
-                source = "origin/" <> branch,
-                target = branch
-              },
-      case Seq1.fromSeq localCommits of
-        Nothing -> EmptyStanza
-        Just commits ->
-          SyncStanza
-            Sync
-              { commits,
-                result = pushResultToSyncResult pushResult,
-                source = branch,
-                target = "origin/" <> branch
-              },
-      fromMaybe EmptyStanza do
+    [ maybeMergeStatus <&> \mergeStatus ->
+        syncStanza
+          Sync
+            { commits = mergeStatus.commits,
+              result =
+                case mergeStatus.result of
+                  MergeResult'MergeConflicts _ -> SyncResult'Failure SyncFailureReason'MergeConflicts
+                  MergeResult'StashConflicts _ -> SyncResult'Success
+                  MergeResult'Success -> SyncResult'Success,
+              source = "origin/" <> branch,
+              target = branch
+            },
+      Seq1.fromSeq localCommits <&> \commits ->
+        syncStanza
+          Sync
+            { commits,
+              result = pushResultToSyncResult pushResult,
+              source = branch,
+              target = "origin/" <> branch
+            },
+      do
         mergeStatus <- maybeMergeStatus
         case mergeStatus.result of
-          MergeResult'MergeConflicts conflicts -> Just (ConflictsStanza conflicts)
-          MergeResult'StashConflicts conflicts -> Just (ConflictsStanza conflicts)
+          MergeResult'MergeConflicts conflicts -> Just (conflictsStanza conflicts)
+          MergeResult'StashConflicts conflicts -> Just (conflictsStanza conflicts)
           MergeResult'Success -> Nothing,
       case pushResult of
-        PushAttempted False -> RunSyncStanza (Text.Builder.fromText branch)
-        PushAttempted True -> EmptyStanza
-        PushNotAttempted ForkedHistory -> RunSyncStanza (Text.Builder.fromText branch)
-        PushNotAttempted NothingToPush -> EmptyStanza
-        PushNotAttempted Offline -> EmptyStanza
-        PushNotAttempted UnseenCommits -> RunSyncStanza (Text.Builder.fromText branch),
-      if not (null undos) then CanUndoStanza else EmptyStanza
+        PushAttempted False -> Just (runSyncStanza (Text.Builder.fromText branch))
+        PushAttempted True -> synchronizedStanza (Text.Builder.fromText branch)
+        PushNotAttempted ForkedHistory -> Just (runSyncStanza (Text.Builder.fromText branch))
+        PushNotAttempted NothingToPush -> Nothing
+        PushNotAttempted Offline -> Nothing
+        PushNotAttempted UnseenCommits -> Just (runSyncStanza (Text.Builder.fromText branch)),
+      if not (null undos) then Just canUndoStanza else Nothing
     ]
 
 -- FIXME output what we just undid
@@ -661,53 +612,77 @@ data SyncResult
   | SyncResult'Success
   deriving stock (Eq)
 
-renderStanza :: Stanza -> Text.Builder
-renderStanza = \case
-  CanUndoStanza -> "  Run " <> Text.Builder.bold (Text.Builder.blue "mit undo") <> " to undo this change."
-  ConflictsStanza conflicts ->
-    "  The following files are in conflict.\n"
-      <> Builder.vcat ((\conflict -> "    " <> Text.Builder.red (showGitConflict conflict)) <$> conflicts)
-  EmptyStanza -> mempty
-  RawStanza s -> s
-  RunSyncStanza branch ->
-    "  Run " <> Text.Builder.bold (Text.Builder.blue "mit sync")
-      <> " to synchronize "
-      <> Text.Builder.italic branch
-      <> " with "
-      <> Text.Builder.italic ("origin/" <> branch)
-      <> "."
-  Stanzas stanzas -> renderStanzas stanzas
-  SyncStanza sync ->
-    Text.Builder.italic
-      (colorize ("  " <> Text.Builder.fromText sync.source <> " → " <> Text.Builder.fromText sync.target))
-      <> "\n"
-      <> (Builder.vcat ((\commit -> "  " <> prettyGitCommitInfo commit) <$> commits'))
-      <> (if more then "  ..." else Builder.empty)
-    where
-      colorize :: Text.Builder -> Text.Builder
-      colorize =
-        case sync.result of
-          SyncResult'Failure SyncFailureReason'ForkedHistory -> Text.Builder.red
-          SyncResult'Failure SyncFailureReason'MergeConflicts -> Text.Builder.red
-          SyncResult'Failure SyncFailureReason'PushFailed -> Text.Builder.red
-          SyncResult'Failure SyncFailureReason'Offline -> Text.Builder.brightBlack
-          SyncResult'Pending -> Text.Builder.yellow
-          SyncResult'Success -> Text.Builder.green
-      (commits', more) =
-        case Seq1.length sync.commits > 10 of
-          False -> (Seq1.toSeq sync.commits, False)
-          True -> (Seq1.dropEnd 1 sync.commits, True)
+canUndoStanza :: Text.Builder
+canUndoStanza =
+  "  Run " <> Text.Builder.bold (Text.Builder.blue "mit undo") <> " to undo this change."
 
-renderStanzas :: [Stanza] -> Text.Builder
-renderStanzas =
-  mconcat . List.intersperse (Builder.newline <> Builder.newline) . map renderStanza . filter notEmpty
+conflictsStanza :: List1 GitConflict -> Text.Builder
+conflictsStanza conflicts =
+  "  The following files are in conflict.\n"
+    <> Builder.vcat ((\conflict -> "    " <> Text.Builder.red (showGitConflict conflict)) <$> conflicts)
+
+notSynchronizedStanza :: Text.Builder -> Text.Builder -> Maybe Text.Builder
+notSynchronizedStanza branch suffix =
+  Just
+    ( "  "
+        <> Text.Builder.yellow
+          ( Text.Builder.italic branch
+              <> " is not synchronized with "
+              <> Text.Builder.italic ("origin/" <> branch)
+              <> suffix
+          )
+    )
+
+runSyncStanza :: Text.Builder -> Text.Builder
+runSyncStanza branch =
+  "  Run " <> Text.Builder.bold (Text.Builder.blue "mit sync")
+    <> " to synchronize "
+    <> Text.Builder.italic branch
+    <> " with "
+    <> Text.Builder.italic ("origin/" <> branch)
+    <> "."
+
+syncStanza :: Sync -> Text.Builder
+syncStanza sync =
+  Text.Builder.italic
+    (colorize ("  " <> Text.Builder.fromText sync.source <> " → " <> Text.Builder.fromText sync.target))
+    <> "\n"
+    <> (Builder.vcat ((\commit -> "  " <> prettyGitCommitInfo commit) <$> commits'))
+    <> (if more then "  ..." else Builder.empty)
   where
-    notEmpty = \case
-      EmptyStanza -> False
-      _ -> True
+    colorize :: Text.Builder -> Text.Builder
+    colorize =
+      case sync.result of
+        SyncResult'Failure SyncFailureReason'ForkedHistory -> Text.Builder.red
+        SyncResult'Failure SyncFailureReason'MergeConflicts -> Text.Builder.red
+        SyncResult'Failure SyncFailureReason'PushFailed -> Text.Builder.red
+        SyncResult'Failure SyncFailureReason'Offline -> Text.Builder.brightBlack
+        SyncResult'Pending -> Text.Builder.yellow
+        SyncResult'Success -> Text.Builder.green
+    (commits', more) =
+      case Seq1.length sync.commits > 10 of
+        False -> (Seq1.toSeq sync.commits, False)
+        True -> (Seq1.dropEnd 1 sync.commits, True)
 
-putStanzas :: [Stanza] -> IO ()
+synchronizedStanza :: Text.Builder -> Maybe Text.Builder
+synchronizedStanza branch =
+  Just
+    ( "  "
+        <> Text.Builder.green
+          ( Text.Builder.italic branch
+              <> " is synchronized with "
+              <> Text.Builder.italic ("origin/" <> branch)
+              <> "."
+          )
+    )
+
+renderStanzas :: [Maybe Text.Builder] -> Maybe Text.Builder
+renderStanzas stanzas =
+  case catMaybes stanzas of
+    [] -> Nothing
+    stanzas' -> Just (mconcat (List.intersperse (Builder.newline <> Builder.newline) stanzas'))
+
+putStanzas :: [Maybe Text.Builder] -> IO ()
 putStanzas stanzas =
-  if s == "\n\n\n" then pure () else Text.putStr s
-  where
-    s = Builder.build (Builder.newline <> renderStanzas stanzas <> Builder.newline <> Builder.newline)
+  whenJust (renderStanzas stanzas) \s ->
+    Text.putStr (Builder.build (Builder.newline <> s <> Builder.newline <> Builder.newline))
