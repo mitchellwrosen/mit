@@ -353,7 +353,8 @@ mitMerge target = do
           mergeStatus <- maybeMergeStatus
           case mergeStatus.result of
             MergeResult'MergeConflicts _ -> Just target
-            MergeResult'StashConflicts _ -> Nothing,
+            MergeResult'StashConflicts _ -> Nothing
+            MergeResult'Success -> Nothing,
         ranCommitAt = Nothing,
         undos =
           case maybeMergeStatus of
@@ -372,7 +373,8 @@ mitMerge target = do
                   case mergeStatus.result of
                     MergeResult'MergeConflicts _ -> SyncResult'Failure SyncFailureReason'MergeConflicts
                     -- Even if we have conflicts from unstashing, we call this merge a success.
-                    MergeResult'StashConflicts _ -> SyncResult'Success,
+                    MergeResult'StashConflicts _ -> SyncResult'Success
+                    MergeResult'Success -> SyncResult'Success,
                 source = target,
                 target = branch
               },
@@ -380,7 +382,8 @@ mitMerge target = do
         mergeStatus <- maybeMergeStatus
         case mergeStatus.result of
           MergeResult'MergeConflicts conflicts -> Just (ConflictsStanza conflicts)
-          MergeResult'StashConflicts conflicts -> ConflictsStanza <$> List1.nonEmpty conflicts,
+          MergeResult'StashConflicts conflicts -> Just (ConflictsStanza conflicts)
+          MergeResult'Success -> Nothing,
       if isJust maybeMergeStatus then CanUndoStanza else EmptyStanza
     ]
 
@@ -392,7 +395,8 @@ data MergeStatus = MergeStatus
 
 data MergeResult
   = MergeResult'MergeConflicts (List1 GitConflict)
-  | MergeResult'StashConflicts [GitConflict]
+  | MergeResult'StashConflicts (List1 GitConflict)
+  | MergeResult'Success
 
 mitMerge' :: Text -> Text -> IO (Maybe MergeStatus)
 mitMerge' message target = do
@@ -429,7 +433,12 @@ mitMerge' message target = do
           True -> do
             whenM gitMergeInProgress (git_ ["commit", "--message", message])
             maybeConflicts <- for maybeStash gitApplyStash
-            pure (MergeResult'StashConflicts (fromMaybe [] maybeConflicts))
+            pure
+              ( fromMaybe MergeResult'Success do
+                  conflicts <- maybeConflicts
+                  conflicts1 <- List1.nonEmpty conflicts
+                  pure (MergeResult'StashConflicts conflicts1)
+              )
       pure (Just MergeStatus {commits, result, undos})
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
@@ -481,6 +490,7 @@ mitSyncWith maybeUndos = do
       -- previous fork in the history
       (Seq.NonEmpty, Just (MergeResult'MergeConflicts _), _) -> pure (PushNotAttempted ForkedHistory)
       (Seq.NonEmpty, Just (MergeResult'StashConflicts _), _) -> pure (PushNotAttempted UnseenCommits)
+      (Seq.NonEmpty, Just MergeResult'Success, _) -> pure (PushNotAttempted UnseenCommits)
       (Seq.NonEmpty, Nothing, False) -> pure (PushNotAttempted Offline)
       (Seq.NonEmpty, Nothing, True) -> PushAttempted <$> gitPush branch
 
@@ -502,7 +512,8 @@ mitSyncWith maybeUndos = do
           mergeStatus <- maybeMergeStatus
           case mergeStatus.result of
             MergeResult'MergeConflicts _ -> Just branch
-            MergeResult'StashConflicts _ -> Nothing,
+            MergeResult'StashConflicts _ -> Nothing
+            MergeResult'Success -> Nothing,
         ranCommitAt = Nothing,
         undos
       }
@@ -517,7 +528,8 @@ mitSyncWith maybeUndos = do
                 result =
                   case mergeStatus.result of
                     MergeResult'MergeConflicts _ -> SyncResult'Failure SyncFailureReason'MergeConflicts
-                    MergeResult'StashConflicts _ -> SyncResult'Success,
+                    MergeResult'StashConflicts _ -> SyncResult'Success
+                    MergeResult'Success -> SyncResult'Success,
                 source = "origin/" <> branch,
                 target = branch
               },
@@ -535,7 +547,8 @@ mitSyncWith maybeUndos = do
         mergeStatus <- maybeMergeStatus
         case mergeStatus.result of
           MergeResult'MergeConflicts conflicts -> Just (ConflictsStanza conflicts)
-          MergeResult'StashConflicts conflicts -> ConflictsStanza <$> List1.nonEmpty conflicts,
+          MergeResult'StashConflicts conflicts -> Just (ConflictsStanza conflicts)
+          MergeResult'Success -> Nothing,
       case pushResult of
         PushAttempted False -> RunSyncStanza
         PushAttempted True -> EmptyStanza
@@ -601,11 +614,11 @@ renderStanza = \case
   RunSyncStanza ->
     "  Run " <> Text.Builder.bold (Text.Builder.blue "mit sync")
       <> " to synchronize with "
-      <> Text.Builder.italic "origin"
+      <> Text.Builder.italic (Text.Builder.yellow "origin")
       <> "."
   SyncStanza sync ->
-    colorize
-      (Text.Builder.italic ("  " <> Text.Builder.fromText sync.source <> " → " <> Text.Builder.fromText sync.target))
+    Text.Builder.italic
+      (colorize ("  " <> Text.Builder.fromText sync.source <> " → " <> Text.Builder.fromText sync.target))
       <> "\n"
       <> (Builder.vcat ((\commit -> "  " <> prettyGitCommitInfo commit) <$> commits'))
       <> (if more then "  ..." else Builder.empty)
