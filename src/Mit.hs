@@ -1,5 +1,6 @@
 module Mit where
 
+import qualified Data.List as List
 import Data.List.NonEmpty (NonEmpty ((:|)))
 import qualified Data.List.NonEmpty as List1
 import qualified Data.Sequence as Seq
@@ -173,52 +174,58 @@ mitCommit_ = do
           ranCommitAt <- Just <$> getCurrentTime
           writeMitState branch64 state0 {ranCommitAt}
 
-          Builder.putln
+          putStanzas
             if null conflicts
               then
-                Builder.vcat
-                  [ Builder.empty,
-                    "  "
-                      <> Text.Builder.yellow
-                        ( Text.Builder.italic (Text.Builder.fromText branch)
-                            <> " is not synchronized with "
-                            <> Text.Builder.italic ("origin/" <> Text.Builder.fromText branch)
-                            <> ", but would not become in conflict."
-                        ),
-                    Builder.empty,
-                    "  To avoid a merge bubble, run " <> Text.Builder.bold (Text.Builder.blue "mit sync") <> " first.",
-                    Builder.empty,
-                    "  Otherwise, run "
-                      <> Text.Builder.bold (Text.Builder.blue "mit commit")
-                      <> " again (within 10 seconds) to record a commit anyway.",
-                    Builder.empty
-                  ]
+                [ RawStanza
+                    ( "  "
+                        <> Text.Builder.yellow
+                          ( Text.Builder.italic (Text.Builder.fromText branch)
+                              <> " is not synchronized with "
+                              <> Text.Builder.italic ("origin/" <> Text.Builder.fromText branch)
+                              <> ", but would not become in conflict."
+                          )
+                    ),
+                  RawStanza
+                    ( "  To avoid a merge bubble, run "
+                        <> Text.Builder.bold (Text.Builder.blue "mit sync")
+                        <> " first."
+                    ),
+                  RawStanza
+                    ( "  Otherwise, run "
+                        <> Text.Builder.bold (Text.Builder.blue "mit commit")
+                        <> " again (within 10 seconds) to record a commit anyway."
+                    )
+                ]
               else
-                Builder.vcat
-                  [ Builder.empty,
-                    Builder.vcat
-                      ( "  "
-                          <> Text.Builder.yellow
-                            ( Text.Builder.italic (Text.Builder.fromText branch)
-                                <> " would become in conflict with "
-                                <> Text.Builder.italic ("origin/" <> Text.Builder.fromText branch)
-                                <> "."
-                            ) :
-                        map (\conflict -> "    " <> Text.Builder.yellow (showGitConflict conflict)) conflicts
-                      ),
-                    Builder.empty,
-                    "  To avoid a merge bubble, run "
-                      <> Text.Builder.bold (Text.Builder.blue "mit sync")
-                      <> " first to resolve conflicts.",
-                    "  If conflicts seem too difficult to resolve now, you will be able to "
-                      <> Text.Builder.bold (Text.Builder.blue "mit undo")
-                      <> " to back out.",
-                    Builder.empty,
-                    "  Otherwise, run "
-                      <> Text.Builder.bold (Text.Builder.blue "mit commit")
-                      <> " again (within 10 seconds) to record a commit anyway.",
-                    Builder.empty
-                  ]
+                [ RawStanza
+                    ( Builder.vcat
+                        ( "  "
+                            <> Text.Builder.yellow
+                              ( Text.Builder.italic (Text.Builder.fromText branch)
+                                  <> " would become in conflict with "
+                                  <> Text.Builder.italic ("origin/" <> Text.Builder.fromText branch)
+                                  <> "."
+                              ) :
+                          map (\conflict -> "    " <> Text.Builder.yellow (showGitConflict conflict)) conflicts
+                        )
+                    ),
+                  RawStanza
+                    ( Builder.vcat
+                        [ "  To avoid a merge bubble, run "
+                            <> Text.Builder.bold (Text.Builder.blue "mit sync")
+                            <> " first to resolve conflicts.",
+                          "  (If conflicts seem too difficult to resolve now, you will be able to "
+                            <> Text.Builder.bold (Text.Builder.blue "mit undo")
+                            <> " to back out)."
+                        ]
+                    ),
+                  RawStanza
+                    ( "  Otherwise, run "
+                        <> Text.Builder.bold (Text.Builder.blue "mit commit")
+                        <> " again (within 10 seconds) to record a commit anyway."
+                    )
+                ]
           exitFailure
 
         pure (fetched, maybeUpstreamHead, existRemoteCommits, wouldFork)
@@ -267,12 +274,60 @@ mitCommit_ = do
                 target = "origin/" <> branch
               },
       case pushResult of
-        PushAttempted False -> RunSyncStanza
-        PushAttempted True -> EmptyStanza
-        PushNotAttempted ForkedHistory -> RunSyncStanza
+        PushAttempted False ->
+          Stanzas
+            [ RawStanza
+                ( "  "
+                    <> Text.Builder.yellow
+                      ( Text.Builder.italic (Text.Builder.fromText branch)
+                          <> " is not synchronized with "
+                          <> Text.Builder.italic ("origin/" <> Text.Builder.fromText branch)
+                          <> " because "
+                          <> Text.Builder.bold "git push"
+                          <> " failed."
+                      )
+                ),
+              RunSyncStanza (Text.Builder.fromText branch)
+            ]
+        PushAttempted True ->
+          RawStanza
+            ( "  "
+                <> Text.Builder.green
+                  ( Text.Builder.italic (Text.Builder.fromText branch)
+                      <> " is synchronized with "
+                      <> Text.Builder.italic ("origin/" <> Text.Builder.fromText branch)
+                      <> "."
+                  )
+            )
+        PushNotAttempted ForkedHistory ->
+          -- FIXME we should say whether there would be conflicts
+          Stanzas
+            [ RawStanza
+                ( "  "
+                    <> Text.Builder.yellow
+                      ( Text.Builder.italic (Text.Builder.fromText branch)
+                          <> " is not synchronized with "
+                          <> Text.Builder.italic ("origin/" <> Text.Builder.fromText branch)
+                          <> "."
+                      )
+                ),
+              RunSyncStanza (Text.Builder.fromText branch)
+            ]
         PushNotAttempted NothingToPush -> EmptyStanza
-        PushNotAttempted Offline -> EmptyStanza
-        PushNotAttempted UnseenCommits -> RunSyncStanza,
+        PushNotAttempted Offline ->
+          Stanzas
+            [ RawStanza
+                ( "  "
+                    <> Text.Builder.yellow
+                      ( Text.Builder.italic (Text.Builder.fromText branch)
+                          <> " is not synchronized with "
+                          <> Text.Builder.italic ("origin/" <> Text.Builder.fromText branch)
+                          <> " because you appear to be offline."
+                      )
+                ),
+              RunSyncStanza (Text.Builder.fromText branch)
+            ]
+        PushNotAttempted UnseenCommits -> error "impossible",
       -- Whether we say we can undo from here is not exactly if the state says we can undo, because of one corner case:
       -- we ran 'mit commit', then aborted the commit, and ultimately didn't push any other local changes.
       --
@@ -550,12 +605,12 @@ mitSyncWith maybeUndos = do
           MergeResult'StashConflicts conflicts -> Just (ConflictsStanza conflicts)
           MergeResult'Success -> Nothing,
       case pushResult of
-        PushAttempted False -> RunSyncStanza
+        PushAttempted False -> RunSyncStanza (Text.Builder.fromText branch)
         PushAttempted True -> EmptyStanza
-        PushNotAttempted ForkedHistory -> RunSyncStanza
+        PushNotAttempted ForkedHistory -> RunSyncStanza (Text.Builder.fromText branch)
         PushNotAttempted NothingToPush -> EmptyStanza
         PushNotAttempted Offline -> EmptyStanza
-        PushNotAttempted UnseenCommits -> RunSyncStanza,
+        PushNotAttempted UnseenCommits -> RunSyncStanza (Text.Builder.fromText branch),
       if not (null undos) then CanUndoStanza else EmptyStanza
     ]
 
@@ -581,7 +636,9 @@ data Stanza
   = CanUndoStanza
   | ConflictsStanza (List1 GitConflict)
   | EmptyStanza
-  | RunSyncStanza
+  | RawStanza Text.Builder -- temporary escape hatch, I guess
+  | RunSyncStanza Text.Builder
+  | Stanzas [Stanza]
   | SyncStanza Sync
 
 data Sync = Sync
@@ -611,11 +668,15 @@ renderStanza = \case
     "  The following files are in conflict.\n"
       <> Builder.vcat ((\conflict -> "    " <> Text.Builder.red (showGitConflict conflict)) <$> conflicts)
   EmptyStanza -> mempty
-  RunSyncStanza ->
+  RawStanza s -> s
+  RunSyncStanza branch ->
     "  Run " <> Text.Builder.bold (Text.Builder.blue "mit sync")
-      <> " to synchronize with "
-      <> Text.Builder.italic (Text.Builder.yellow "origin")
+      <> " to synchronize "
+      <> Text.Builder.italic branch
+      <> " with "
+      <> Text.Builder.italic ("origin/" <> branch)
       <> "."
+  Stanzas stanzas -> renderStanzas stanzas
   SyncStanza sync ->
     Text.Builder.italic
       (colorize ("  " <> Text.Builder.fromText sync.source <> " → " <> Text.Builder.fromText sync.target))
@@ -637,11 +698,16 @@ renderStanza = \case
           False -> (Seq1.toSeq sync.commits, False)
           True -> (Seq1.dropEnd 1 sync.commits, True)
 
+renderStanzas :: [Stanza] -> Text.Builder
+renderStanzas =
+  mconcat . List.intersperse (Builder.newline <> Builder.newline) . map renderStanza . filter notEmpty
+  where
+    notEmpty = \case
+      EmptyStanza -> False
+      _ -> True
+
 putStanzas :: [Stanza] -> IO ()
 putStanzas stanzas =
-  if s == "\n" then pure () else Text.putStr s
+  if s == "\n\n\n" then pure () else Text.putStr s
   where
-    s = Builder.build (Builder.newline <> foldr f Builder.empty stanzas)
-    f = \case
-      EmptyStanza -> id
-      stanza -> \acc -> renderStanza stanza <> "\n\n" <> acc
+    s = Builder.build (Builder.newline <> renderStanzas stanzas <> Builder.newline <> Builder.newline)
