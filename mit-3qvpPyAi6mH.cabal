@@ -64,6 +64,7 @@ library
   import: component
   exposed-modules:
     Mit
+    Mit.Builder
     Mit.Clock
     Mit.Directory
     Mit.Git

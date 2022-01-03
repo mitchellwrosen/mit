@@ -11,6 +11,7 @@ import qualified Data.Text.IO as Text
 import qualified Data.Text.Lazy as Text.Lazy
 import qualified Data.Text.Lazy.Builder as Text (Builder)
 import qualified Data.Text.Lazy.Builder as Text.Builder
+import qualified Mit.Builder as Builder
 import Mit.Clock (getCurrentTime)
 import Mit.Directory
 import Mit.Git
@@ -213,29 +214,32 @@ mitCommit_ = do
 
   writeMitState branch64 MitState {head = (), merging = Nothing, ranCommitAt, undos}
 
-  putSummary
-    Summary
-      { branch,
-        -- Whether we "can undo" from here is not exactly if the state says we can undo, because of one corner case:
-        -- we ran 'mit commit', then aborted the commit, and ultimately didn't push any other local changes.
-        --
-        -- In this case, the underlying state hasn't changed, so 'mit undo' will still work as if the 'mit commit'
-        -- was never run, we merely don't want to *say* "run 'mit undo' to undo" as feedback, because that sounds as
-        -- if it would undo the last command run, namely the 'mit commit' that was aborted.
-        canUndo = not (null undos) && committed,
-        conflicts = [],
-        syncs =
-          case Seq1.fromSeq localCommits of
-            Nothing -> []
-            Just commits ->
-              [ Sync
-                  { commits,
-                    result = pushResultToSyncResult pushResult,
-                    source = branch,
-                    target = "origin/" <> branch
-                  }
-              ]
-      }
+  putStanzas
+    [ case Seq1.fromSeq localCommits of
+        Nothing -> EmptyStanza
+        Just commits ->
+          SyncStanza
+            Sync
+              { commits,
+                result = pushResultToSyncResult pushResult,
+                source = branch,
+                target = "origin/" <> branch
+              },
+      case pushResult of
+        PushAttempted False -> RunSyncStanza
+        PushAttempted True -> EmptyStanza
+        PushNotAttempted ForkedHistory -> RunSyncStanza
+        PushNotAttempted NothingToPush -> EmptyStanza
+        PushNotAttempted Offline -> EmptyStanza
+        PushNotAttempted UnseenCommits -> RunSyncStanza,
+      -- Whether we say we can undo from here is not exactly if the state says we can undo, because of one corner case:
+      -- we ran 'mit commit', then aborted the commit, and ultimately didn't push any other local changes.
+      --
+      -- In this case, the underlying state hasn't changed, so 'mit undo' will still work as if the 'mit commit' was
+      -- never run, we merely don't want to *say* "run 'mit undo' to undo" as feedback, because that sounds as if it
+      -- would undo the last command run, namely the 'mit commit' that was aborted.
+      if not (null undos) && committed then CanUndoStanza else EmptyStanza
+    ]
 
 mitCommitMerge :: IO ()
 mitCommitMerge = do
@@ -251,19 +255,17 @@ mitCommitMerge = do
        in gitl_ ["commit", "--all", "--message", message]
   case listToMaybe [commit | Apply commit <- state0.undos] of
     Nothing -> mitSyncWith (Just [Reset head])
-    Just stash ->
-      gitApplyStash stash >>= \case
+    Just stash -> do
+      conflicts <- gitApplyStash stash
+      case List1.nonEmpty conflicts of
         -- FIXME we just unstashed, now we're about to stash again :/
-        [] -> mitSyncWith (Just [Reset head, Apply stash])
-        conflicts -> do
+        Nothing -> mitSyncWith (Just [Reset head, Apply stash])
+        Just conflicts1 -> do
           writeMitState branch64 state0 {merging = Nothing, ranCommitAt = Nothing}
-          putSummary
-            Summary
-              { branch,
-                canUndo = not (null state0.undos),
-                conflicts,
-                syncs = []
-              }
+          putStanzas
+            [ ConflictsStanza conflicts1,
+              if null state0.undos then EmptyStanza else CanUndoStanza
+            ]
 
 data PushResult
   = PushAttempted Bool
@@ -285,6 +287,7 @@ pushResultToSyncResult = \case
   PushNotAttempted UnseenCommits -> SyncResult'Pending
 
 -- FIXME if on branch 'foo', handle 'mitMerge foo' or 'mitMerge origin/foo' as 'mitSync'?
+-- TODO sync after successful merge
 mitMerge :: Text -> IO ()
 mitMerge target = do
   dieIfNotInGitDir
@@ -317,20 +320,11 @@ mitMerge target = do
             Just mergeStatus -> List1.toList mergeStatus.undos
       }
 
-  putSummary
-    Summary
-      { branch,
-        canUndo = isJust maybeMergeStatus,
-        conflicts =
-          case maybeMergeStatus of
-            Nothing -> []
-            Just mergeStatus ->
-              case mergeStatus.result of
-                MergeResult'MergeConflicts conflicts -> List1.toList conflicts
-                MergeResult'StashConflicts conflicts -> conflicts,
-        syncs = do
-          mergeStatus <- maybeToList maybeMergeStatus
-          pure
+  putStanzas
+    [ case maybeMergeStatus of
+        Nothing -> EmptyStanza
+        Just mergeStatus ->
+          SyncStanza
             Sync
               { commits = mergeStatus.commits,
                 result =
@@ -340,8 +334,14 @@ mitMerge target = do
                     MergeResult'StashConflicts _ -> SyncResult'Success,
                 source = target,
                 target = branch
-              }
-      }
+              },
+      fromMaybe EmptyStanza do
+        mergeStatus <- maybeMergeStatus
+        case mergeStatus.result of
+          MergeResult'MergeConflicts conflicts -> Just (ConflictsStanza conflicts)
+          MergeResult'StashConflicts conflicts -> ConflictsStanza <$> List1.nonEmpty conflicts,
+      if isJust maybeMergeStatus then CanUndoStanza else EmptyStanza
+    ]
 
 data MergeStatus = MergeStatus
   { commits :: Seq1 GitCommitInfo,
@@ -423,7 +423,6 @@ mitSyncWith :: Maybe [Undo] -> IO ()
 mitSyncWith maybeUndos = do
   fetched <- gitFetch "origin"
   branch <- gitCurrentBranch
-  let branch64 = Text.encodeBase64 branch
   maybeUpstreamHead <- gitRemoteBranchHead "origin" branch
 
   maybeMergeStatus <-
@@ -455,7 +454,7 @@ mitSyncWith maybeUndos = do
           True -> []
 
   writeMitState
-    branch64
+    (Text.encodeBase64 branch)
     MitState
       { head = (),
         merging = do
@@ -467,42 +466,44 @@ mitSyncWith maybeUndos = do
         undos
       }
 
-  putSummary
-    Summary
-      { branch,
-        canUndo = not (null undos),
-        conflicts =
-          case maybeMergeStatus of
-            Nothing -> []
-            Just mergeStatus ->
-              case mergeStatus.result of
-                MergeResult'MergeConflicts conflicts -> List1.toList conflicts
-                MergeResult'StashConflicts conflicts -> conflicts,
-        syncs =
-          catMaybes
-            [ do
-                mergeStatus <- maybeMergeStatus
-                pure
-                  Sync
-                    { commits = mergeStatus.commits,
-                      result =
-                        case mergeStatus.result of
-                          MergeResult'MergeConflicts _ -> SyncResult'Failure SyncFailureReason'MergeConflicts
-                          MergeResult'StashConflicts _ -> SyncResult'Success,
-                      source = "origin/" <> branch,
-                      target = branch
-                    },
-              do
-                commits <- Seq1.fromSeq localCommits
-                pure
-                  Sync
-                    { commits,
-                      result = pushResultToSyncResult pushResult,
-                      source = branch,
-                      target = "origin/" <> branch
-                    }
-            ]
-      }
+  putStanzas
+    [ case maybeMergeStatus of
+        Nothing -> EmptyStanza
+        Just mergeStatus ->
+          SyncStanza
+            Sync
+              { commits = mergeStatus.commits,
+                result =
+                  case mergeStatus.result of
+                    MergeResult'MergeConflicts _ -> SyncResult'Failure SyncFailureReason'MergeConflicts
+                    MergeResult'StashConflicts _ -> SyncResult'Success,
+                source = "origin/" <> branch,
+                target = branch
+              },
+      case Seq1.fromSeq localCommits of
+        Nothing -> EmptyStanza
+        Just commits ->
+          SyncStanza
+            Sync
+              { commits,
+                result = pushResultToSyncResult pushResult,
+                source = branch,
+                target = "origin/" <> branch
+              },
+      fromMaybe EmptyStanza do
+        mergeStatus <- maybeMergeStatus
+        case mergeStatus.result of
+          MergeResult'MergeConflicts conflicts -> Just (ConflictsStanza conflicts)
+          MergeResult'StashConflicts conflicts -> ConflictsStanza <$> List1.nonEmpty conflicts,
+      case pushResult of
+        PushAttempted False -> RunSyncStanza
+        PushAttempted True -> EmptyStanza
+        PushNotAttempted ForkedHistory -> RunSyncStanza
+        PushNotAttempted NothingToPush -> EmptyStanza
+        PushNotAttempted Offline -> EmptyStanza
+        PushNotAttempted UnseenCommits -> RunSyncStanza,
+      if not (null undos) then CanUndoStanza else EmptyStanza
+    ]
 
 -- FIXME output what we just undid
 mitUndo :: IO ()
@@ -522,12 +523,12 @@ mitUndo = do
       Revert _ : _ -> True
       _ : undos -> undosContainRevert undos
 
-data Summary = Summary
-  { branch :: Text,
-    canUndo :: Bool,
-    conflicts :: [GitConflict],
-    syncs :: [Sync]
-  }
+data Stanza
+  = CanUndoStanza
+  | ConflictsStanza (List1 GitConflict)
+  | EmptyStanza
+  | RunSyncStanza
+  | SyncStanza Sync
 
 data Sync = Sync
   { commits :: Seq1 GitCommitInfo,
@@ -549,68 +550,44 @@ data SyncResult
   | SyncResult'Success
   deriving stock (Eq)
 
--- FIXME show some graph of where local/remote is at
-putSummary :: Summary -> IO ()
-putSummary summary =
-  let output = concatMap syncLines summary.syncs ++ conflictsLines ++ runSyncLines ++ undoLines
-   in when (not (null output)) do
-        putLines (map (Text.Lazy.toStrict . Text.Builder.toLazyText) ("" : output))
+renderStanza :: Stanza -> Text.Builder
+renderStanza = \case
+  CanUndoStanza -> "  Run " <> Text.Builder.bold (Text.Builder.blue "mit undo") <> " to undo this change."
+  ConflictsStanza conflicts ->
+    "  The following files have conflicts."
+      <> Builder.vcat ((\conflict -> "    " <> Text.Builder.red (showGitConflict conflict)) <$> conflicts)
+  EmptyStanza -> mempty
+  RunSyncStanza ->
+    "  Run " <> Text.Builder.bold (Text.Builder.blue "mit sync")
+      <> " to synchronize with "
+      <> Text.Builder.bold "origin"
+      <> "."
+  SyncStanza sync ->
+    colorize
+      (Text.Builder.italic ("  " <> Text.Builder.fromText sync.source <> " → " <> Text.Builder.fromText sync.target))
+      <> "\n"
+      <> (Builder.vcat ((\commit -> "  " <> prettyGitCommitInfo commit) <$> commits'))
+      <> (if more then "  ..." else Builder.empty)
+    where
+      colorize :: Text.Builder -> Text.Builder
+      colorize =
+        case sync.result of
+          SyncResult'Failure SyncFailureReason'ForkedHistory -> Text.Builder.red
+          SyncResult'Failure SyncFailureReason'MergeConflicts -> Text.Builder.red
+          SyncResult'Failure SyncFailureReason'PushFailed -> Text.Builder.red
+          SyncResult'Failure SyncFailureReason'Offline -> Text.Builder.brightBlack
+          SyncResult'Pending -> Text.Builder.yellow
+          SyncResult'Success -> Text.Builder.green
+      (commits', more) =
+        case Seq1.length sync.commits > 10 of
+          False -> (Seq1.toSeq sync.commits, False)
+          True -> (Seq1.dropEnd 1 sync.commits, True)
+
+putStanzas :: [Stanza] -> IO ()
+putStanzas stanzas =
+  if s == "\n" then pure () else Text.putStr s
   where
-    conflictsLines :: [Text.Builder]
-    conflictsLines =
-      if null summary.conflicts
-        then []
-        else
-          "  The following files have conflicts." :
-          map (("    " <>) . Text.Builder.red . showGitConflict) summary.conflicts ++ [""]
-    syncLines :: Sync -> [Text.Builder]
-    syncLines sync =
-      colorize
-        ( Text.Builder.italic
-            ("  " <> Text.Builder.fromText sync.source <> " → " <> Text.Builder.fromText sync.target)
-        ) :
-      map (("  " <>) . prettyGitCommitInfo) (toList @Seq commits')
-        ++ (if more then ["  ...", ""] else [""])
-      where
-        colorize :: Text.Builder -> Text.Builder
-        colorize =
-          case sync.result of
-            SyncResult'Failure SyncFailureReason'ForkedHistory -> Text.Builder.red
-            SyncResult'Failure SyncFailureReason'MergeConflicts -> Text.Builder.red
-            SyncResult'Failure SyncFailureReason'PushFailed -> Text.Builder.red
-            SyncResult'Failure SyncFailureReason'Offline -> Text.Builder.brightBlack
-            SyncResult'Pending -> Text.Builder.yellow
-            SyncResult'Success -> Text.Builder.green
-        (commits', more) =
-          case Seq1.length sync.commits > 10 of
-            False -> (Seq1.toSeq sync.commits, False)
-            True -> (Seq1.dropEnd 1 sync.commits, True)
-    runSyncLines :: [Text.Builder]
-    runSyncLines =
-      if shouldSync
-        then
-          [ "  Run " <> Text.Builder.bold (Text.Builder.blue "mit sync")
-              <> " to synchronize with "
-              <> Text.Builder.bold "origin"
-              <> ".",
-            ""
-          ]
-        else []
-      where
-        shouldSync :: Bool
-        shouldSync =
-          any (\sync -> f sync.result) summary.syncs
-          where
-            f :: SyncResult -> Bool
-            f = \case
-              SyncResult'Failure SyncFailureReason'ForkedHistory -> True
-              SyncResult'Failure SyncFailureReason'MergeConflicts -> False
-              SyncResult'Failure SyncFailureReason'PushFailed -> True
-              SyncResult'Failure SyncFailureReason'Offline -> False
-              SyncResult'Pending -> True
-              SyncResult'Success -> False
-    undoLines :: [Text.Builder]
-    undoLines =
-      if summary.canUndo
-        then ["  Run " <> Text.Builder.bold (Text.Builder.blue "mit undo") <> " to undo this change.", ""]
-        else []
+    s = Builder.build (Builder.newline <> foldr f Builder.empty stanzas)
+    f = \case
+      EmptyStanza -> id
+      stanza -> \acc -> renderStanza stanza <> "\n\n" <> acc

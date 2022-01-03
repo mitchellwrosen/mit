@@ -291,7 +291,7 @@ gitVersion :: IO GitVersion
 gitVersion = do
   v0 <- git ["--version"]
   fromMaybe (throwIO (userError ("Could not parse git version from: " <> Text.unpack v0))) do
-    ["git", "version", v1] <- Just (Text.words v0)
+    "git" : "version" : v1 : _ <- Just (Text.words v0)
     [sx, sy, sz] <- Just (Text.split (== '.') v1)
     x <- readMaybe (Text.unpack sx)
     y <- readMaybe (Text.unpack sy)
