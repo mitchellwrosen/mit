@@ -33,13 +33,12 @@ parseUndos = do
           error (show text)
         ]
 
-applyUndos :: List1 Undo -> IO ()
-applyUndos =
-  traverse_ \case
-    Apply commit -> do
-      git_ ["stash", "apply", "--quiet", commit]
-      gitUnstageChanges
-    Reset commit -> do
-      git_ ["clean", "-d", "--force"]
-      git ["reset", "--hard", commit]
-    Revert commit -> git_ ["revert", commit]
+applyUndo :: Undo -> IO ()
+applyUndo = \case
+  Apply commit -> do
+    git_ ["stash", "apply", "--quiet", commit]
+    gitUnstageChanges
+  Reset commit -> do
+    git_ ["clean", "-d", "--force"]
+    git ["reset", "--hard", commit]
+  Revert commit -> git_ ["revert", commit]

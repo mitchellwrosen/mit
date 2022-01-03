@@ -144,7 +144,7 @@ mitCommit_ = do
   head0 <- gitHead
   state0 <- readMitState branch64
   stash <- gitCreateStash
-  let undos0 = List1.fromList [Reset head0, Apply stash]
+  let undos0 = [Reset head0, Apply stash]
 
   (fetched, maybeUpstreamHead, existRemoteCommits, wouldFork) <- do
     ago <- mitStateRanCommitAgo state0
@@ -165,27 +165,60 @@ mitCommit_ = do
 
         let wouldFork = existRemoteCommits && not existLocalCommits
 
-        let shouldWarnAboutFork =
-              if wouldFork
-                then do
-                  git_ ["reset", "--hard", fromJust maybeUpstreamHead]
-                  canMergeCleanly <- git ["stash", "apply", "--quiet", stash]
-                  applyUndos undos0
-                  pure canMergeCleanly
-                else pure False
+        when wouldFork do
+          applyUndo (Reset (fromJust maybeUpstreamHead))
+          conflicts <- gitApplyStash stash
+          for_ undos0 applyUndo
 
-        -- Bail out early if we should warn that this commit would fork history
-        whenM shouldWarnAboutFork do
           ranCommitAt <- Just <$> getCurrentTime
           writeMitState branch64 state0 {ranCommitAt}
-          putLines
-            [ "",
-              "  " <> Text.yellow (Text.italic branch <> " is not up-to-date."),
-              "",
-              "  Run " <> Text.bold (Text.blue "mit sync") <> " first, or run " <> Text.bold (Text.blue "mit commit")
-                <> " again to record a commit anyway.",
-              ""
-            ]
+
+          Builder.putln
+            if null conflicts
+              then
+                Builder.vcat
+                  [ Builder.empty,
+                    "  "
+                      <> Text.Builder.yellow
+                        ( Text.Builder.italic (Text.Builder.fromText branch)
+                            <> " is not synchronized with "
+                            <> Text.Builder.italic ("origin/" <> Text.Builder.fromText branch)
+                            <> ", but would not become in conflict."
+                        ),
+                    Builder.empty,
+                    "  To avoid a merge bubble, run " <> Text.Builder.bold (Text.Builder.blue "mit sync") <> " first.",
+                    Builder.empty,
+                    "  Otherwise, run "
+                      <> Text.Builder.bold (Text.Builder.blue "mit commit")
+                      <> " again (within 10 seconds) to record a commit anyway.",
+                    Builder.empty
+                  ]
+              else
+                Builder.vcat
+                  [ Builder.empty,
+                    Builder.vcat
+                      ( "  "
+                          <> Text.Builder.yellow
+                            ( Text.Builder.italic (Text.Builder.fromText branch)
+                                <> " would become in conflict with "
+                                <> Text.Builder.italic ("origin/" <> Text.Builder.fromText branch)
+                                <> "."
+                            ) :
+                        map (\conflict -> "    " <> Text.Builder.yellow (showGitConflict conflict)) conflicts
+                      ),
+                    Builder.empty,
+                    "  To avoid a merge bubble, run "
+                      <> Text.Builder.bold (Text.Builder.blue "mit sync")
+                      <> " first to resolve conflicts.",
+                    "  If conflicts seem too difficult to resolve now, you will be able to "
+                      <> Text.Builder.bold (Text.Builder.blue "mit undo")
+                      <> " to back out.",
+                    Builder.empty,
+                    "  Otherwise, run "
+                      <> Text.Builder.bold (Text.Builder.blue "mit commit")
+                      <> " again (within 10 seconds) to record a commit anyway.",
+                    Builder.empty
+                  ]
           exitFailure
 
         pure (fetched, maybeUpstreamHead, existRemoteCommits, wouldFork)
@@ -214,7 +247,7 @@ mitCommit_ = do
   undos <-
     case (pushed, committed, localCommits) of
       (False, False, _) -> pure state0.undos
-      (False, True, _) -> pure (List1.toList undos0)
+      (False, True, _) -> pure undos0
       (True, True, Seq.Singleton) -> do
         head1 <- gitHead
         pure [Revert head1, Apply stash]
@@ -522,7 +555,7 @@ mitUndo = do
   state0 <- readMitState branch64
   case List1.nonEmpty state0.undos of
     Nothing -> exitFailure
-    Just undos1 -> applyUndos undos1
+    Just undos1 -> for_ undos1 applyUndo
   when (undosContainRevert state0.undos) mitSync
   where
     undosContainRevert :: [Undo] -> Bool
@@ -562,13 +595,13 @@ renderStanza :: Stanza -> Text.Builder
 renderStanza = \case
   CanUndoStanza -> "  Run " <> Text.Builder.bold (Text.Builder.blue "mit undo") <> " to undo this change."
   ConflictsStanza conflicts ->
-    "  The following files have conflicts."
+    "  The following files are in conflict.\n"
       <> Builder.vcat ((\conflict -> "    " <> Text.Builder.red (showGitConflict conflict)) <$> conflicts)
   EmptyStanza -> mempty
   RunSyncStanza ->
     "  Run " <> Text.Builder.bold (Text.Builder.blue "mit sync")
       <> " to synchronize with "
-      <> Text.Builder.bold "origin"
+      <> Text.Builder.italic "origin"
       <> "."
   SyncStanza sync ->
     colorize
