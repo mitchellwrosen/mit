@@ -115,7 +115,7 @@ showGitVersion (GitVersion x y z) =
 gitApplyStash :: Text -> IO [GitConflict]
 gitApplyStash stash = do
   conflicts <-
-    git ["stash", "apply", stash] >>= \case
+    git ["stash", "apply", "--quiet", stash] >>= \case
       False -> gitConflicts
       True -> pure []
   gitUnstageChanges
@@ -248,7 +248,7 @@ gitMergeInProgress =
 
 gitPush :: Text -> IO Bool
 gitPush branch =
-  git ["push", "--set-upstream", "origin", branch <> ":" <> branch]
+  git ["push", "--set-upstream", "origin", "--quiet", branch <> ":" <> branch]
 
 -- | Does the given remote branch (refs/remotes/...) exist?
 gitRemoteBranchExists :: Text -> Text -> IO Bool
@@ -283,7 +283,7 @@ gitSwitch_ branch =
 
 gitUnstageChanges :: IO ()
 gitUnstageChanges = do
-  git_ ["reset", "--mixed"]
+  git_ ["reset", "--mixed", "--quiet"]
   untrackedFiles <- gitListUntrackedFiles
   unless (null untrackedFiles) (git_ ("add" : "--intent-to-add" : untrackedFiles))
 
@@ -416,8 +416,8 @@ git2 args = do
 debugPrintGit :: [Text] -> Seq Text -> Seq Text -> ExitCode -> IO ()
 debugPrintGit args stdoutLines stderrLines exitCode =
   case verbose of
-    1 -> Builder.putln v1
-    2 -> Builder.putln (v1 <> v2)
+    1 -> Builder.putln (Text.Builder.brightBlack v1)
+    2 -> Builder.putln (Text.Builder.brightBlack (v1 <> v2))
     _ -> pure ()
   where
     v1 = Text.Builder.bold (marker <> " git " <> Builder.hcat (map quote args))

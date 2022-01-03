@@ -139,46 +139,56 @@ mitCommit = do
 
 mitCommit_ :: IO ()
 mitCommit_ = do
-  fetched <- gitFetch "origin"
   branch <- gitCurrentBranch
   let branch64 = Text.encodeBase64 branch
   head0 <- gitHead
-  maybeUpstreamHead <- gitRemoteBranchHead "origin" branch
-  existRemoteCommits <- maybe (pure False) (gitExistCommitsBetween head0) maybeUpstreamHead
-  existLocalCommits <- maybe (pure True) (\upstreamHead -> gitExistCommitsBetween upstreamHead head0) maybeUpstreamHead
   state0 <- readMitState branch64
   stash <- gitCreateStash
+  let undos0 = List1.fromList [Reset head0, Apply stash]
 
-  let wouldFork = existRemoteCommits && not existLocalCommits
+  (fetched, maybeUpstreamHead, existRemoteCommits, wouldFork) <- do
+    ago <- mitStateRanCommitAgo state0
+    if ago < 10_000_000_000
+      then do
+        maybeUpstreamHead <- gitRemoteBranchHead "origin" branch
+        pure (True, maybeUpstreamHead, True, True)
+      else do
+        fetched <- gitFetch "origin"
+        maybeUpstreamHead <- gitRemoteBranchHead "origin" branch
 
-  let shouldWarnAboutFork =
-        if wouldFork
-          then do
-            ago <- mitStateRanCommitAgo state0
-            if ago < 10_000_000_000
-              then pure False
-              else do
-                git_ ["reset", "--hard", fromJust maybeUpstreamHead]
-                canMergeCleanly <- git ["stash", "apply", stash]
-                git_ ["reset", "--hard", head0]
-                git_ ["stash", "apply", stash]
-                gitUnstageChanges
-                pure canMergeCleanly
-          else pure False
+        existRemoteCommits <- maybe (pure False) (gitExistCommitsBetween head0) maybeUpstreamHead
+        existLocalCommits <-
+          maybe
+            (pure True)
+            (\upstreamHead -> gitExistCommitsBetween upstreamHead head0)
+            maybeUpstreamHead
 
-  -- Bail out early if we should warn that this commit would fork history
-  whenM shouldWarnAboutFork do
-    ranCommitAt <- Just <$> getCurrentTime
-    writeMitState branch64 state0 {ranCommitAt}
-    putLines
-      [ "",
-        "  " <> Text.yellow (Text.italic branch <> " is not up-to-date."),
-        "",
-        "  Run " <> Text.bold (Text.blue "mit sync") <> " first, or run " <> Text.bold (Text.blue "mit commit")
-          <> " again to record a commit anyway.",
-        ""
-      ]
-    exitFailure
+        let wouldFork = existRemoteCommits && not existLocalCommits
+
+        let shouldWarnAboutFork =
+              if wouldFork
+                then do
+                  git_ ["reset", "--hard", fromJust maybeUpstreamHead]
+                  canMergeCleanly <- git ["stash", "apply", "--quiet", stash]
+                  applyUndos undos0
+                  pure canMergeCleanly
+                else pure False
+
+        -- Bail out early if we should warn that this commit would fork history
+        whenM shouldWarnAboutFork do
+          ranCommitAt <- Just <$> getCurrentTime
+          writeMitState branch64 state0 {ranCommitAt}
+          putLines
+            [ "",
+              "  " <> Text.yellow (Text.italic branch <> " is not up-to-date."),
+              "",
+              "  Run " <> Text.bold (Text.blue "mit sync") <> " first, or run " <> Text.bold (Text.blue "mit commit")
+                <> " again to record a commit anyway.",
+              ""
+            ]
+          exitFailure
+
+        pure (fetched, maybeUpstreamHead, existRemoteCommits, wouldFork)
 
   committed <- gitCommit
   localCommits <- gitCommitsBetween maybeUpstreamHead "HEAD"
@@ -204,7 +214,7 @@ mitCommit_ = do
   undos <-
     case (pushed, committed, localCommits) of
       (False, False, _) -> pure state0.undos
-      (False, True, _) -> pure [Reset head0, Apply stash]
+      (False, True, _) -> pure (List1.toList undos0)
       (True, True, Seq.Singleton) -> do
         head1 <- gitHead
         pure [Revert head1, Apply stash]
