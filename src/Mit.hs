@@ -379,8 +379,6 @@ mitMerge target = do
       then performUnstash stash
       else pure []
 
-  let undos = merge.undo ++ stash.undo
-
   writeMitState
     branch
     MitState
@@ -390,7 +388,7 @@ mitMerge target = do
             then Nothing
             else Just target,
         ranCommitAt = Nothing,
-        undos
+        undos = stash.undo
       }
 
   let branchb = Text.Builder.fromText branch
@@ -418,26 +416,10 @@ mitMerge target = do
       if null merge.commits
         then Nothing
         else whatNextStanza branchb (PushNotAttempted if null merge.conflicts then UnseenCommits else MergeConflicts),
-      if null undos then Nothing else canUndoStanza
+      if null merge.commits
+        then Nothing
+        else canUndoStanza
     ]
-
-data MergeStatus = MergeStatus
-  { commits :: Seq1 GitCommitInfo,
-    result :: MergeResult,
-    undos :: List1 Undo
-  }
-
-data MergeResult
-  = MergeResult'MergeConflicts (List1 GitConflict)
-  | MergeResult'StashConflicts (List1 GitConflict)
-  | MergeResult'Success
-
--- | Did this merge commit (possibly leaving behind a conflicting unstash)?
-mergeResultCommitted :: MergeResult -> Bool
-mergeResultCommitted = \case
-  MergeResult'MergeConflicts _ -> False
-  MergeResult'StashConflicts _ -> True
-  MergeResult'Success -> True
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
 mitSync :: IO ()
@@ -478,7 +460,7 @@ mitSyncWith stanza0 maybeUndos = do
   merge <-
     case maybeUpstreamHead of
       -- Yay: no upstream branch is not different from an up-to-date local branch
-      Nothing -> pure GitMerge {commits = Seq.empty, conflicts = [], undo = []}
+      Nothing -> pure GitMerge {commits = Seq.empty, conflicts = []}
       Just upstreamHead -> performMerge ("⅄ " <> branch) upstreamHead
 
   stashConflicts <-
@@ -508,7 +490,7 @@ mitSyncWith stanza0 maybeUndos = do
         if pushed
           then []
           else case maybeUndos of
-            Nothing -> merge.undo ++ stash.undo
+            Nothing -> stash.undo
             -- FIXME hm, could consider appending those undos instead, even if they obviate the recent stash/merge undos
             Just undos' -> undos'
 
@@ -723,9 +705,7 @@ data GitMerge = GitMerge
   { -- | The list of commits that were applied (or would be applied once conflicts are resolved), minus the merge commit
     -- itself.
     commits :: Seq GitCommitInfo,
-    conflicts :: [GitConflict],
-    -- | How to undo this merge.
-    undo :: [Undo]
+    conflicts :: [GitConflict]
   }
 
 -- Perform a fast-forward-if-possible git merge, and return the commits that were applied (or *would be* applied) (minus
@@ -737,31 +717,32 @@ performMerge :: Text -> Text -> IO GitMerge
 performMerge message commitish = do
   head <- gitHead
   commits <- gitCommitsBetween (Just head) commitish
-  if Seq.null commits
-    then pure GitMerge {commits, conflicts = [], undo = []}
-    else do
-      let undo = [Reset head]
-      conflicts <-
+  conflicts <-
+    if Seq.null commits
+      then pure []
+      else
         git ["merge", "--ff", "--no-commit", commitish] >>= \case
           False -> gitConflicts
           True -> do
             -- If this was a fast-forward, a merge would not be in progress at this point.
             whenM gitMergeInProgress (git_ ["commit", "--message", message])
             pure []
-      pure GitMerge {commits, conflicts, undo}
+  pure GitMerge {commits, conflicts}
 
 ------------------------------------------------------------------------------------------------------------------------
 -- Git stash
 
 data GitStash = GitStash
   { commit :: Maybe Text,
+    -- | Undo to the state before the stash
     undo :: [Undo]
   }
 
 performStash :: IO GitStash
 performStash = do
+  head <- gitHead
   commit <- gitStash
-  let undo = [Apply c | c <- maybeToList commit]
+  let undo = Reset head : [Apply c | c <- maybeToList commit]
   pure GitStash {commit, undo}
 
 performUnstash :: GitStash -> IO [GitConflict]
