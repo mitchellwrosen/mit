@@ -307,7 +307,6 @@ pushResultToSyncResult = \case
   PushNotAttempted Offline -> SyncResult'Offline
   PushNotAttempted UnseenCommits -> SyncResult'Pending
 
--- FIXME if on branch 'foo', handle 'mitMerge foo' or 'mitMerge origin/foo' as 'mitSync'?
 mitMerge :: Text -> IO ()
 mitMerge target = do
   dieIfNotInGitDir
@@ -315,59 +314,66 @@ mitMerge target = do
   whenM gitExistUntrackedFiles dieIfBuggyGit
 
   branch <- gitCurrentBranch
+  if target == branch || target == "origin/" <> branch
+    then do
+      -- If on branch `foo`, treat `mit merge foo` and `mit merge origin/foo` as `mit sync`
+      mitSyncWith Nothing Nothing
+    else do
+      -- When given 'mit merge foo', prefer merging 'origin/foo' over 'foo'
+      targetCommit <- do
+        _fetched <- gitFetch "origin"
+        gitRemoteBranchHead "origin" target & onNothingM (git ["rev-parse", target] & onLeftM \_ -> exitFailure)
 
-  -- When given 'mit merge foo', prefer merging 'origin/foo' over 'foo'
-  targetCommit <- do
-    _fetched <- gitFetch "origin"
-    gitRemoteBranchHead "origin" target & onNothingM (git ["rev-parse", target] & onLeftM \_ -> exitFailure)
+      stash <- performStash
+      merge <- performMerge ("⅄ " <> target <> " → " <> branch) targetCommit
+      stashConflicts <-
+        if null merge.conflicts
+          then performUnstash stash
+          else pure []
 
-  stash <- performStash
-  merge <- performMerge ("⅄ " <> target <> " → " <> branch) targetCommit
-  stashConflicts <-
-    if null merge.conflicts
-      then performUnstash stash
-      else pure []
+      writeMitState
+        branch
+        MitState
+          { head = (),
+            merging =
+              if null merge.conflicts
+                then Nothing
+                else Just target,
+            undos = stash.undo
+          }
 
-  writeMitState
-    branch
-    MitState
-      { head = (),
-        merging =
-          if null merge.conflicts
+      let branchb = Text.Builder.fromText branch
+      let targetb = Text.Builder.fromText target
+
+      putStanzas
+        [ if null merge.conflicts
+            then synchronizedStanza branchb targetb
+            else notSynchronizedStanza branchb targetb ".",
+          do
+            commits1 <- Seq1.fromSeq merge.commits
+            syncStanza
+              Sync
+                { commits = commits1,
+                  result = if null merge.conflicts then SyncResult'Success else SyncResult'Failure,
+                  source = target,
+                  target = branch
+                },
+          if not (null merge.commits) && null merge.conflicts
+            then isSynchronizedStanza branchb (PushNotAttempted UnseenCommits)
+            else Nothing,
+          do
+            conflicts1 <- List1.nonEmpty merge.conflicts <|> List1.nonEmpty stashConflicts
+            conflictsStanza "These files are in conflict:" conflicts1,
+          if null merge.commits
             then Nothing
-            else Just target,
-        undos = stash.undo
-      }
-
-  let branchb = Text.Builder.fromText branch
-  let targetb = Text.Builder.fromText target
-
-  putStanzas
-    [ if null merge.conflicts
-        then synchronizedStanza branchb targetb
-        else notSynchronizedStanza branchb targetb ".",
-      do
-        commits1 <- Seq1.fromSeq merge.commits
-        syncStanza
-          Sync
-            { commits = commits1,
-              result = if null merge.conflicts then SyncResult'Success else SyncResult'Failure,
-              source = target,
-              target = branch
-            },
-      if not (null merge.commits) && null merge.conflicts
-        then isSynchronizedStanza branchb (PushNotAttempted UnseenCommits)
-        else Nothing,
-      do
-        conflicts1 <- List1.nonEmpty merge.conflicts <|> List1.nonEmpty stashConflicts
-        conflictsStanza "These files are in conflict:" conflicts1,
-      if null merge.commits
-        then Nothing
-        else whatNextStanza branchb (PushNotAttempted if null merge.conflicts then UnseenCommits else MergeConflicts),
-      if null merge.commits
-        then Nothing
-        else canUndoStanza
-    ]
+            else
+              whatNextStanza
+                branchb
+                (PushNotAttempted if null merge.conflicts then UnseenCommits else MergeConflicts),
+          if null merge.commits
+            then Nothing
+            else canUndoStanza
+        ]
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
 mitSync :: IO ()
