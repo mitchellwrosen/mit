@@ -21,6 +21,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
 import Data.Traversable as X
 import Data.Word as X (Word64)
+import GHC.Stack as X (HasCallStack)
 import Mit.Seq1 as X (Seq1)
 import Text.Read as X (readMaybe)
 import Prelude as X hiding (head, id)

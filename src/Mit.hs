@@ -1,6 +1,5 @@
 module Mit where
 
-import qualified Data.List as List
 import Data.List.NonEmpty (NonEmpty ((:|)))
 import qualified Data.List.NonEmpty as List1
 import qualified Data.Sequence as Seq
@@ -378,6 +377,12 @@ mitMerge target = do
     _fetched <- gitFetch "origin"
     gitRemoteBranchHead "origin" target & onNothingM (git ["rev-parse", target] & onLeftM \_ -> exitFailure)
 
+  {- new -}
+
+  (mergedCommits, mergeConflicts) <- performMerge ("⅄ " <> target <> " → " <> branch) targetCommit
+
+  {- end new -}
+
   maybeMergeStatus <- mitMerge' ("⅄ " <> target <> " → " <> branch) targetCommit
 
   let maybeMergeResult = (.result) <$> maybeMergeStatus
@@ -466,11 +471,12 @@ mitMerge' :: Text -> Text -> IO (Maybe MergeStatus)
 mitMerge' message target = do
   head <- gitHead
   maybeStash <- gitStash
-  mergeCommit message target >>= \case
-    Nothing -> do
+  (commits, mergeConflicts) <- performMerge message target
+  if Seq.null commits
+    then do
       for_ maybeStash gitApplyStash
       pure Nothing
-    Just (commits, mergeConflicts) -> do
+    else do
       let undos = Reset head :| maybeToList (Apply <$> maybeStash)
       result <-
         case List1.nonEmpty mergeConflicts of
@@ -483,22 +489,25 @@ mitMerge' message target = do
               Nothing -> MergeResult'Success
               Just stashConflicts1 -> (MergeResult'StashConflicts stashConflicts1)
           Just mergeConflicts1 -> pure (MergeResult'MergeConflicts mergeConflicts1)
-      pure (Just MergeStatus {commits, result, undos})
+      pure (Just MergeStatus {commits = Seq1.unsafeFromSeq commits, result, undos})
 
 -- TODO document precondition clean working tree
-mergeCommit :: Text -> Text -> IO (Maybe (Seq1 GitCommitInfo, [GitConflict]))
-mergeCommit message commitish = do
+-- invariant: can't return conflicts but no commits
+performMerge :: Text -> Text -> IO (Seq GitCommitInfo, [GitConflict])
+performMerge message commitish = do
   head <- gitHead
-  (Seq1.fromSeq <$> gitCommitsBetween (Just head) commitish) >>= \case
-    Nothing -> pure Nothing
-    Just commits ->
-      git ["merge", "--ff", "--no-commit", commitish] >>= \case
-        False -> do
-          conflicts <- gitConflicts
-          pure (Just (commits, conflicts))
-        True -> do
-          git_ ["commit", "--message", message]
-          pure (Just (commits, []))
+  commits <- gitCommitsBetween (Just head) commitish
+  conflicts <-
+    if Seq.null commits
+      then pure []
+      else do
+        git ["merge", "--ff", "--no-commit", commitish] >>= \case
+          False -> gitConflicts
+          True -> do
+            -- If this was a fast-forward, a merge would not be in progress at this point.
+            whenM gitMergeInProgress (git_ ["commit", "--message", message])
+            pure []
+  pure (commits, conflicts)
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
 mitSync :: IO ()

@@ -2,8 +2,10 @@ module Mit.Seq1 where
 
 import Data.Coerce
 import qualified Data.Foldable
+import Data.Maybe (fromMaybe)
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
+import GHC.Stack (HasCallStack)
 import Prelude
 
 newtype Seq1 a = Seq1
@@ -24,6 +26,10 @@ fromSeq :: Seq a -> Maybe (Seq1 a)
 fromSeq = \case
   Seq.Empty -> Nothing
   xs -> Just (Seq1 xs)
+
+unsafeFromSeq :: HasCallStack => Seq a -> Seq1 a
+unsafeFromSeq =
+  fromMaybe (error "unsafeFromSeq: empty sequence") . fromSeq
 
 length :: forall a. Seq1 a -> Int
 length =
