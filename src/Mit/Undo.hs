@@ -42,3 +42,7 @@ applyUndo = \case
     git_ ["clean", "-d", "--force"]
     git ["reset", "--hard", commit]
   Revert commit -> git_ ["revert", commit]
+
+undosStash :: [Undo] -> Maybe Text
+undosStash undos =
+  listToMaybe [commit | Apply commit <- undos]

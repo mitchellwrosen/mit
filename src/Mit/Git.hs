@@ -189,6 +189,20 @@ gitConflicts :: IO [GitConflict]
 gitConflicts =
   mapMaybe parseGitConflict <$> git ["status", "--no-renames", "--porcelain=v1"]
 
+-- | Get the conflicts with the given commitish.
+--
+-- Precondition: there is no merge in progress.
+gitConflictsWith :: Text -> IO [GitConflict]
+gitConflictsWith commit = do
+  maybeStash <- gitStash
+  conflicts <-
+    git ["merge", "--no-commit", "--no-ff", commit] >>= \case
+      False -> gitConflicts
+      True -> pure []
+  git_ ["merge", "--abort"]
+  whenJust maybeStash \stash -> git_ ["stash", "apply", "--quiet", stash]
+  pure conflicts
+
 gitCreateStash :: IO Text
 gitCreateStash = do
   git_ ["add", "--all"] -- it seems certain things (like renames), unless staged, cannot be stashed
