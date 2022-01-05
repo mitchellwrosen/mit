@@ -146,32 +146,29 @@ mitCommit_ = do
   stash <- gitCreateStash
   let undos0 = [Reset head0, Apply stash]
 
-  (fetched, maybeUpstreamHead, existRemoteCommits) <- do
-    fetched <- gitFetch "origin"
-    maybeUpstreamHead <- gitRemoteBranchHead "origin" branch
+  fetched <- gitFetch "origin"
+  maybeUpstreamHead <- gitRemoteBranchHead "origin" branch
 
-    existRemoteCommits <- maybe (pure False) (gitExistCommitsBetween head0) maybeUpstreamHead
-    existLocalCommits <-
-      maybe
-        (pure True)
-        (\upstreamHead -> gitExistCommitsBetween upstreamHead head0)
-        maybeUpstreamHead
+  existRemoteCommits <- maybe (pure False) (gitExistCommitsBetween head0) maybeUpstreamHead
+  existLocalCommits <-
+    maybe
+      (pure True)
+      (\upstreamHead -> gitExistCommitsBetween upstreamHead head0)
+      maybeUpstreamHead
 
-    when (existRemoteCommits && not existLocalCommits) do
-      putStanzas $
-        [ notSynchronizedStanza (Text.Builder.fromText branch) (Text.Builder.fromText upstream) ".",
-          Just $
-            "  Run "
-              <> Text.Builder.bold (Text.Builder.blue "mit sync")
-              <> " to synchronize "
-              <> Text.Builder.italic (Text.Builder.fromText branch)
-              <> " with "
-              <> Text.Builder.italic (Text.Builder.fromText upstream)
-              <> "."
-        ]
-      exitFailure
-
-    pure (fetched, maybeUpstreamHead, existRemoteCommits)
+  when (existRemoteCommits && not existLocalCommits) do
+    putStanzas $
+      [ notSynchronizedStanza (Text.Builder.fromText branch) (Text.Builder.fromText upstream) ".",
+        Just $
+          "  Run "
+            <> Text.Builder.bold (Text.Builder.blue "mit sync")
+            <> " to synchronize "
+            <> Text.Builder.italic (Text.Builder.fromText branch)
+            <> " with "
+            <> Text.Builder.italic (Text.Builder.fromText upstream)
+            <> "."
+      ]
+    exitFailure
 
   committed <- gitCommit
   head1 <- if committed then gitHead else pure head0
