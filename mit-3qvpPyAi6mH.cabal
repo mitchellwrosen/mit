@@ -21,6 +21,10 @@ description:
   This package's library component does not follow the Package Versioning Policy, and is only exposed for the test
   suite.
 
+source-repository head
+  type: git
+  location: https://github.com/mitchellwrosen/mit.git
+
 common component
   build-depends:
     base == 4.14.3.0,
