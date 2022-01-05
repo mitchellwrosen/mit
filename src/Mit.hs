@@ -149,39 +149,24 @@ mitCommit_ = do
   fetched <- gitFetch "origin"
   maybeUpstreamHead <- gitRemoteBranchHead "origin" branch
 
-  existRemoteCommits <- maybe (pure False) (gitExistCommitsBetween head0) maybeUpstreamHead
-  existLocalCommits <-
-    maybe
-      (pure True)
-      (\upstreamHead -> gitExistCommitsBetween upstreamHead head0)
-      maybeUpstreamHead
-
-  when (existRemoteCommits && not existLocalCommits) do
-    putStanzas $
-      [ notSynchronizedStanza (Text.Builder.fromText branch) (Text.Builder.fromText upstream) ".",
-        Just $
-          "  Run "
-            <> Text.Builder.bold (Text.Builder.blue "mit sync")
-            <> " to synchronize "
-            <> Text.Builder.italic (Text.Builder.fromText branch)
-            <> " with "
-            <> Text.Builder.italic (Text.Builder.fromText upstream)
-            <> "."
-      ]
-    exitFailure
+  alreadyForked <- preventCommitIfWouldFork
 
   committed <- gitCommit
   head1 <- if committed then gitHead else pure head0
   localCommits <- gitCommitsBetween maybeUpstreamHead head1
 
   pushResult <-
-    case (localCommits, existRemoteCommits, fetched) of
-      (Seq.Empty, _, _) -> pure (PushNotAttempted NothingToPush)
-      (Seq.NonEmpty, True, _) -> do
-        conflicts <- gitConflictsWith (fromJust maybeUpstreamHead)
-        pure (PushNotAttempted (ForkedHistory conflicts))
-      (Seq.NonEmpty, False, False) -> pure (PushNotAttempted Offline)
-      (Seq.NonEmpty, False, True) -> PushAttempted <$> gitPush branch
+    if Seq.null localCommits
+      then pure (PushNotAttempted NothingToPush)
+      else
+        if alreadyForked
+          then do
+            conflicts <- gitConflictsWith (fromJust maybeUpstreamHead)
+            pure (PushNotAttempted (ForkedHistory conflicts))
+          else
+            if fetched
+              then PushAttempted <$> gitPush branch
+              else pure (PushNotAttempted Offline)
 
   let pushed =
         case pushResult of
@@ -198,7 +183,7 @@ mitCommit_ = do
   writeMitState branch MitState {head = (), merging = Nothing, undos}
 
   remoteCommits <-
-    if existRemoteCommits
+    if alreadyForked
       then gitCommitsBetween (Just head1) (fromJust maybeUpstreamHead)
       else pure Seq.empty
 
@@ -237,6 +222,42 @@ mitCommit_ = do
       -- would undo the last command run, namely the 'mit commit' that was aborted.
       if not (null undos) && committed then canUndoStanza else Nothing
     ]
+
+-- Prevent recording a commit (by exiting) if it would fork history. Returns whether or not history was already forked.
+preventCommitIfWouldFork :: IO Bool
+preventCommitIfWouldFork = do
+  branch <- gitCurrentBranch
+  let upstream = "origin/" <> branch
+  head <- gitHead
+  gitFetch_ "origin"
+
+  maybeUpstreamHead <- gitRemoteBranchHead "origin" branch
+
+  existRemoteCommits <- maybe (pure False) (gitExistCommitsBetween head) maybeUpstreamHead
+
+  existLocalCommits <-
+    maybe
+      (pure True)
+      (\upstreamHead -> gitExistCommitsBetween upstreamHead head)
+      maybeUpstreamHead
+
+  when (existRemoteCommits && not existLocalCommits) do
+    let branchb = Text.Builder.fromText branch
+    let upstreamb = Text.Builder.fromText upstream
+    putStanzas $
+      [ notSynchronizedStanza branchb upstreamb ".",
+        Just $
+          "  Run "
+            <> Text.Builder.bold (Text.Builder.blue "mit sync")
+            <> " to synchronize "
+            <> Text.Builder.italic branchb
+            <> " with "
+            <> Text.Builder.italic upstreamb
+            <> "."
+      ]
+    exitFailure
+
+  pure existRemoteCommits
 
 mitCommitMerge :: IO ()
 mitCommitMerge = do
