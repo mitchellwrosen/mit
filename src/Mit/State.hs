@@ -1,6 +1,15 @@
-module Mit.State where
+module Mit.State
+  ( MitState (..),
+    emptyMitState,
+    deleteMitState,
+    readMitState,
+    writeMitState,
+    mitStateRanCommitAgo,
+  )
+where
 
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding.Base64 as Text
 import qualified Data.Text.IO as Text
 import Mit.Clock (getCurrentTime)
 import Mit.Git
@@ -42,7 +51,7 @@ parseMitState contents = do
   pure MitState {head, merging, ranCommitAt, undos}
 
 readMitState :: Text -> IO (MitState ())
-readMitState branch64 = do
+readMitState branch = do
   head <- gitHead
   try (Text.readFile (mitfile branch64)) >>= \case
     Left (_ :: IOException) -> pure emptyMitState
@@ -56,9 +65,11 @@ readMitState branch64 = do
           deleteMitState branch64
           pure emptyMitState
         Just state -> pure (state {head = ()} :: MitState ())
+  where
+    branch64 = Text.encodeBase64 branch
 
 writeMitState :: Text -> MitState () -> IO ()
-writeMitState branch64 state = do
+writeMitState branch state = do
   head <- gitHead
   let contents :: Text
       contents =
@@ -68,7 +79,7 @@ writeMitState branch64 state = do
             "ran-commit-at " <> maybe Text.empty word642text state.ranCommitAt,
             "undos " <> showUndos state.undos
           ]
-  Text.writeFile (mitfile branch64) contents `catch` \(_ :: IOException) -> pure ()
+  Text.writeFile (mitfile (Text.encodeBase64 branch)) contents `catch` \(_ :: IOException) -> pure ()
 
 mitStateRanCommitAgo :: MitState a -> IO Word64
 mitStateRanCommitAgo state =

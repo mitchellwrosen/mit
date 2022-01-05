@@ -6,7 +6,6 @@ import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
 import qualified Data.Text.ANSI as Text
 import qualified Data.Text.Builder.ANSI as Text.Builder
-import qualified Data.Text.Encoding.Base64 as Text
 import qualified Data.Text.IO as Text
 import qualified Data.Text.Lazy.Builder as Text (Builder)
 import qualified Data.Text.Lazy.Builder as Text.Builder
@@ -143,10 +142,9 @@ mitCommit = do
 mitCommit_ :: IO ()
 mitCommit_ = do
   branch <- gitCurrentBranch
-  let branch64 = Text.encodeBase64 branch
   let upstream = "origin/" <> branch
   head0 <- gitHead
-  state0 <- readMitState branch64
+  state0 <- readMitState branch
   stash <- gitCreateStash
   let undos0 = [Reset head0, Apply stash]
 
@@ -175,7 +173,7 @@ mitCommit_ = do
           for_ undos0 applyUndo
 
           ranCommitAt <- Just <$> getCurrentTime
-          writeMitState branch64 state0 {ranCommitAt}
+          writeMitState branch state0 {ranCommitAt}
 
           putStanzas $
             case List1.nonEmpty conflicts of
@@ -252,7 +250,7 @@ mitCommit_ = do
       (True, True, Seq.Singleton) -> pure [Revert head1, Apply stash]
       _ -> pure []
 
-  writeMitState branch64 MitState {head = (), merging = Nothing, ranCommitAt, undos}
+  writeMitState branch MitState {head = (), merging = Nothing, ranCommitAt, undos}
 
   remoteCommits <-
     if existRemoteCommits
@@ -298,9 +296,8 @@ mitCommit_ = do
 mitCommitMerge :: IO ()
 mitCommitMerge = do
   branch <- gitCurrentBranch
-  let branch64 = Text.encodeBase64 branch
   head <- gitHead
-  state0 <- readMitState branch64
+  state0 <- readMitState branch
 
   -- Make the merge commit. Commonly we'll have gotten here by `mit merge <branch>`, so we'll have a `state0.merging`
   -- that tells us we're merging in <branch>. But we also handle the case that we went `git merge` -> `mit commit`,
@@ -311,7 +308,7 @@ mitCommitMerge = do
       let message = fold ["⅄ ", if merging == branch then "" else merging <> " → ", branch]
        in git_ ["commit", "--all", "--message", message]
 
-  writeMitState branch64 state0 {merging = Nothing, ranCommitAt = Nothing}
+  writeMitState branch state0 {merging = Nothing, ranCommitAt = Nothing}
 
   let stanza0 = do
         merging <- state0.merging
@@ -370,7 +367,6 @@ mitMerge target = do
   whenM gitExistUntrackedFiles dieIfBuggyGit
 
   branch <- gitCurrentBranch
-  let branch64 = Text.encodeBase64 branch
 
   -- When given 'mit merge foo', prefer merging 'origin/foo' over 'foo'
   targetCommit <- do
@@ -387,7 +383,7 @@ mitMerge target = do
   let undos = merge.undo ++ stash.undo
 
   writeMitState
-    branch64
+    branch
     MitState
       { head = (),
         merging =
@@ -503,6 +499,10 @@ mitSyncWith stanza0 maybeUndos = do
   let upstream = "origin/" <> branch
   maybeUpstreamHead <- gitRemoteBranchHead "origin" branch
 
+  -- new
+
+  -- end new
+
   maybeMergeStatus <-
     case maybeUpstreamHead of
       Nothing -> pure Nothing
@@ -539,7 +539,7 @@ mitSyncWith stanza0 maybeUndos = do
           True -> []
 
   writeMitState
-    (Text.encodeBase64 branch)
+    branch
     MitState
       { head = (),
         merging = do
@@ -584,8 +584,8 @@ mitUndo :: IO ()
 mitUndo = do
   dieIfNotInGitDir
 
-  branch64 <- Text.encodeBase64 <$> gitCurrentBranch
-  state0 <- readMitState branch64
+  branch <- gitCurrentBranch
+  state0 <- readMitState branch
   case List1.nonEmpty state0.undos of
     Nothing -> exitFailure
     Just undos1 -> for_ undos1 applyUndo
