@@ -377,76 +377,53 @@ mitMerge target = do
     _fetched <- gitFetch "origin"
     gitRemoteBranchHead "origin" target & onNothingM (git ["rev-parse", target] & onLeftM \_ -> exitFailure)
 
-  {- new -}
+  stash <- performStash
+  merge <- performMerge ("⅄ " <> target <> " → " <> branch) targetCommit
+  stashConflicts <-
+    if null merge.conflicts
+      then performUnstash stash
+      else pure []
 
-  (mergedCommits, mergeConflicts) <- performMerge ("⅄ " <> target <> " → " <> branch) targetCommit
-
-  {- end new -}
-
-  maybeMergeStatus <- mitMerge' ("⅄ " <> target <> " → " <> branch) targetCommit
-
-  let maybeMergeResult = (.result) <$> maybeMergeStatus
-
-  let conflicts =
-        case maybeMergeResult of
-          Nothing -> []
-          Just (MergeResult'MergeConflicts conflicts1) -> List1.toList conflicts1
-          Just (MergeResult'StashConflicts conflicts1) -> List1.toList conflicts1
-          Just MergeResult'Success -> []
+  let undos = merge.undo ++ stash.undo
 
   writeMitState
     branch64
     MitState
       { head = (),
-        merging = do
-          result <- maybeMergeResult
-          if mergeResultCommitted result
+        merging =
+          if null merge.conflicts
             then Nothing
             else Just target,
         ranCommitAt = Nothing,
-        undos =
-          case maybeMergeStatus of
-            Nothing -> []
-            Just mergeStatus -> List1.toList mergeStatus.undos
+        undos
       }
 
   let branchb = Text.Builder.fromText branch
   let targetb = Text.Builder.fromText target
 
   putStanzas
-    [ case maybeMergeResult of
-        Nothing -> synchronizedStanza branchb targetb
-        Just result ->
-          if mergeResultCommitted result
-            then synchronizedStanza branchb targetb
-            else notSynchronizedStanza branchb targetb ".",
+    [ if null merge.conflicts
+        then synchronizedStanza branchb targetb
+        else notSynchronizedStanza branchb targetb ".",
       do
-        mergeStatus <- maybeMergeStatus
+        commits1 <- Seq1.fromSeq merge.commits
         syncStanza
           Sync
-            { commits = mergeStatus.commits,
-              result = if mergeResultCommitted mergeStatus.result then SyncResult'Success else SyncResult'Failure,
+            { commits = commits1,
+              result = if null merge.conflicts then SyncResult'Success else SyncResult'Failure,
               source = target,
               target = branch
             },
+      if not (null merge.commits) && null merge.conflicts
+        then isSynchronizedStanza branchb (PushNotAttempted UnseenCommits)
+        else Nothing,
       do
-        result <- maybeMergeResult
-        if mergeResultCommitted result
-          then isSynchronizedStanza branchb (PushNotAttempted UnseenCommits)
-          else Nothing,
-      do
-        conflicts1 <- List1.nonEmpty conflicts
+        conflicts1 <- List1.nonEmpty merge.conflicts <|> List1.nonEmpty stashConflicts
         conflictsStanza "These files are in conflict:" conflicts1,
-      do
-        result <- maybeMergeResult
-        whatNextStanza
-          branchb
-          ( case result of
-              MergeResult'MergeConflicts _ -> PushNotAttempted MergeConflicts
-              MergeResult'StashConflicts _ -> PushNotAttempted UnseenCommits
-              MergeResult'Success -> PushNotAttempted UnseenCommits
-          ),
-      if isJust maybeMergeStatus then canUndoStanza else Nothing
+      if null merge.commits
+        then Nothing
+        else whatNextStanza branchb (PushNotAttempted if null merge.conflicts then UnseenCommits else MergeConflicts),
+      if null undos then Nothing else canUndoStanza
     ]
 
 data MergeStatus = MergeStatus
@@ -471,7 +448,7 @@ mitMerge' :: Text -> Text -> IO (Maybe MergeStatus)
 mitMerge' message target = do
   head <- gitHead
   maybeStash <- gitStash
-  (commits, mergeConflicts) <- performMerge message target
+  GitMerge {commits, conflicts = mergeConflicts} <- performMerge message target
   if Seq.null commits
     then do
       for_ maybeStash gitApplyStash
@@ -490,24 +467,6 @@ mitMerge' message target = do
               Just stashConflicts1 -> (MergeResult'StashConflicts stashConflicts1)
           Just mergeConflicts1 -> pure (MergeResult'MergeConflicts mergeConflicts1)
       pure (Just MergeStatus {commits = Seq1.unsafeFromSeq commits, result, undos})
-
--- TODO document precondition clean working tree
--- invariant: can't return conflicts but no commits
-performMerge :: Text -> Text -> IO (Seq GitCommitInfo, [GitConflict])
-performMerge message commitish = do
-  head <- gitHead
-  commits <- gitCommitsBetween (Just head) commitish
-  conflicts <-
-    if Seq.null commits
-      then pure []
-      else do
-        git ["merge", "--ff", "--no-commit", commitish] >>= \case
-          False -> gitConflicts
-          True -> do
-            -- If this was a fast-forward, a merge would not be in progress at this point.
-            whenM gitMergeInProgress (git_ ["commit", "--message", message])
-            pure []
-  pure (commits, conflicts)
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
 mitSync :: IO ()
@@ -638,6 +597,7 @@ mitUndo = do
       Revert _ : _ -> True
       _ : undos -> undosContainRevert undos
 
+-- FIXME this type kinda sux now, replace with GitMerge probably?
 data Sync = Sync
   { commits :: Seq1 GitCommitInfo,
     result :: SyncResult,
@@ -779,3 +739,60 @@ synchronizedStanza branch other =
         <> Text.Builder.green
           (Text.Builder.italic branch <> " is synchronized with " <> Text.Builder.italic other <> ".")
     )
+
+------------------------------------------------------------------------------------------------------------------------
+-- Git merge
+
+-- | The result of a @git merge@.
+--
+-- Impossible case: Impossible case: empty list of commits, non-empty list of conflicts.
+data GitMerge = GitMerge
+  { -- | The list of commits that were applied (or would be applied once conflicts are resolved), minus the merge commit
+    -- itself.
+    commits :: Seq GitCommitInfo,
+    conflicts :: [GitConflict],
+    -- | How to undo this merge.
+    undo :: [Undo]
+  }
+
+-- Perform a fast-forward-if-possible git merge, and return the commits that were applied (or *would be* applied) (minus
+-- the merge commit), along with the conflicting files. Impossible case: empty list of commits, non-empty list of
+-- conflicts.
+--
+-- Precondition: the working directory is clean. TODO take unused GitStash as argument?
+performMerge :: Text -> Text -> IO GitMerge
+performMerge message commitish = do
+  head <- gitHead
+  commits <- gitCommitsBetween (Just head) commitish
+  if Seq.null commits
+    then pure GitMerge {commits, conflicts = [], undo = []}
+    else do
+      let undo = [Reset head]
+      conflicts <-
+        git ["merge", "--ff", "--no-commit", commitish] >>= \case
+          False -> gitConflicts
+          True -> do
+            -- If this was a fast-forward, a merge would not be in progress at this point.
+            whenM gitMergeInProgress (git_ ["commit", "--message", message])
+            pure []
+      pure GitMerge {commits, conflicts, undo}
+
+------------------------------------------------------------------------------------------------------------------------
+-- Git stash
+
+data GitStash = GitStash
+  { commit :: Maybe Text,
+    undo :: [Undo]
+  }
+
+performStash :: IO GitStash
+performStash = do
+  commit <- gitStash
+  let undo = [Apply c | c <- maybeToList commit]
+  pure GitStash {commit, undo}
+
+performUnstash :: GitStash -> IO [GitConflict]
+performUnstash stash =
+  case stash.commit of
+    Nothing -> pure []
+    Just c -> gitApplyStash c

@@ -4,6 +4,7 @@ module Mit.Prelude
   )
 where
 
+import Control.Applicative as X ((<|>))
 import Control.Category as X hiding (id, (.))
 import Control.Exception as X hiding (handle)
 import Control.Monad as X
