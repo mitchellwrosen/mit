@@ -337,6 +337,8 @@ mitMerge target = do
       -- If on branch `foo`, treat `mit merge foo` and `mit merge origin/foo` as `mit sync`
       mitSyncWith Nothing Nothing
     else do
+      _alreadyForked <- preventCommitIfWouldFork
+
       -- When given 'mit merge foo', prefer merging 'origin/foo' over 'foo'
       targetCommit <- do
         _fetched <- gitFetch "origin"
