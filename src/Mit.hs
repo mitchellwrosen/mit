@@ -1,6 +1,5 @@
 module Mit where
 
-import Data.List.NonEmpty (NonEmpty ((:|)))
 import qualified Data.List.NonEmpty as List1
 import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
@@ -440,30 +439,6 @@ mergeResultCommitted = \case
   MergeResult'StashConflicts _ -> True
   MergeResult'Success -> True
 
-mitMerge' :: Text -> Text -> IO (Maybe MergeStatus)
-mitMerge' message target = do
-  head <- gitHead
-  maybeStash <- gitStash
-  GitMerge {commits, conflicts = mergeConflicts} <- performMerge message target
-  if Seq.null commits
-    then do
-      for_ maybeStash gitApplyStash
-      pure Nothing
-    else do
-      let undos = Reset head :| maybeToList (Apply <$> maybeStash)
-      result <-
-        case List1.nonEmpty mergeConflicts of
-          Nothing -> do
-            stashConflicts <-
-              case maybeStash of
-                Nothing -> pure []
-                Just stash -> gitApplyStash stash
-            pure case List1.nonEmpty stashConflicts of
-              Nothing -> MergeResult'Success
-              Just stashConflicts1 -> (MergeResult'StashConflicts stashConflicts1)
-          Just mergeConflicts1 -> pure (MergeResult'MergeConflicts mergeConflicts1)
-      pure (Just MergeStatus {commits = Seq1.unsafeFromSeq commits, result, undos})
-
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
 mitSync :: IO ()
 mitSync = do
@@ -499,34 +474,30 @@ mitSyncWith stanza0 maybeUndos = do
   let upstream = "origin/" <> branch
   maybeUpstreamHead <- gitRemoteBranchHead "origin" branch
 
-  -- new
-
-  -- end new
-
-  maybeMergeStatus <-
+  stash <- performStash
+  merge <-
     case maybeUpstreamHead of
-      Nothing -> pure Nothing
-      Just upstreamHead -> mitMerge' ("⅄ " <> branch) upstreamHead
+      -- Yay: no upstream branch is not different from an up-to-date local branch
+      Nothing -> pure GitMerge {commits = Seq.empty, conflicts = [], undo = []}
+      Just upstreamHead -> performMerge ("⅄ " <> branch) upstreamHead
 
-  let maybeMergeResult = (.result) <$> maybeMergeStatus
-
-  let conflicts =
-        case maybeMergeResult of
-          Nothing -> []
-          Just (MergeResult'MergeConflicts conflicts1) -> List1.toList conflicts1
-          Just (MergeResult'StashConflicts conflicts1) -> List1.toList conflicts1
-          Just MergeResult'Success -> []
+  stashConflicts <-
+    if null merge.conflicts
+      then performUnstash stash
+      else pure []
 
   localCommits <- gitCommitsBetween maybeUpstreamHead "HEAD"
 
   pushResult <-
-    case (localCommits, maybeMergeResult, fetched) of
-      (Seq.Empty, _, _) -> pure (PushNotAttempted NothingToPush)
-      (Seq.NonEmpty, Just (MergeResult'MergeConflicts _), _) -> pure (PushNotAttempted MergeConflicts)
-      (Seq.NonEmpty, Just (MergeResult'StashConflicts _), _) -> pure (PushNotAttempted UnseenCommits)
-      (Seq.NonEmpty, Just MergeResult'Success, _) -> pure (PushNotAttempted UnseenCommits)
-      (Seq.NonEmpty, Nothing, False) -> pure (PushNotAttempted Offline)
-      (Seq.NonEmpty, Nothing, True) -> PushAttempted <$> gitPush branch
+    if Seq.null localCommits
+      then pure (PushNotAttempted NothingToPush)
+      else
+        if null merge.conflicts
+          then
+            if fetched
+              then PushAttempted <$> gitPush branch
+              else pure (PushNotAttempted Offline)
+          else pure (PushNotAttempted MergeConflicts)
 
   let pushed =
         case pushResult of
@@ -534,17 +505,19 @@ mitSyncWith stanza0 maybeUndos = do
           PushNotAttempted _ -> False
 
   let undos =
-        case pushed of
-          False -> fromMaybe (maybe [] (List1.toList . (.undos)) maybeMergeStatus) maybeUndos
-          True -> []
+        if pushed
+          then []
+          else case maybeUndos of
+            Nothing -> merge.undo ++ stash.undo
+            -- FIXME hm, could consider appending those undos instead, even if they obviate the recent stash/merge undos
+            Just undos' -> undos'
 
   writeMitState
     branch
     MitState
       { head = (),
-        merging = do
-          result <- maybeMergeResult
-          if mergeResultCommitted result
+        merging =
+          if null merge.conflicts
             then Nothing
             else Just branch,
         ranCommitAt = Nothing,
@@ -555,11 +528,11 @@ mitSyncWith stanza0 maybeUndos = do
     [ stanza0,
       isSynchronizedStanza (Text.Builder.fromText branch) pushResult,
       do
-        mergeStatus <- maybeMergeStatus
+        commits1 <- Seq1.fromSeq merge.commits
         syncStanza
           Sync
-            { commits = mergeStatus.commits,
-              result = if mergeResultCommitted mergeStatus.result then SyncResult'Success else SyncResult'Failure,
+            { commits = commits1,
+              result = if null merge.conflicts then SyncResult'Success else SyncResult'Failure,
               source = upstream,
               target = branch
             },
@@ -573,7 +546,7 @@ mitSyncWith stanza0 maybeUndos = do
               target = upstream
             },
       do
-        conflicts1 <- List1.nonEmpty conflicts
+        conflicts1 <- List1.nonEmpty merge.conflicts <|> List1.nonEmpty stashConflicts
         conflictsStanza "These files are in conflict:" conflicts1,
       whatNextStanza (Text.Builder.fromText branch) pushResult,
       if not (null undos) then canUndoStanza else Nothing
