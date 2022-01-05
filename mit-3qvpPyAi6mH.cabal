@@ -77,6 +77,7 @@ library
     Mit.Process
     Mit.Seq
     Mit.Seq1
+    Mit.Stanza
     Mit.State
     Mit.Undo
   ghc-options: -fplugin=RecordDotPreprocessor

@@ -18,6 +18,7 @@ import Mit.Git
 import Mit.Prelude
 import qualified Mit.Seq as Seq
 import qualified Mit.Seq1 as Seq1
+import Mit.Stanza
 import Mit.State
 import Mit.Undo
 import System.Environment (getArgs)
@@ -261,7 +262,8 @@ mitCommit_ = do
 
   putStanzas
     [ isSynchronizedStanza (Text.Builder.fromText branch) pushResult,
-      Seq1.fromSeq remoteCommits <&> \commits ->
+      do
+        commits <- Seq1.fromSeq remoteCommits
         syncStanza
           Sync
             { commits,
@@ -269,7 +271,8 @@ mitCommit_ = do
               source = upstream,
               target = branch
             },
-      Seq1.fromSeq localCommits <&> \commits ->
+      do
+        commits <- Seq1.fromSeq localCommits
         syncStanza
           Sync
             { commits,
@@ -290,7 +293,7 @@ mitCommit_ = do
       -- In this case, the underlying state hasn't changed, so 'mit undo' will still work as if the 'mit commit' was
       -- never run, we merely don't want to *say* "run 'mit undo' to undo" as feedback, because that sounds as if it
       -- would undo the last command run, namely the 'mit commit' that was aborted.
-      if not (null undos) && committed then Just canUndoStanza else Nothing
+      if not (null undos) && committed then canUndoStanza else Nothing
     ]
 
 mitCommitMerge :: IO ()
@@ -336,7 +339,7 @@ mitCommitMerge = do
               conflictsStanza "These files are in conflict:" conflicts1,
               -- Fake like we didn't push due to merge conflicts just to print "resolve conflicts and commit"
               whatNextStanza (Text.Builder.fromText branch) (PushNotAttempted MergeConflicts),
-              if null state0.undos then Nothing else Just canUndoStanza
+              if null state0.undos then Nothing else canUndoStanza
             ]
 
 data PushResult
@@ -412,7 +415,8 @@ mitMerge target = do
           if mergeResultCommitted result
             then synchronizedStanza branchb targetb
             else notSynchronizedStanza branchb targetb ".",
-      maybeMergeStatus <&> \mergeStatus ->
+      do
+        mergeStatus <- maybeMergeStatus
         syncStanza
           Sync
             { commits = mergeStatus.commits,
@@ -437,7 +441,7 @@ mitMerge target = do
               MergeResult'StashConflicts _ -> PushNotAttempted UnseenCommits
               MergeResult'Success -> PushNotAttempted UnseenCommits
           ),
-      if isJust maybeMergeStatus then Just canUndoStanza else Nothing
+      if isJust maybeMergeStatus then canUndoStanza else Nothing
     ]
 
 data MergeStatus = MergeStatus
@@ -461,45 +465,40 @@ mergeResultCommitted = \case
 mitMerge' :: Text -> Text -> IO (Maybe MergeStatus)
 mitMerge' message target = do
   head <- gitHead
-  (Seq1.fromSeq <$> gitCommitsBetween (Just head) target) >>= \case
-    Nothing -> pure Nothing
-    Just commits -> do
-      maybeStash <- gitStash
+  maybeStash <- gitStash
+  mergeCommit message target >>= \case
+    Nothing -> do
+      for_ maybeStash gitApplyStash
+      pure Nothing
+    Just (commits, mergeConflicts) -> do
       let undos = Reset head :| maybeToList (Apply <$> maybeStash)
       result <-
-        git ["merge", "--ff", "--no-commit", target] >>= \case
-          False -> do
-            conflicts <- gitConflicts
-            -- error: The following untracked working tree files would be overwritten by merge:
-            --         administration-client/administration-client.cabal
-            --         aeson-simspace/aeson-simspace.cabal
-            --         attack-designer/api/attack-designer-api.cabal
-            --         attack-designer/db/attack-designer-db.cabal
-            --         attack-designer/server/attack-designer-server.cabal
-            --         attack-integrations/attack-integrations.cabal
-            --         authz/simspace-authz.cabal
-            --         caching/caching.cabal
-            --         common-testlib/common-testlib.cabal
-            --         db-infra/db-infra.cabal
-            --         db-infra/migrations/0_migrate-rich-text-images-to-minio/migrate-rich-text-images-to-minio.cabal
-            --         db-infra/migrations/2.0.0.1010_migrate-questions-into-content-modules/range-data-server-migrate-questions-into-content-modules.cabal
-            --         db-infra/migrations/2.0.0.19_migrate-hello-table/range-data-server-migrate-hello-table.cabal
-            --         db-infra/migrations/2.0.0.21_migrate-puppet-yaml-to-text/range-data-server-migrate-puppet-yaml-to-text.cabal
-            --         db-infra/migrations/2.0.0.9015_migrate-refresh-stocks/range-data-server-migrate-refresh-stocks.cabal
-            --         db-infra/migrations/shared/range-data-server-migration.cabal
-            -- Please move or remove them before you merge.
-            -- Aborting
-            pure (MergeResult'MergeConflicts (List1.fromList conflicts))
-          True -> do
-            whenM gitMergeInProgress (git_ ["commit", "--message", message])
-            maybeConflicts <- for maybeStash gitApplyStash
-            pure
-              ( fromMaybe MergeResult'Success do
-                  conflicts <- maybeConflicts
-                  conflicts1 <- List1.nonEmpty conflicts
-                  pure (MergeResult'StashConflicts conflicts1)
-              )
+        case List1.nonEmpty mergeConflicts of
+          Nothing -> do
+            stashConflicts <-
+              case maybeStash of
+                Nothing -> pure []
+                Just stash -> gitApplyStash stash
+            pure case List1.nonEmpty stashConflicts of
+              Nothing -> MergeResult'Success
+              Just stashConflicts1 -> (MergeResult'StashConflicts stashConflicts1)
+          Just mergeConflicts1 -> pure (MergeResult'MergeConflicts mergeConflicts1)
       pure (Just MergeStatus {commits, result, undos})
+
+-- TODO document precondition clean working tree
+mergeCommit :: Text -> Text -> IO (Maybe (Seq1 GitCommitInfo, [GitConflict]))
+mergeCommit message commitish = do
+  head <- gitHead
+  (Seq1.fromSeq <$> gitCommitsBetween (Just head) commitish) >>= \case
+    Nothing -> pure Nothing
+    Just commits ->
+      git ["merge", "--ff", "--no-commit", commitish] >>= \case
+        False -> do
+          conflicts <- gitConflicts
+          pure (Just (commits, conflicts))
+        True -> do
+          git_ ["commit", "--message", message]
+          pure (Just (commits, []))
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
 mitSync :: IO ()
@@ -587,7 +586,8 @@ mitSyncWith stanza0 maybeUndos = do
   putStanzas
     [ stanza0,
       isSynchronizedStanza (Text.Builder.fromText branch) pushResult,
-      maybeMergeStatus <&> \mergeStatus ->
+      do
+        mergeStatus <- maybeMergeStatus
         syncStanza
           Sync
             { commits = mergeStatus.commits,
@@ -595,7 +595,8 @@ mitSyncWith stanza0 maybeUndos = do
               source = upstream,
               target = branch
             },
-      Seq1.fromSeq localCommits <&> \commits ->
+      do
+        commits <- Seq1.fromSeq localCommits
         syncStanza
           Sync
             { commits,
@@ -607,7 +608,7 @@ mitSyncWith stanza0 maybeUndos = do
         conflicts1 <- List1.nonEmpty conflicts
         conflictsStanza "These files are in conflict:" conflicts1,
       whatNextStanza (Text.Builder.fromText branch) pushResult,
-      if not (null undos) then Just canUndoStanza else Nothing
+      if not (null undos) then canUndoStanza else Nothing
     ]
 
 -- FIXME output what we just undid
@@ -642,11 +643,11 @@ data SyncResult
   | SyncResult'Success
   deriving stock (Eq)
 
-canUndoStanza :: Text.Builder
+canUndoStanza :: Stanza
 canUndoStanza =
-  "  Run " <> Text.Builder.bold (Text.Builder.blue "mit undo") <> " to undo this change."
+  Just ("  Run " <> Text.Builder.bold (Text.Builder.blue "mit undo") <> " to undo this change.")
 
-conflictsStanza :: Text.Builder -> List1 GitConflict -> Maybe Text.Builder
+conflictsStanza :: Text.Builder -> List1 GitConflict -> Stanza
 conflictsStanza prefix conflicts =
   Just $
     "  "
@@ -654,7 +655,7 @@ conflictsStanza prefix conflicts =
       <> Builder.newline
       <> Builder.vcat ((\conflict -> "    " <> Text.Builder.red (showGitConflict conflict)) <$> conflicts)
 
-isSynchronizedStanza :: Text.Builder -> PushResult -> Maybe Text.Builder
+isSynchronizedStanza :: Text.Builder -> PushResult -> Stanza
 isSynchronizedStanza branch = \case
   PushAttempted False ->
     notSynchronizedStanza branch upstream (" because " <> Text.Builder.bold "git push" <> " failed.")
@@ -668,7 +669,7 @@ isSynchronizedStanza branch = \case
   where
     upstream = "origin/" <> branch
 
-notSynchronizedStanza :: Text.Builder -> Text.Builder -> Text.Builder -> Maybe Text.Builder
+notSynchronizedStanza :: Text.Builder -> Text.Builder -> Text.Builder -> Stanza
 notSynchronizedStanza branch other suffix =
   Just
     ( "  "
@@ -680,7 +681,7 @@ notSynchronizedStanza branch other suffix =
           )
     )
 
-whatNextStanza :: Text.Builder -> PushResult -> Maybe Text.Builder
+whatNextStanza :: Text.Builder -> PushResult -> Stanza
 whatNextStanza branch = \case
   PushAttempted False ->
     Just $
@@ -741,13 +742,14 @@ whatNextStanza branch = \case
     sync = Text.Builder.bold (Text.Builder.blue "mit sync")
     upstream = "origin/" <> branch
 
-syncStanza :: Sync -> Text.Builder
+syncStanza :: Sync -> Stanza
 syncStanza sync =
-  Text.Builder.italic
-    (colorize ("    " <> Text.Builder.fromText sync.source <> " → " <> Text.Builder.fromText sync.target))
-    <> "\n"
-    <> (Builder.vcat ((\commit -> "    " <> prettyGitCommitInfo commit) <$> commits'))
-    <> (if more then "    ..." else Builder.empty)
+  Just $
+    Text.Builder.italic
+      (colorize ("    " <> Text.Builder.fromText sync.source <> " → " <> Text.Builder.fromText sync.target))
+      <> "\n"
+      <> (Builder.vcat ((\commit -> "    " <> prettyGitCommitInfo commit) <$> commits'))
+      <> (if more then "    ..." else Builder.empty)
   where
     colorize :: Text.Builder -> Text.Builder
     colorize =
@@ -761,21 +763,10 @@ syncStanza sync =
         False -> (Seq1.toSeq sync.commits, False)
         True -> (Seq1.dropEnd 1 sync.commits, True)
 
-synchronizedStanza :: Text.Builder -> Text.Builder -> Maybe Text.Builder
+synchronizedStanza :: Text.Builder -> Text.Builder -> Stanza
 synchronizedStanza branch other =
   Just
     ( "  "
         <> Text.Builder.green
           (Text.Builder.italic branch <> " is synchronized with " <> Text.Builder.italic other <> ".")
     )
-
-renderStanzas :: [Maybe Text.Builder] -> Maybe Text.Builder
-renderStanzas stanzas =
-  case catMaybes stanzas of
-    [] -> Nothing
-    stanzas' -> Just (mconcat (List.intersperse (Builder.newline <> Builder.newline) stanzas'))
-
-putStanzas :: [Maybe Text.Builder] -> IO ()
-putStanzas stanzas =
-  whenJust (renderStanzas stanzas) \s ->
-    Text.putStr (Builder.build (Builder.newline <> s <> Builder.newline <> Builder.newline))
