@@ -9,7 +9,6 @@ import qualified Data.Text.IO as Text
 import qualified Data.Text.Lazy.Builder as Text (Builder)
 import qualified Data.Text.Lazy.Builder as Text.Builder
 import qualified Mit.Builder as Builder
-import Mit.Clock (getCurrentTime)
 import Mit.Directory
 import Mit.Git
 import Mit.Prelude
@@ -147,76 +146,32 @@ mitCommit_ = do
   stash <- gitCreateStash
   let undos0 = [Reset head0, Apply stash]
 
-  (fetched, maybeUpstreamHead, existRemoteCommits, wouldFork) <- do
-    ago <- mitStateRanCommitAgo state0
-    if ago < 10_000_000_000
-      then do
-        maybeUpstreamHead <- gitRemoteBranchHead "origin" branch
-        pure (True, maybeUpstreamHead, True, True)
-      else do
-        fetched <- gitFetch "origin"
-        maybeUpstreamHead <- gitRemoteBranchHead "origin" branch
+  (fetched, maybeUpstreamHead, existRemoteCommits) <- do
+    fetched <- gitFetch "origin"
+    maybeUpstreamHead <- gitRemoteBranchHead "origin" branch
 
-        existRemoteCommits <- maybe (pure False) (gitExistCommitsBetween head0) maybeUpstreamHead
-        existLocalCommits <-
-          maybe
-            (pure True)
-            (\upstreamHead -> gitExistCommitsBetween upstreamHead head0)
-            maybeUpstreamHead
+    existRemoteCommits <- maybe (pure False) (gitExistCommitsBetween head0) maybeUpstreamHead
+    existLocalCommits <-
+      maybe
+        (pure True)
+        (\upstreamHead -> gitExistCommitsBetween upstreamHead head0)
+        maybeUpstreamHead
 
-        let wouldFork = existRemoteCommits && not existLocalCommits
+    when (existRemoteCommits && not existLocalCommits) do
+      putStanzas $
+        [ notSynchronizedStanza (Text.Builder.fromText branch) (Text.Builder.fromText upstream) ".",
+          Just $
+            "  Run "
+              <> Text.Builder.bold (Text.Builder.blue "mit sync")
+              <> " to synchronize "
+              <> Text.Builder.italic (Text.Builder.fromText branch)
+              <> " with "
+              <> Text.Builder.italic (Text.Builder.fromText upstream)
+              <> "."
+        ]
+      exitFailure
 
-        when wouldFork do
-          applyUndo (Reset (fromJust maybeUpstreamHead))
-          conflicts <- gitApplyStash stash
-          for_ undos0 applyUndo
-
-          ranCommitAt <- Just <$> getCurrentTime
-          writeMitState branch state0 {ranCommitAt}
-
-          putStanzas $
-            case List1.nonEmpty conflicts of
-              Nothing ->
-                [ notSynchronizedStanza
-                    (Text.Builder.fromText branch)
-                    (Text.Builder.fromText upstream)
-                    ", but committing these changes would not put it in conflict.",
-                  Just
-                    ( "  To avoid making a merge commit, run "
-                        <> Text.Builder.bold (Text.Builder.blue "mit sync")
-                        <> " first."
-                    ),
-                  Just
-                    ( "  Otherwise, run "
-                        <> Text.Builder.bold (Text.Builder.blue "mit commit")
-                        <> " again (within 10 seconds) to record a commit anyway."
-                    )
-                ]
-              Just conflicts1 ->
-                [ notSynchronizedStanza
-                    (Text.Builder.fromText branch)
-                    (Text.Builder.fromText upstream)
-                    ", and committing these changes would put it in conflict.",
-                  conflictsStanza "These files would be in conflict:" conflicts1,
-                  Just
-                    ( Builder.vcat
-                        [ "  To avoid making a merge commit, run "
-                            <> Text.Builder.bold (Text.Builder.blue "mit sync")
-                            <> " first to resolve conflicts.",
-                          "  (If conflicts seem too difficult to resolve, you will be able to "
-                            <> Text.Builder.bold (Text.Builder.blue "mit undo")
-                            <> " to back out)."
-                        ]
-                    ),
-                  Just
-                    ( "  Otherwise, run "
-                        <> Text.Builder.bold (Text.Builder.blue "mit commit")
-                        <> " again (within 10 seconds) to record a commit anyway."
-                    )
-                ]
-          exitFailure
-
-        pure (fetched, maybeUpstreamHead, existRemoteCommits, wouldFork)
+    pure (fetched, maybeUpstreamHead, existRemoteCommits)
 
   committed <- gitCommit
   head1 <- if committed then gitHead else pure head0
@@ -236,12 +191,6 @@ mitCommit_ = do
           PushAttempted success -> success
           PushNotAttempted _ -> False
 
-  -- Only bother resetting the "ran commit at" if we would fork and the commit was aborted
-  ranCommitAt <-
-    case (wouldFork, committed) of
-      (True, False) -> Just <$> getCurrentTime
-      _ -> pure Nothing
-
   undos <-
     case (pushed, committed, localCommits) of
       (False, False, _) -> pure state0.undos
@@ -249,7 +198,7 @@ mitCommit_ = do
       (True, True, Seq.Singleton) -> pure [Revert head1, Apply stash]
       _ -> pure []
 
-  writeMitState branch MitState {head = (), merging = Nothing, ranCommitAt, undos}
+  writeMitState branch MitState {head = (), merging = Nothing, undos}
 
   remoteCommits <-
     if existRemoteCommits
@@ -307,7 +256,7 @@ mitCommitMerge = do
       let message = fold ["⅄ ", if merging == branch then "" else merging <> " → ", branch]
        in git_ ["commit", "--all", "--message", message]
 
-  writeMitState branch state0 {merging = Nothing, ranCommitAt = Nothing}
+  writeMitState branch state0 {merging = Nothing}
 
   let stanza0 = do
         merging <- state0.merging
@@ -387,7 +336,6 @@ mitMerge target = do
           if null merge.conflicts
             then Nothing
             else Just target,
-        ranCommitAt = Nothing,
         undos = stash.undo
       }
 
@@ -502,7 +450,6 @@ mitSyncWith stanza0 maybeUndos = do
           if null merge.conflicts
             then Nothing
             else Just branch,
-        ranCommitAt = Nothing,
         undos
       }
 
@@ -586,7 +533,7 @@ isSynchronizedStanza branch = \case
   PushAttempted True -> synchronizedStanza branch upstream
   PushNotAttempted MergeConflicts ->
     notSynchronizedStanza branch upstream " because you have local conflicts to resolve."
-  PushNotAttempted (ForkedHistory _) -> notSynchronizedStanza branch upstream "; their commit histories have diverged."
+  PushNotAttempted (ForkedHistory _) -> notSynchronizedStanza branch upstream "; their histories have diverged."
   PushNotAttempted NothingToPush -> synchronizedStanza branch upstream
   PushNotAttempted Offline -> notSynchronizedStanza branch upstream " because you appear to be offline."
   PushNotAttempted UnseenCommits -> notSynchronizedStanza branch upstream "."

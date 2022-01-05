@@ -4,14 +4,12 @@ module Mit.State
     deleteMitState,
     readMitState,
     writeMitState,
-    mitStateRanCommitAgo,
   )
 where
 
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding.Base64 as Text
 import qualified Data.Text.IO as Text
-import Mit.Clock (getCurrentTime)
 import Mit.Git
 import Mit.Prelude
 import Mit.Undo
@@ -20,14 +18,13 @@ import System.Directory (removeFile)
 data MitState a = MitState
   { head :: a,
     merging :: Maybe Text,
-    ranCommitAt :: Maybe Word64,
     undos :: [Undo]
   }
   deriving stock (Eq, Show)
 
 emptyMitState :: MitState ()
 emptyMitState =
-  MitState {head = (), merging = Nothing, ranCommitAt = Nothing, undos = []}
+  MitState {head = (), merging = Nothing, undos = []}
 
 deleteMitState :: Text -> IO ()
 deleteMitState branch64 =
@@ -35,20 +32,15 @@ deleteMitState branch64 =
 
 parseMitState :: Text -> Maybe (MitState Text)
 parseMitState contents = do
-  [headLine, mergingLine, ranCommitAtLine, undosLine] <- Just (Text.lines contents)
+  [headLine, mergingLine, undosLine] <- Just (Text.lines contents)
   ["head", head] <- Just (Text.words headLine)
   merging <-
     case Text.words mergingLine of
       ["merging"] -> Just Nothing
       ["merging", branch] -> Just (Just branch)
       _ -> Nothing
-  ranCommitAt <-
-    case Text.words ranCommitAtLine of
-      ["ran-commit-at"] -> Just Nothing
-      ["ran-commit-at", text2word64 -> Just n] -> Just (Just n)
-      _ -> Nothing
   undos <- Text.stripPrefix "undos " undosLine >>= parseUndos
-  pure MitState {head, merging, ranCommitAt, undos}
+  pure MitState {head, merging, undos}
 
 readMitState :: Text -> IO (MitState ())
 readMitState branch = do
@@ -76,21 +68,9 @@ writeMitState branch state = do
         Text.unlines
           [ "head " <> head,
             "merging " <> fromMaybe Text.empty state.merging,
-            "ran-commit-at " <> maybe Text.empty word642text state.ranCommitAt,
             "undos " <> showUndos state.undos
           ]
   Text.writeFile (mitfile (Text.encodeBase64 branch)) contents `catch` \(_ :: IOException) -> pure ()
-
-mitStateRanCommitAgo :: MitState a -> IO Word64
-mitStateRanCommitAgo state =
-  case state.ranCommitAt of
-    Nothing -> pure maxBound
-    Just timestamp0 -> do
-      timestamp1 <- getCurrentTime
-      pure
-        if timestamp1 >= timestamp0
-          then timestamp1 - timestamp0
-          else maxBound -- weird unexpected case
 
 mitfile :: Text -> FilePath
 mitfile branch64 =
