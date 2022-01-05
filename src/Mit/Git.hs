@@ -1,6 +1,7 @@
 module Mit.Git where
 
 import qualified Data.List as List
+import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
 import qualified Data.Text.Builder.ANSI as Text.Builder
@@ -240,8 +241,20 @@ gitExistUntrackedFiles =
   not . null <$> gitListUntrackedFiles
 
 gitFetch :: Text -> IO Bool
-gitFetch remote =
-  git ["fetch", remote]
+gitFetch remote = do
+  fetched <- readIORef fetchedRef
+  case Map.lookup remote fetched of
+    Nothing -> do
+      success <- git ["fetch", remote]
+      writeIORef fetchedRef (Map.insert remote success fetched)
+      pure success
+    Just success -> pure success
+
+-- Only fetch each remote at most once per run of `mit`
+fetchedRef :: IORef (Map Text Bool)
+fetchedRef =
+  unsafePerformIO (newIORef mempty)
+{-# NOINLINE fetchedRef #-}
 
 gitFetch_ :: Text -> IO ()
 gitFetch_ =
