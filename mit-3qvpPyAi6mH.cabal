@@ -16,7 +16,11 @@ version: 7
 description:
   A git wrapper with a streamlined UX.
 
-  To install the @mit@ command-line tool, run @cabal install mit-3qvpPyAi6mH@.
+  To install the @mit@ command-line tool, run:
+
+  @
+  cabal install -w ghc-9.0.2 mit-3qvpPyAi6mH
+  @
 
   This package's library component does not follow the Package Versioning Policy, and is only exposed for the test
   suite.
@@ -27,10 +31,10 @@ source-repository head
 
 common component
   build-depends:
-    base == 4.14.3.0,
+    base == 4.15.1.0,
     base64 == 0.4.2.3,
-    containers == 0.6.5.1,
-    directory == 1.3.6.0,
+    containers == 0.6.4.1,
+    directory == 1.3.6.2,
     ki == 0.2.0.1,
     process == 1.6.13.2,
     record-dot-preprocessor == 0.2.13,
