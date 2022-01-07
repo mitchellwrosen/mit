@@ -48,6 +48,12 @@ data GitCommitInfo = GitCommitInfo
   }
   deriving stock (Show)
 
+parseGitCommitInfo :: Text -> GitCommitInfo
+parseGitCommitInfo line =
+  case Text.split (== '\xFEFF') line of
+    [author, date, hash, shorthash, subject] -> GitCommitInfo {author, date, hash, shorthash, subject}
+    _ -> error (Text.unpack line)
+
 prettyGitCommitInfo :: GitCommitInfo -> Text.Builder
 prettyGitCommitInfo info =
   fold
@@ -194,18 +200,13 @@ gitCommitsBetween commit1 commit2 =
             "--max-count=11",
             maybe id (\c1 c2 -> c1 <> ".." <> c2) commit1 commit2
           ]
-      pure (parseCommitInfo <$> dropEvens commits)
+      pure (parseGitCommitInfo <$> dropEvens commits)
   where
     -- git rev-list with a custom format prefixes every commit with a redundant line :|
     dropEvens :: Seq a -> Seq a
     dropEvens = \case
       _ Seq.:<| x Seq.:<| xs -> x Seq.<| dropEvens xs
       xs -> xs
-    parseCommitInfo :: Text -> GitCommitInfo
-    parseCommitInfo line =
-      case Text.split (== '\xFEFF') line of
-        [author, date, hash, shorthash, subject] -> GitCommitInfo {author, date, hash, shorthash, subject}
-        _ -> error (Text.unpack line)
 
 gitConflicts :: IO [GitConflict]
 gitConflicts =
@@ -285,6 +286,10 @@ gitHead :: IO Text
 gitHead =
   git ["rev-parse", "HEAD"]
 
+gitIsMergeCommit :: Text -> IO Bool
+gitIsMergeCommit commit =
+  git ["rev-parse", "--quiet", "--verify", commit <> "^2"]
+
 -- | List all untracked files.
 gitListUntrackedFiles :: IO [Text]
 gitListUntrackedFiles =
@@ -309,6 +314,17 @@ gitRemoteBranchHead remote branch =
   git ["rev-parse", "refs/remotes/" <> remote <> "/" <> branch] <&> \case
     Left _ -> Nothing
     Right head -> Just head
+
+gitShow :: Text -> IO GitCommitInfo
+gitShow commit =
+  parseGitCommitInfo
+    <$> git
+      [ "show",
+        "--color=always",
+        "--date=human",
+        "--format=format:%an\xFEFF%ad\xFEFF%H\xFEFF%h\xFEFF%s",
+        commit
+      ]
 
 -- | Stash uncommitted changes (if any).
 gitStash :: IO (Maybe Text)
