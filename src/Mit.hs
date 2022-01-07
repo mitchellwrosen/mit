@@ -471,7 +471,7 @@ mitSyncWith stanza0 maybeUndos = do
         if pushPushed push
           then []
           else case maybeUndos of
-            Nothing -> stash.undo
+            Nothing -> if Seq.null merge.commits then [] else stash.undo
             -- FIXME hm, could consider appending those undos instead, even if they obviate the recent stash/merge undos
             Just undos' -> undos'
 
