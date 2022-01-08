@@ -226,6 +226,7 @@ gitConflictsWith commit = do
   whenJust maybeStash \stash -> git_ ["stash", "apply", "--quiet", stash]
   pure conflicts
 
+-- | Precondition: there are changes to stash
 gitCreateStash :: IO Text
 gitCreateStash = do
   git_ ["add", "--all"] -- it seems certain things (like renames), unless staged, cannot be stashed

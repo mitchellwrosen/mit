@@ -366,11 +366,13 @@ mitMerge target = do
         _fetched <- gitFetch "origin"
         gitRemoteBranchHead "origin" target & onNothingM (git ["rev-parse", target] & onLeftM \_ -> exitFailure)
 
-      stash <- performStash
+      snapshot <- performSnapshot
       merge <- performMerge ("⅄ " <> target <> " → " <> branch) targetCommit
       stashConflicts <-
         if null merge.conflicts
-          then performUnstash stash
+          then case snapshot.stash of
+            Nothing -> pure []
+            Just stash -> gitApplyStash stash
           else pure []
 
       writeMitState
@@ -381,7 +383,10 @@ mitMerge target = do
               if null merge.conflicts
                 then Nothing
                 else Just target,
-            undos = stash.undo
+            undos =
+              Reset snapshot.head : case snapshot.stash of
+                Nothing -> []
+                Just stash -> [Apply stash]
           }
 
       let branchb = Text.Builder.fromText branch
@@ -452,7 +457,7 @@ mitSyncWith stanza0 maybeUndos = do
   let upstream = "origin/" <> branch
   maybeUpstreamHead <- gitRemoteBranchHead "origin" branch
 
-  stash <- performStash
+  snapshot <- performSnapshot
 
   merge <-
     case maybeUpstreamHead of
@@ -462,7 +467,9 @@ mitSyncWith stanza0 maybeUndos = do
 
   stashConflicts <-
     if null merge.conflicts
-      then performUnstash stash
+      then case snapshot.stash of
+        Nothing -> pure []
+        Just stash -> gitApplyStash stash
       else pure []
 
   push <- performPush branch
@@ -471,7 +478,13 @@ mitSyncWith stanza0 maybeUndos = do
         if pushPushed push
           then []
           else case maybeUndos of
-            Nothing -> if Seq.null merge.commits then [] else stash.undo
+            Nothing ->
+              if Seq.null merge.commits
+                then []
+                else
+                  Reset snapshot.head : case snapshot.stash of
+                    Nothing -> []
+                    Just stash -> [Apply stash]
             -- FIXME hm, could consider appending those undos instead, even if they obviate the recent stash/merge undos
             Just undos' -> undos'
 
@@ -795,23 +808,18 @@ performPush branch = do
             else pure GitPush {commits, undo = [], what = PushWouldntReachRemote}
 
 ------------------------------------------------------------------------------------------------------------------------
--- Git stash
+-- Git snapshot
 
-data GitStash = GitStash
-  { commit :: Maybe Text,
-    -- | Undo to the state before the stash
-    undo :: [Undo]
+data GitSnapshot = GitSnapshot
+  { head :: Text,
+    stash :: Maybe Text
   }
 
-performStash :: IO GitStash
-performStash = do
+performSnapshot :: IO GitSnapshot
+performSnapshot = do
   head <- gitHead
-  commit <- gitStash
-  let undo = Reset head : [Apply c | c <- maybeToList commit]
-  pure GitStash {commit, undo}
-
-performUnstash :: GitStash -> IO [GitConflict]
-performUnstash stash =
-  case stash.commit of
-    Nothing -> pure []
-    Just c -> gitApplyStash c
+  stash <-
+    gitDiff >>= \case
+      Differences -> Just <$> gitCreateStash
+      NoDifferences -> pure Nothing
+  pure GitSnapshot {head, stash}
