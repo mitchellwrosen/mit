@@ -1,3 +1,4 @@
+-- | High-level git operations
 module Mit.Git where
 
 import qualified Data.List as List
@@ -11,6 +12,9 @@ import qualified Data.Text.Lazy.Builder as Text.Builder
 import qualified Ki
 import qualified Mit.Builder as Builder
 import Mit.Config (verbose)
+import Mit.GitCommand (FlagQuiet (..), GitCommand (..))
+-- FIXME don't qualified import once `git` is repluaced
+import qualified Mit.GitCommand as GitCommand
 import Mit.Prelude
 import Mit.Process
 import System.Directory (doesFileExist)
@@ -143,7 +147,7 @@ showGitVersion (GitVersion x y z) =
 gitApplyStash :: Text -> IO [GitConflict]
 gitApplyStash stash = do
   conflicts <-
-    git ["stash", "apply", "--quiet", stash] >>= \case
+    GitCommand.git (GitStashApply FlagQuiet stash) >>= \case
       False -> gitConflicts
       True -> pure []
   gitUnstageChanges

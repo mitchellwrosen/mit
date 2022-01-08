@@ -44,7 +44,7 @@ common component
       text == 1.2.5.0,
       text-ansi == 0.1.1,
       unix == 2.7.2.2,
-  -- ghc == 8.10.7
+  -- impl(ghc == 8.10.7)
   else
     build-depends:
       base == 4.14.3.0,
@@ -91,6 +91,7 @@ library
     Mit.Config
     Mit.Directory
     Mit.Git
+    Mit.GitCommand
     Mit.Prelude
     Mit.Process
     Mit.Seq
