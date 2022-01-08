@@ -12,9 +12,7 @@ import qualified Data.Text.Lazy.Builder as Text.Builder
 import qualified Ki
 import qualified Mit.Builder as Builder
 import Mit.Config (verbose)
-import Mit.GitCommand (FlagQuiet (..), GitCommand (..))
--- FIXME don't qualified import once `git` is repluaced
-import qualified Mit.GitCommand as GitCommand
+import qualified Mit.GitCommand as Git
 import Mit.Prelude
 import Mit.Process
 import System.Directory (doesFileExist)
@@ -147,26 +145,27 @@ showGitVersion (GitVersion x y z) =
 gitApplyStash :: Text -> IO [GitConflict]
 gitApplyStash stash = do
   conflicts <-
-    GitCommand.git (GitStashApply FlagQuiet stash) >>= \case
+    Git.git (Git.StashApply Git.FlagQuiet stash) >>= \case
       False -> gitConflicts
       True -> pure []
   gitUnstageChanges
   pure conflicts
 
 -- | Create a branch.
+-- FIXME inline this
 gitBranch :: Text -> IO ()
 gitBranch branch =
-  git_ ["branch", "--no-track", branch]
+  Git.git (Git.Branch Git.FlagNoTrack branch)
 
 -- | Does the given local branch (refs/heads/...) exist?
 gitBranchExists :: Text -> IO Bool
 gitBranchExists branch =
-  git ["rev-parse", "--verify", "refs/heads/" <> branch]
+  Git.git (Git.RevParse Git.FlagQuiet Git.FlagVerify ("refs/heads/" <> branch))
 
 -- | Get the head of a local branch (refs/heads/...).
 gitBranchHead :: Text -> IO (Maybe Text)
 gitBranchHead branch =
-  git ["rev-parse", "refs/heads/" <> branch] <&> \case
+  Git.git (Git.RevParse Git.NoFlagQuiet Git.NoFlagVerify ("refs/heads/" <> branch)) <&> \case
     Left _ -> Nothing
     Right head -> Just head
 
@@ -214,7 +213,7 @@ gitCommitsBetween commit1 commit2 =
 
 gitConflicts :: IO [GitConflict]
 gitConflicts =
-  mapMaybe parseGitConflict <$> git ["status", "--no-renames", "--porcelain=v1"]
+  mapMaybe parseGitConflict <$> Git.git (Git.StatusV1 Git.FlagNoRenames)
 
 -- | Get the conflicts with the given commitish.
 --
@@ -223,36 +222,31 @@ gitConflictsWith :: Text -> IO [GitConflict]
 gitConflictsWith commit = do
   maybeStash <- gitStash
   conflicts <-
-    git ["merge", "--no-commit", "--no-ff", commit] >>= \case
+    Git.git (Git.Merge Git.FlagNoCommit Git.FlagNoFF commit) >>= \case
       False -> gitConflicts
       True -> pure []
-  git_ ["merge", "--abort"]
-  whenJust maybeStash \stash -> git_ ["stash", "apply", "--quiet", stash]
+  whenM gitMergeInProgress (Git.git_ Git.MergeAbort)
+  whenJust maybeStash \stash -> Git.git (Git.StashApply Git.FlagQuiet stash)
   pure conflicts
 
 -- | Precondition: there are changes to stash
 gitCreateStash :: IO Text
 gitCreateStash = do
-  git_ ["add", "--all"] -- it seems certain things (like renames), unless staged, cannot be stashed
-  stash <- git ["stash", "create"]
+  Git.git_ Git.AddAll -- it seems certain things (like renames), unless staged, cannot be stashed
+  stash <- Git.git Git.StashCreate
   gitUnstageChanges
   pure stash
 
--- | Get the current branch.
-gitCurrentBranch :: IO Text
-gitCurrentBranch =
-  git ["branch", "--show-current"]
-
 gitDefaultBranch :: Text -> IO Text
 gitDefaultBranch remote = do
-  ref <- git ["symbolic-ref", "refs/remotes/" <> remote <> "/HEAD"]
+  ref <- Git.git (Git.SymbolicRef ("refs/remotes/" <> remote <> "/HEAD"))
   pure (Text.drop (14 + Text.length remote) ref)
 
 -- FIXME document this
 gitDiff :: IO DiffResult
 gitDiff = do
   gitUnstageChanges
-  git ["diff", "--quiet"] <&> \case
+  Git.git (Git.Diff Git.FlagQuiet) <&> \case
     False -> Differences
     True -> NoDifferences
 
@@ -272,7 +266,7 @@ gitFetch remote = do
   fetched <- readIORef fetchedRef
   case Map.lookup remote fetched of
     Nothing -> do
-      success <- git ["fetch", remote]
+      success <- Git.git (Git.Fetch remote)
       writeIORef fetchedRef (Map.insert remote success fetched)
       pure success
     Just success -> pure success
@@ -289,11 +283,11 @@ gitFetch_ =
 
 gitHead :: IO Text
 gitHead =
-  git ["rev-parse", "HEAD"]
+  Git.git (Git.RevParse Git.NoFlagQuiet Git.NoFlagVerify "HEAD")
 
 gitIsMergeCommit :: Text -> IO Bool
 gitIsMergeCommit commit =
-  git ["rev-parse", "--quiet", "--verify", commit <> "^2"]
+  Git.git (Git.RevParse Git.FlagQuiet Git.FlagVerify (commit <> "^2"))
 
 -- | List all untracked files.
 gitListUntrackedFiles :: IO [Text]
@@ -311,12 +305,12 @@ gitPush branch =
 -- | Does the given remote branch (refs/remotes/...) exist?
 gitRemoteBranchExists :: Text -> Text -> IO Bool
 gitRemoteBranchExists remote branch =
-  git ["rev-parse", "--verify", "refs/remotes/" <> remote <> "/" <> branch]
+  Git.git (Git.RevParse Git.FlagQuiet Git.FlagVerify ("refs/remotes/" <> remote <> "/" <> branch))
 
 -- | Get the head of a remote branch.
 gitRemoteBranchHead :: Text -> Text -> IO (Maybe Text)
 gitRemoteBranchHead remote branch =
-  git ["rev-parse", "refs/remotes/" <> remote <> "/" <> branch] <&> \case
+  Git.git (Git.RevParse Git.NoFlagQuiet Git.NoFlagVerify ("refs/remotes/" <> remote <> "/" <> branch)) <&> \case
     Left _ -> Nothing
     Right head -> Just head
 
@@ -337,24 +331,16 @@ gitStash = do
   gitDiff >>= \case
     Differences -> do
       stash <- gitCreateStash
-      git_ ["clean", "-d", "--force"]
-      git_ ["reset", "--hard", "HEAD"]
+      Git.git_ (Git.Clean Git.FlagD Git.FlagForce)
+      Git.git_ (Git.Reset Git.Hard Git.FlagQuiet "HEAD")
       pure (Just stash)
     NoDifferences -> pure Nothing
 
-gitSwitch :: Text -> IO Bool
-gitSwitch branch =
-  git ["switch", branch]
-
-gitSwitch_ :: Text -> IO ()
-gitSwitch_ branch =
-  git_ ["switch", branch]
-
 gitUnstageChanges :: IO ()
 gitUnstageChanges = do
-  git_ ["reset", "--mixed", "--quiet"]
+  Git.git_ (Git.Reset Git.Mixed Git.FlagQuiet "HEAD")
   untrackedFiles <- gitListUntrackedFiles
-  unless (null untrackedFiles) (git_ ("add" : "--intent-to-add" : untrackedFiles))
+  unless (null untrackedFiles) (Git.git_ (Git.Add Git.FlagIntentToAdd untrackedFiles))
 
 gitVersion :: IO GitVersion
 gitVersion = do

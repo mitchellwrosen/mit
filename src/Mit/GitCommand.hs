@@ -1,13 +1,21 @@
 -- | Low-level git commands
 module Mit.GitCommand
-  ( GitCommand (..),
+  ( Command (..),
+    ResetMode (..),
+    FlagD (..),
+    FlagForce (..),
+    FlagIntentToAdd (..),
+    FlagNoCommit (..),
+    FlagNoFF (..),
+    FlagNoRenames (..),
+    FlagNoTrack (..),
     FlagQuiet (..),
+    FlagVerify (..),
     git,
+    git_,
   )
 where
 
-import qualified Data.List as List
-import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
 import qualified Data.Text.Builder.ANSI as Text.Builder
@@ -19,24 +27,123 @@ import qualified Mit.Builder as Builder
 import Mit.Config (verbose)
 import Mit.Prelude
 import Mit.Process
-import System.Directory (doesFileExist)
-import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.IO (Handle, hClose, hIsEOF)
-import System.IO.Unsafe (unsafePerformIO)
 import System.Posix.Process (getProcessGroupIDOf)
 import System.Posix.Signals
-import System.Posix.Terminal (queryTerminal)
 import System.Process
 import System.Process.Internals
 
-data GitCommand
-  = GitStashApply FlagQuiet Text
+data Command
+  = AddAll
+  | Add FlagIntentToAdd [Text]
+  | Branch FlagNoTrack Text
+  | BranchSetUpstreamTo Text
+  | BranchShowCurrent
+  | Clean FlagD FlagForce
+  | Diff FlagQuiet
+  | Fetch Text
+  | Merge FlagNoCommit FlagNoFF Text
+  | MergeAbort
+  | Reset ResetMode FlagQuiet Text
+  | RevParse FlagQuiet FlagVerify Text
+  | StashApply FlagQuiet Text
+  | StashCreate
+  | StatusV1 FlagNoRenames
+  | Switch Text
+  | SymbolicRef Text
 
-renderGitCommand :: GitCommand -> [Text]
-renderGitCommand = \case
-  GitStashApply quiet commit ->
-    ["stash", "apply"] ++ renderFlagQuiet quiet ++ [commit]
+renderCommand :: Command -> [Text]
+renderCommand = \case
+  Add intentToAdd files -> ["add"] ++ renderFlagIntentToAdd intentToAdd ++ files
+  AddAll -> ["add", "--all"]
+  Branch noTrack branch -> ["branch"] ++ renderFlagNoTrack noTrack ++ [branch]
+  BranchSetUpstreamTo upstream -> ["branch", "--set-upstream-to", upstream]
+  BranchShowCurrent -> ["branch", "--show-current"]
+  Clean d force -> ["clean"] ++ renderFlagD d ++ renderFlagForce force
+  Diff quiet -> ["diff"] ++ renderFlagQuiet quiet
+  Fetch remote -> ["fetch", remote]
+  Merge noCommit noFF commit -> ["merge"] ++ renderFlagNoCommit noCommit ++ renderFlagNoFF noFF ++ [commit]
+  MergeAbort -> ["merge", "--abort"]
+  Reset mode quiet commit -> ["reset", renderResetMode mode] ++ renderFlagQuiet quiet ++ [commit]
+  RevParse quiet verify commit -> ["rev-parse"] ++ renderFlagQuiet quiet ++ renderFlagVerify verify ++ [commit]
+  StashApply quiet commit -> ["stash", "apply"] ++ renderFlagQuiet quiet ++ [commit]
+  StashCreate -> ["stash", "create"]
+  StatusV1 noRenames -> ["status"] ++ renderFlagNoRenames noRenames ++ ["--porcelain=v1"]
+  Switch branch -> ["switch", branch]
+  SymbolicRef commit -> ["symbolic-ref", commit]
+
+data ResetMode
+  = Mixed
+  | Hard
+
+renderResetMode :: ResetMode -> Text
+renderResetMode = \case
+  Mixed -> "--mixed"
+  Hard -> "--hard"
+
+data FlagD
+  = FlagD
+  | NoFlagD
+
+renderFlagD :: FlagD -> [Text]
+renderFlagD = \case
+  FlagD -> ["-d"]
+  NoFlagD -> []
+
+data FlagForce
+  = FlagForce
+  | NoFlagForce
+
+renderFlagForce :: FlagForce -> [Text]
+renderFlagForce = \case
+  FlagForce -> ["--force"]
+  NoFlagForce -> []
+
+data FlagIntentToAdd
+  = FlagIntentToAdd
+  | NoFlagIntentToAdd
+
+renderFlagIntentToAdd :: FlagIntentToAdd -> [Text]
+renderFlagIntentToAdd = \case
+  FlagIntentToAdd -> ["--intent-to-add"]
+  NoFlagIntentToAdd -> []
+
+data FlagNoCommit
+  = FlagNoCommit
+  | NoFlagNoCommit
+
+renderFlagNoCommit :: FlagNoCommit -> [Text]
+renderFlagNoCommit = \case
+  FlagNoCommit -> ["--no-commit"]
+  NoFlagNoCommit -> []
+
+data FlagNoFF
+  = FlagNoFF
+  | NoFlagNoFF
+
+renderFlagNoFF :: FlagNoFF -> [Text]
+renderFlagNoFF = \case
+  FlagNoFF -> ["--no-ff"]
+  NoFlagNoFF -> []
+
+data FlagNoRenames
+  = FlagNoRenames
+  | NoFlagNoRenames
+
+renderFlagNoRenames :: FlagNoRenames -> [Text]
+renderFlagNoRenames = \case
+  FlagNoRenames -> ["--no-renames"]
+  NoFlagNoRenames -> []
+
+data FlagNoTrack
+  = FlagNoTrack
+  | NoFlagNoTrack
+
+renderFlagNoTrack :: FlagNoTrack -> [Text]
+renderFlagNoTrack = \case
+  FlagNoTrack -> ["--no-track"]
+  NoFlagNoTrack -> []
 
 data FlagQuiet
   = FlagQuiet
@@ -47,12 +154,25 @@ renderFlagQuiet = \case
   FlagQuiet -> ["--quiet"]
   NoFlagQuiet -> []
 
+data FlagVerify
+  = FlagVerify
+  | NoFlagVerify
+
+renderFlagVerify :: FlagVerify -> [Text]
+renderFlagVerify = \case
+  FlagVerify -> ["--verify"]
+  NoFlagVerify -> []
+
 ------------------------------------------------------------------------------------------------------------------------
 -- Git process  stuff
 
-git :: ProcessOutput a => GitCommand -> IO a
+git :: ProcessOutput a => Command -> IO a
 git =
-  runGit . renderGitCommand
+  runGit . renderCommand
+
+git_ :: Command -> IO ()
+git_ =
+  git
 
 runGit :: ProcessOutput a => [Text] -> IO a
 runGit args = do

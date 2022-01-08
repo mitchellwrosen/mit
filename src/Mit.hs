@@ -11,6 +11,7 @@ import qualified Data.Text.Lazy.Builder as Text.Builder
 import qualified Mit.Builder as Builder
 import Mit.Directory
 import Mit.Git
+import qualified Mit.GitCommand as Git
 import Mit.Prelude
 import qualified Mit.Seq1 as Seq1
 import Mit.Stanza
@@ -109,14 +110,14 @@ mitBranch branch = do
       whenM (doesDirectoryExist worktreeDir) (die ["Directory " <> Text.bold worktreeDir <> " already exists."])
       git_ ["worktree", "add", "--detach", worktreeDir]
       withCurrentDirectory worktreeDir do
-        whenNotM (gitSwitch branch) do
+        whenNotM (Git.git (Git.Switch branch)) do
           gitBranch branch
-          gitSwitch_ branch
+          Git.git_ (Git.Switch branch)
           gitFetch_ "origin"
           whenM (gitRemoteBranchExists "origin" branch) do
             let upstream = "origin/" <> branch
-            git_ ["reset", "--hard", upstream]
-            git_ ["branch", "--set-upstream-to", upstream]
+            Git.git_ (Git.Reset Git.Hard Git.FlagQuiet upstream)
+            Git.git_ (Git.BranchSetUpstreamTo upstream)
     Just directory ->
       when (directory /= worktreeDir) do
         die [Text.bold branch <> " is already checked out in " <> Text.bold directory <> "."]
@@ -138,7 +139,7 @@ mitCommit = do
 
 mitCommit_ :: IO ()
 mitCommit_ = do
-  branch <- gitCurrentBranch
+  branch <- Git.git Git.BranchShowCurrent
   let upstream = "origin/" <> branch
   head0 <- gitHead
   state0 <- readMitState branch
@@ -259,7 +260,7 @@ mitCommit_ = do
 -- Prevent recording a commit (by exiting) if it would fork history.
 preventCommitIfWouldFork :: IO ()
 preventCommitIfWouldFork = do
-  branch <- gitCurrentBranch
+  branch <- Git.git Git.BranchShowCurrent
   let upstream = "origin/" <> branch
   head <- gitHead
   gitFetch_ "origin"
@@ -292,7 +293,7 @@ preventCommitIfWouldFork = do
 
 mitCommitMerge :: IO ()
 mitCommitMerge = do
-  branch <- gitCurrentBranch
+  branch <- Git.git Git.BranchShowCurrent
   head <- gitHead
   state0 <- readMitState branch
 
@@ -353,7 +354,7 @@ mitMerge target = do
   dieIfMergeInProgress
   whenM gitExistUntrackedFiles dieIfBuggyGit
 
-  branch <- gitCurrentBranch
+  branch <- Git.git Git.BranchShowCurrent
   if target == branch || target == "origin/" <> branch
     then do
       -- If on branch `foo`, treat `mit merge foo` and `mit merge origin/foo` as `mit sync`
@@ -453,7 +454,7 @@ mitSync = do
 mitSyncWith :: Maybe Text.Builder -> Maybe [Undo] -> IO ()
 mitSyncWith stanza0 maybeUndos = do
   gitFetch_ "origin"
-  branch <- gitCurrentBranch
+  branch <- Git.git Git.BranchShowCurrent
   let upstream = "origin/" <> branch
   maybeUpstreamHead <- gitRemoteBranchHead "origin" branch
 
@@ -564,7 +565,7 @@ mitUndo :: IO ()
 mitUndo = do
   dieIfNotInGitDir
 
-  branch <- gitCurrentBranch
+  branch <- Git.git Git.BranchShowCurrent
   state0 <- readMitState branch
   case List1.nonEmpty state0.undos of
     Nothing -> exitFailure

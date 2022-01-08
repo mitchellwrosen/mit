@@ -1,3 +1,4 @@
+-- TODO replace with Git.Command
 module Mit.Undo where
 
 import qualified Data.Text as Text
