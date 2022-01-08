@@ -141,16 +141,14 @@ mitCommit_ :: IO ()
 mitCommit_ = do
   branch <- Git.git Git.BranchShowCurrent
   let upstream = "origin/" <> branch
-  head0 <- gitHead
   state0 <- readMitState branch
-  -- TODO snapshot
-  stash <- gitCreateStash
-  let undos0 = [Reset head0, Apply stash]
 
   gitFetch_ "origin"
   maybeUpstreamHead <- gitRemoteBranchHead "origin" branch
 
   preventCommitIfWouldFork
+
+  snapshot <- performSnapshot
 
   committed <- gitCommit
 
@@ -159,12 +157,15 @@ mitCommit_ = do
   let undos =
         case (pushPushed push, committed) of
           (False, False) -> state0.undos
-          (False, True) -> undos0
+          (False, True) ->
+            Reset snapshot.head : case snapshot.stash of
+              Nothing -> []
+              Just stash -> [Apply stash]
           (True, False) -> push.undo
           (True, True) ->
             if null push.undo
               then []
-              else push.undo ++ [Apply stash]
+              else push.undo ++ [Apply (fromJust snapshot.stash)]
 
   writeMitState branch MitState {head = (), merging = Nothing, undos}
 
@@ -455,28 +456,25 @@ mitSync = do
 -- resolved by 'mit commit'.
 mitSyncWith :: Maybe Text.Builder -> Maybe [Undo] -> IO ()
 mitSyncWith stanza0 maybeUndos = do
-  gitFetch_ "origin"
-  branch <- Git.git Git.BranchShowCurrent
-  let upstream = "origin/" <> branch
-  maybeUpstreamHead <- gitRemoteBranchHead "origin" branch
+  context <- getContext
+  let upstream = "origin/" <> context.branch
 
-  snapshot <- performSnapshot
   Git.git_ (Git.Reset Git.Hard Git.FlagQuiet "HEAD")
 
   merge <-
-    case maybeUpstreamHead of
+    case context.upstreamHead of
       -- Yay: no upstream branch is not different from an up-to-date local branch
       Nothing -> pure GitMerge {commits = Seq.empty, conflicts = []}
-      Just upstreamHead -> performMerge ("⅄ " <> branch) upstreamHead
+      Just upstreamHead -> performMerge ("⅄ " <> context.branch) upstreamHead
 
   stashConflicts <-
     if null merge.conflicts
-      then case snapshot.stash of
+      then case context.snapshot.stash of
         Nothing -> pure []
         Just stash -> gitApplyStash stash
       else pure []
 
-  push <- performPush branch
+  push <- performPush context.branch
 
   let undos =
         if pushPushed push
@@ -486,24 +484,24 @@ mitSyncWith stanza0 maybeUndos = do
               if Seq.null merge.commits
                 then []
                 else
-                  Reset snapshot.head : case snapshot.stash of
+                  Reset context.snapshot.head : case context.snapshot.stash of
                     Nothing -> []
                     Just stash -> [Apply stash]
             -- FIXME hm, could consider appending those undos instead, even if they obviate the recent stash/merge undos
             Just undos' -> undos'
 
   writeMitState
-    branch
+    context.branch
     MitState
       { head = (),
         merging =
           if null merge.conflicts
             then Nothing
-            else Just branch,
+            else Just context.branch,
         undos
       }
 
-  let branchb = Text.Builder.fromText branch
+  let branchb = Text.Builder.fromText context.branch
   let upstreamb = Text.Builder.fromText upstream
 
   putStanzas
@@ -516,7 +514,7 @@ mitSyncWith stanza0 maybeUndos = do
             { commits = commits1,
               success = null merge.conflicts,
               source = upstream,
-              target = branch
+              target = context.branch
             },
       do
         commits <- Seq1.fromSeq push.commits
@@ -524,7 +522,7 @@ mitSyncWith stanza0 maybeUndos = do
           Sync
             { commits,
               success = pushPushed push,
-              source = branch,
+              source = context.branch,
               target = upstream
             },
       do
@@ -724,6 +722,25 @@ synchronizedStanza branch other =
     )
 
 ------------------------------------------------------------------------------------------------------------------------
+-- Context
+
+data Context = Context
+  { branch :: Text,
+    snapshot :: GitSnapshot,
+    state :: MitState (),
+    upstreamHead :: Maybe Text
+  }
+
+getContext :: IO Context
+getContext = do
+  gitFetch_ "origin"
+  branch <- Git.git Git.BranchShowCurrent
+  upstreamHead <- gitRemoteBranchHead "origin" branch
+  state <- readMitState branch
+  snapshot <- performSnapshot
+  pure Context {branch, snapshot, state, upstreamHead}
+
+------------------------------------------------------------------------------------------------------------------------
 -- Git merge
 
 -- | The result of a @git merge@.
@@ -782,6 +799,7 @@ pushPushed push =
     PushWouldBeRejected -> False
     TriedToPush -> False
 
+-- TODO get context
 performPush :: Text -> IO GitPush
 performPush branch = do
   fetched <- gitFetch "origin"
