@@ -143,6 +143,7 @@ mitCommit_ = do
   let upstream = "origin/" <> branch
   head0 <- gitHead
   state0 <- readMitState branch
+  -- TODO snapshot
   stash <- gitCreateStash
   let undos0 = [Reset head0, Apply stash]
 
@@ -368,6 +369,7 @@ mitMerge target = do
         gitRemoteBranchHead "origin" target & onNothingM (git ["rev-parse", target] & onLeftM \_ -> exitFailure)
 
       snapshot <- performSnapshot
+      Git.git_ (Git.Reset Git.Hard Git.FlagQuiet "HEAD")
       merge <- performMerge ("⅄ " <> target <> " → " <> branch) targetCommit
       stashConflicts <-
         if null merge.conflicts
@@ -459,6 +461,7 @@ mitSyncWith stanza0 maybeUndos = do
   maybeUpstreamHead <- gitRemoteBranchHead "origin" branch
 
   snapshot <- performSnapshot
+  Git.git_ (Git.Reset Git.Hard Git.FlagQuiet "HEAD")
 
   merge <-
     case maybeUpstreamHead of
