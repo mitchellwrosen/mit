@@ -25,6 +25,7 @@ import System.Posix.Signals
 import System.Posix.Terminal (queryTerminal)
 import System.Process
 import System.Process.Internals
+import qualified Text.Parsec as Parsec
 
 gitdir :: Text
 gitdir =
@@ -356,25 +357,44 @@ gitVersion = do
 data GitWorktree = GitWorktree
   { branch :: Maybe Text,
     commit :: Text,
-    directory :: Text
+    directory :: Text,
+    prunable :: Bool
   }
 
 -- /dir/one 0efd393c35 [oingo]         -> ("/dir/one", "0efd393c35", Just "oingo")
 -- /dir/two dc0c114266 (detached HEAD) -> ("/dir/two", "dc0c114266", Nothing)
 gitWorktreeList :: IO [GitWorktree]
 gitWorktreeList = do
-  map f <$> git ["worktree", "list"]
+  git ["worktree", "list"] <&> map \line ->
+    case Parsec.parse parser "" line of
+      Left err -> error (show err)
+      Right worktree -> worktree
   where
-    f :: Text -> GitWorktree
-    f line =
-      case Text.words line of
-        [directory, commit, stripBrackets -> Just branch] -> GitWorktree {branch = Just branch, commit, directory}
-        [directory, commit, "(detached", "HEAD)"] -> GitWorktree {branch = Nothing, commit, directory}
-        _ -> error (Text.unpack line)
+    parser :: Parsec.Parsec Text () GitWorktree
+    parser = do
+      directory <- segmentP
+      Parsec.spaces
+      commit <- segmentP
+      Parsec.spaces
+      branch <-
+        asum
+          [ Nothing <$ Parsec.string "(detached HEAD)",
+            fmap Just do
+              _ <- Parsec.char '['
+              branch <- Parsec.manyTill Parsec.anyChar (Parsec.char ']')
+              pure (Text.pack branch)
+          ]
+      Parsec.spaces
+      prunable <-
+        asum
+          [ True <$ Parsec.string "prunable",
+            pure False
+          ]
+      pure GitWorktree {branch, commit, directory, prunable}
       where
-        stripBrackets :: Text -> Maybe Text
-        stripBrackets =
-          Text.stripPrefix "[" >=> Text.stripSuffix "]"
+        segmentP :: Parsec.Parsec Text () Text
+        segmentP =
+          Text.pack <$> Parsec.many1 (Parsec.satisfy (not . isSpace))
 
 -- git@github.com:mitchellwrosen/mit.git -> Just ("git@github.com:mitchellwrosen/mit.git", "mit")
 parseGitRepo :: Text -> Maybe (Text, Text)
