@@ -103,13 +103,3 @@ executable mit
   ghc-options: -threaded -with-rtsopts=-N2
   hs-source-dirs: app
   main-is: Main.hs
-
-test-suite tests
-  import: component
-  build-depends:
-    free,
-    mit-3qvpPyAi6mH,
-    temporary,
-  hs-source-dirs: test
-  main-is: Main.hs
-  type: exitcode-stdio-1.0
