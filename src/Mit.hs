@@ -50,7 +50,6 @@ main = do
       putLines
         [ "Usage:",
           "  mit branch ≪branch≫",
-          "  mit clone ≪repo≫",
           "  mit commit",
           "  mit merge ≪branch≫",
           "  mit sync",
