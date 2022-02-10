@@ -339,7 +339,7 @@ gitStash = do
 
 gitUnstageChanges :: IO ()
 gitUnstageChanges = do
-  Git.git_ (Git.Reset Git.Mixed Git.FlagQuiet "HEAD")
+  Git.git_ (Git.ResetPaths Git.FlagQuiet ["."])
   untrackedFiles <- gitListUntrackedFiles
   unless (null untrackedFiles) (Git.git_ (Git.Add Git.FlagIntentToAdd untrackedFiles))
 

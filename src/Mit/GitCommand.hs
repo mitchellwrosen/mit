@@ -46,6 +46,7 @@ data Command
   | Merge FlagNoCommit FlagNoFF Text
   | MergeAbort
   | Reset ResetMode FlagQuiet Text
+  | ResetPaths FlagQuiet [Text]
   | RevParse FlagQuiet FlagVerify Text
   | StashApply FlagQuiet Text
   | StashCreate
@@ -66,6 +67,7 @@ renderCommand = \case
   Merge noCommit noFF commit -> ["merge"] ++ renderFlagNoCommit noCommit ++ renderFlagNoFF noFF ++ [commit]
   MergeAbort -> ["merge", "--abort"]
   Reset mode quiet commit -> ["reset", renderResetMode mode] ++ renderFlagQuiet quiet ++ [commit]
+  ResetPaths quiet paths -> ["reset"] ++ renderFlagQuiet quiet ++ ["--"] ++ paths
   RevParse quiet verify commit -> ["rev-parse"] ++ renderFlagQuiet quiet ++ renderFlagVerify verify ++ [commit]
   StashApply quiet commit -> ["stash", "apply"] ++ renderFlagQuiet quiet ++ [commit]
   StashCreate -> ["stash", "create"]
