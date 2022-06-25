@@ -20,7 +20,8 @@ import Mit.Seq1 qualified as Seq1
 import Mit.Stanza
 import Mit.State
 import Mit.Undo
-import System.Environment (getArgs)
+import Options.Applicative qualified as Opt
+import Options.Applicative.Types qualified as Opt (Backtracking (Backtrack))
 import System.Exit (ExitCode (..), exitFailure)
 
 -- FIXME: nicer "git status" story. in particular the conflict markers in the commits after a merge are a bit
@@ -37,28 +38,56 @@ import System.Exit (ExitCode (..), exitFailure)
 -- TODO undo in more cases?
 -- TODO recommend merging master if it conflicts
 -- TODO mit log
--- TODO optparse-applicative
 -- TODO undo revert
 -- TODO more specific "undo this change" wording
 
 main :: IO ()
-main = do
-  getArgs >>= \case
-    ["branch", branch] -> mitBranch (Text.pack branch)
-    ["commit"] -> mitCommit
-    ["merge", branch] -> mitMerge (Text.pack branch)
-    ["sync"] -> mitSync
-    ["undo"] -> mitUndo
-    _ -> do
-      putLines
-        [ "Usage:",
-          "  mit branch ≪branch≫",
-          "  mit commit",
-          "  mit merge ≪branch≫",
-          "  mit sync",
-          "  mit undo"
+main =
+  join (Opt.customExecParser parserPrefs parserInfo)
+  where
+    parserPrefs :: Opt.ParserPrefs
+    parserPrefs =
+      Opt.ParserPrefs
+        { prefBacktrack = Opt.Backtrack,
+          prefColumns = 80,
+          prefDisambiguate = True,
+          prefHelpLongEquals = False,
+          prefHelpShowGlobal = True,
+          prefMultiSuffix = "+",
+          prefShowHelpOnEmpty = True,
+          prefShowHelpOnError = True,
+          prefTabulateFill = 24 -- grabbed this from optparse-applicative
+        }
+
+    parserInfo :: Opt.ParserInfo (IO ())
+    parserInfo =
+      Opt.info parser $
+        Opt.progDesc "mit: a git wrapper with a streamlined UX"
+
+    parser :: Opt.Parser (IO ())
+    parser =
+      (Opt.hsubparser . fold)
+        [ Opt.command "branch" $
+            Opt.info
+              (mitBranch <$> Opt.strArgument (Opt.metavar "≪branch≫"))
+              (Opt.progDesc "Create a new branch in a new worktree."),
+          Opt.command "commit" $
+            Opt.info
+              (pure mitCommit)
+              (Opt.progDesc "Create a commit interactively."),
+          Opt.command "merge" $
+            Opt.info
+              (mitMerge <$> Opt.strArgument (Opt.metavar "≪branch≫"))
+              (Opt.progDesc "Merge the given branch into the current branch."),
+          Opt.command "sync" $
+            Opt.info
+              (pure mitSync)
+              (Opt.progDesc "Sync with the remote named `origin`."),
+          Opt.command "undo" $
+            Opt.info
+              (pure mitUndo)
+              (Opt.progDesc "Undo the last `mit` command (if possible).")
         ]
-      exitFailure
 
 dieIfBuggyGit :: IO ()
 dieIfBuggyGit = do
