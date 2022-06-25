@@ -11,9 +11,9 @@ module Mit.Builder
   )
 where
 
-import qualified Data.List as List
-import qualified Data.Text.IO as Text
-import qualified Data.Text.Lazy as Text.Lazy
+import Data.List qualified as List
+import Data.Text.IO qualified as Text
+import Data.Text.Lazy qualified as Text.Lazy
 import Data.Text.Lazy.Builder
 import Mit.Prelude
 

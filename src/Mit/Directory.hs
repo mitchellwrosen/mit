@@ -1,8 +1,12 @@
-module Mit.Directory where
+module Mit.Directory
+  ( doesDirectoryExist,
+    withCurrentDirectory,
+  )
+where
 
-import qualified Data.Text as Text
+import Data.Text qualified as Text
 import Mit.Prelude
-import qualified System.Directory as Directory
+import System.Directory qualified as Directory
 
 doesDirectoryExist :: Text -> IO Bool
 doesDirectoryExist =

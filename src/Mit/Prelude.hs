@@ -12,14 +12,14 @@ import Data.Char as X
 import Data.Foldable as X
 import Data.Function as X
 import Data.IORef as X
-import qualified Data.List.NonEmpty as List1
+import Data.List.NonEmpty qualified as List1
 import Data.Map as X (Map)
 import Data.Maybe as X
 import Data.Sequence as X (Seq)
 import Data.Set as X (Set)
 import Data.Text as X (Text)
-import qualified Data.Text as Text
-import qualified Data.Text.IO as Text
+import Data.Text qualified as Text
+import Data.Text.IO qualified as Text
 import Data.Traversable as X
 import Data.Word as X (Word64)
 import GHC.Stack as X (HasCallStack)

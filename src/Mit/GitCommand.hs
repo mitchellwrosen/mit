@@ -16,14 +16,14 @@ module Mit.GitCommand
   )
 where
 
-import qualified Data.Sequence as Seq
-import qualified Data.Text as Text
-import qualified Data.Text.Builder.ANSI as Text.Builder
-import qualified Data.Text.IO as Text
-import qualified Data.Text.Lazy.Builder as Text (Builder)
-import qualified Data.Text.Lazy.Builder as Text.Builder
-import qualified Ki
-import qualified Mit.Builder as Builder
+import Data.Sequence qualified as Seq
+import Data.Text qualified as Text
+import Data.Text.Builder.ANSI qualified as Text.Builder
+import Data.Text.IO qualified as Text
+import Data.Text.Lazy.Builder qualified as Text (Builder)
+import Data.Text.Lazy.Builder qualified as Text.Builder
+import Ki qualified
+import Mit.Builder qualified as Builder
 import Mit.Config (verbose)
 import Mit.Prelude
 import Mit.Process

@@ -1,8 +1,11 @@
 -- Some ad-hoc process return value overloading, for cleaner syntax
 
-module Mit.Process where
+module Mit.Process
+  ( ProcessOutput (..),
+  )
+where
 
-import qualified Data.Sequence as Seq
+import Data.Sequence qualified as Seq
 import Mit.Prelude
 import System.Exit (ExitCode (..), exitWith)
 

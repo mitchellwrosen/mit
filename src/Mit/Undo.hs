@@ -1,7 +1,14 @@
 -- TODO replace with Git.Command
-module Mit.Undo where
+module Mit.Undo
+  ( Undo (..),
+    showUndos,
+    parseUndos,
+    applyUndo,
+    undosStash,
+  )
+where
 
-import qualified Data.Text as Text
+import Data.Text qualified as Text
 import Mit.Git
 import Mit.Prelude
 

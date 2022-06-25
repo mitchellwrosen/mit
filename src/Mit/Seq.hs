@@ -1,6 +1,11 @@
-module Mit.Seq where
+module Mit.Seq
+  ( pattern NonEmpty,
+    pattern Singleton,
+    toList,
+  )
+where
 
-import qualified Data.Foldable as Foldable
+import Data.Foldable qualified as Foldable
 import Data.Sequence
 
 pattern NonEmpty :: Seq a

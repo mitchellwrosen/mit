@@ -1,19 +1,22 @@
-module Mit where
+module Mit
+  ( main,
+  )
+where
 
-import qualified Data.List.NonEmpty as List1
-import qualified Data.Sequence as Seq
-import qualified Data.Text as Text
-import qualified Data.Text.ANSI as Text
-import qualified Data.Text.Builder.ANSI as Text.Builder
-import qualified Data.Text.IO as Text
-import qualified Data.Text.Lazy.Builder as Text (Builder)
-import qualified Data.Text.Lazy.Builder as Text.Builder
-import qualified Mit.Builder as Builder
+import Data.List.NonEmpty qualified as List1
+import Data.Sequence qualified as Seq
+import Data.Text qualified as Text
+import Data.Text.ANSI qualified as Text
+import Data.Text.Builder.ANSI qualified as Text.Builder
+import Data.Text.IO qualified as Text
+import Data.Text.Lazy.Builder qualified as Text (Builder)
+import Data.Text.Lazy.Builder qualified as Text.Builder
+import Mit.Builder qualified as Builder
 import Mit.Directory
 import Mit.Git
-import qualified Mit.GitCommand as Git
+import Mit.GitCommand qualified as Git
 import Mit.Prelude
-import qualified Mit.Seq1 as Seq1
+import Mit.Seq1 qualified as Seq1
 import Mit.Stanza
 import Mit.State
 import Mit.Undo

@@ -1,9 +1,14 @@
-module Mit.Stanza where
+module Mit.Stanza
+  ( Stanza,
+    renderStanzas,
+    putStanzas,
+  )
+where
 
-import qualified Data.List as List
-import qualified Data.Text.IO as Text
-import qualified Data.Text.Lazy.Builder as Text (Builder)
-import qualified Mit.Builder as Builder
+import Data.List qualified as List
+import Data.Text.IO qualified as Text
+import Data.Text.Lazy.Builder qualified as Text (Builder)
+import Mit.Builder qualified as Builder
 import Mit.Prelude
 
 type Stanza =

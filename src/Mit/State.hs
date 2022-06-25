@@ -7,9 +7,9 @@ module Mit.State
   )
 where
 
-import qualified Data.Text as Text
-import qualified Data.Text.Encoding.Base64 as Text
-import qualified Data.Text.IO as Text
+import Data.Text qualified as Text
+import Data.Text.Encoding.Base64 qualified as Text
+import Data.Text.IO qualified as Text
 import Mit.Git
 import Mit.Prelude
 import Mit.Undo

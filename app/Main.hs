@@ -1,6 +1,6 @@
-module Main where
+module Main (main) where
 
-import qualified Mit
+import Mit qualified
 import Prelude
 
 main :: IO ()

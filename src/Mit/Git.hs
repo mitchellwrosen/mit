@@ -1,18 +1,18 @@
 -- | High-level git operations
 module Mit.Git where
 
-import qualified Data.List as List
-import qualified Data.Map.Strict as Map
-import qualified Data.Sequence as Seq
-import qualified Data.Text as Text
-import qualified Data.Text.Builder.ANSI as Text.Builder
-import qualified Data.Text.IO as Text
-import qualified Data.Text.Lazy.Builder as Text (Builder)
-import qualified Data.Text.Lazy.Builder as Text.Builder
-import qualified Ki
-import qualified Mit.Builder as Builder
+import Data.List qualified as List
+import Data.Map.Strict qualified as Map
+import Data.Sequence qualified as Seq
+import Data.Text qualified as Text
+import Data.Text.Builder.ANSI qualified as Text.Builder
+import Data.Text.IO qualified as Text
+import Data.Text.Lazy.Builder qualified as Text (Builder)
+import Data.Text.Lazy.Builder qualified as Text.Builder
+import Ki qualified
+import Mit.Builder qualified as Builder
 import Mit.Config (verbose)
-import qualified Mit.GitCommand as Git
+import Mit.GitCommand qualified as Git
 import Mit.Prelude
 import Mit.Process
 import System.Directory (doesFileExist)
@@ -25,7 +25,7 @@ import System.Posix.Signals
 import System.Posix.Terminal (queryTerminal)
 import System.Process
 import System.Process.Internals
-import qualified Text.Parsec as Parsec
+import Text.Parsec qualified as Parsec
 
 gitdir :: Text
 gitdir =
@@ -66,8 +66,10 @@ prettyGitCommitInfo info =
       " - ",
       Text.Builder.italic (Text.Builder.white (Text.Builder.fromText info.author)),
       Builder.space,
-      Text.Builder.italic (Text.Builder.yellow (Text.Builder.fromText info.date)) -- FIXME some other color, magenta?
+      Text.Builder.italic (Text.Builder.yellow (Text.Builder.fromText info.date))
     ]
+
+-- FIXME some other color, magenta?
 
 data GitConflict
   = GitConflict GitConflictXY Text
