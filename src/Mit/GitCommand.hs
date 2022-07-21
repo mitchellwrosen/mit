@@ -203,8 +203,8 @@ runGit args = do
       stdoutThread <- Ki.fork scope (drainTextHandle (fromJust maybeStdout))
       stderrThread <- Ki.fork scope (drainTextHandle (fromJust maybeStderr))
       exitCode <- waitForProcess processHandle
-      stdoutLines <- Ki.await stdoutThread
-      stderrLines <- Ki.await stderrThread
+      stdoutLines <- atomically (Ki.await stdoutThread)
+      stderrLines <- atomically (Ki.await stderrThread)
       debugPrintGit args stdoutLines stderrLines exitCode
       fromProcessOutput stdoutLines stderrLines exitCode
   where
