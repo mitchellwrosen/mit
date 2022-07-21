@@ -49,6 +49,7 @@ common component
     OverloadedRecordDot
     OverloadedStrings
     PatternSynonyms
+    RankNTypes
     ScopedTypeVariables
     TupleSections
     TypeApplications
@@ -85,6 +86,7 @@ library
     Mit.Directory
     Mit.Git
     Mit.GitCommand
+    Mit.Monad
     Mit.Prelude
     Mit.Process
     Mit.Seq

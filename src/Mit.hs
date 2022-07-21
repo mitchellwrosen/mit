@@ -6,9 +6,7 @@ where
 import Data.List.NonEmpty qualified as List1
 import Data.Sequence qualified as Seq
 import Data.Text qualified as Text
-import Data.Text.ANSI qualified as Text
-import Data.Text.Builder.ANSI qualified as Text.Builder
-import Data.Text.IO qualified as Text
+import Data.Text.Builder.ANSI qualified as Text
 import Data.Text.Lazy.Builder qualified as Text (Builder)
 import Data.Text.Lazy.Builder qualified as Text.Builder
 import Mit.Builder qualified as Builder
@@ -47,7 +45,9 @@ main = do
   action <- Opt.customExecParser parserPrefs parserInfo
   runMit () ([] <$ action) >>= \case
     [] -> pure ()
-    errs -> die errs
+    errs -> do
+      putStanzas errs
+      exitFailure
   where
     parserPrefs :: Opt.ParserPrefs
     parserPrefs =
@@ -63,12 +63,12 @@ main = do
           prefTabulateFill = 24 -- grabbed this from optparse-applicative
         }
 
-    parserInfo :: Opt.ParserInfo (Mit () [Text] ())
+    parserInfo :: Opt.ParserInfo (Mit () [Stanza] ())
     parserInfo =
       Opt.info parser $
         Opt.progDesc "mit: a git wrapper with a streamlined UX"
 
-    parser :: Opt.Parser (Mit () [Text] ())
+    parser :: Opt.Parser (Mit () [Stanza] ())
     parser =
       (Opt.hsubparser . fold)
         [ Opt.command "branch" $
@@ -93,36 +93,8 @@ main = do
               (Opt.progDesc "Undo the last `mit` command (if possible).")
         ]
 
-dieIfBuggyGit :: IO ()
+dieIfBuggyGit :: Mit r [Stanza] ()
 dieIfBuggyGit = do
-  version <- gitVersion
-  let validate (ver, err) = if version < ver then ((ver, err) :) else id
-  case foldr validate [] validations of
-    [] -> pure ()
-    errors ->
-      die $
-        map
-          (\(ver, err) -> "Prior to " <> Text.bold "git" <> " version " <> showGitVersion ver <> ", " <> err)
-          errors
-  where
-    validations :: [(GitVersion, Text)]
-    validations =
-      [ ( GitVersion 2 29 0,
-          Text.bold "git commit --patch"
-            <> " was broken for new files added with "
-            <> Text.bold "git add --intent-to-add"
-            <> "."
-        ),
-        ( GitVersion 2 30 1,
-          Text.bold "git stash create"
-            <> " was broken for new files added with "
-            <> Text.bold "git add --intent-to-add"
-            <> "."
-        )
-      ]
-
-dieIfBuggyGit2 :: Mit r [Text] ()
-dieIfBuggyGit2 = do
   version <- io gitVersion
   let validate (ver, err) = if version < ver then ((ver, err) :) else id
   case foldr validate [] validations of
@@ -130,10 +102,19 @@ dieIfBuggyGit2 = do
     errors ->
       throw $
         map
-          (\(ver, err) -> "Prior to " <> Text.bold "git" <> " version " <> showGitVersion ver <> ", " <> err)
+          ( \(ver, err) ->
+              Just
+                ( Text.red
+                    ( "Prior to " <> Text.bold "git" <> " version "
+                        <> Text.Builder.fromText (showGitVersion ver)
+                        <> ", "
+                        <> err
+                    )
+                )
+          )
           errors
   where
-    validations :: [(GitVersion, Text)]
+    validations :: [(GitVersion, Text.Builder)]
     validations =
       [ ( GitVersion 2 29 0,
           Text.bold "git commit --patch"
@@ -149,60 +130,67 @@ dieIfBuggyGit2 = do
         )
       ]
 
-dieIfMergeInProgress :: IO ()
+dieIfMergeInProgress :: Mit r [Stanza] ()
 dieIfMergeInProgress =
-  whenM gitMergeInProgress (die [Text.bold "git merge" <> " in progress."])
+  whenM (io gitMergeInProgress) (throw [Just (Text.red (Text.bold "git merge" <> " in progress."))])
 
-dieIfNotInGitDir :: Mit r [Text] ()
+dieIfNotInGitDir :: Mit r [Stanza] ()
 dieIfNotInGitDir =
   io (try (evaluate gitdir)) >>= \case
-    Left (_ :: ExitCode) -> throw ["The current directory doesn't contain a git repository."]
+    Left (_ :: ExitCode) -> throw [Just (Text.red "The current directory doesn't contain a git repository.")]
     Right _ -> pure ()
 
-die :: [Text] -> IO a
-die ss = do
-  Text.putStr (Text.red (Text.unlines ss))
-  exitFailure
-
-mitBranch :: Text -> Mit r [Text] ()
+mitBranch :: Text -> Mit r [Stanza] ()
 mitBranch branch = do
   dieIfNotInGitDir
 
   io (gitBranchWorktreeDir branch) >>= \case
     Nothing -> do
-      whenM (io (doesDirectoryExist worktreeDir)) (io (die ["Directory " <> Text.bold worktreeDir <> " already exists."]))
+      whenM (doesDirectoryExist worktreeDir) do
+        throw [Just (Text.red ("Directory " <> Text.bold (Text.Builder.fromText worktreeDir) <> " already exists."))]
       io (git_ ["worktree", "add", "--detach", worktreeDir])
-      io do
-        withCurrentDirectory worktreeDir do
-          whenNotM (Git.git (Git.Switch branch)) do
-            gitBranch branch
-            Git.git_ (Git.Switch branch)
-            gitFetch_ "origin"
-            whenM (gitRemoteBranchExists "origin" branch) do
-              let upstream = "origin/" <> branch
-              Git.git_ (Git.Reset Git.Hard Git.FlagQuiet upstream)
-              Git.git_ (Git.BranchSetUpstreamTo upstream)
+      block do
+        cd worktreeDir
+        whenNotM (io (Git.git (Git.Switch branch))) do
+          io (gitBranch branch)
+          io (Git.git_ (Git.Switch branch))
+          io (gitFetch_ "origin")
+          whenM (io (gitRemoteBranchExists "origin" branch)) do
+            let upstream = "origin/" <> branch
+            io (Git.git_ (Git.Reset Git.Hard Git.FlagQuiet upstream))
+            io (Git.git_ (Git.BranchSetUpstreamTo upstream))
     Just directory ->
       when (directory /= worktreeDir) do
-        io (die [Text.bold branch <> " is already checked out in " <> Text.bold directory <> "."])
+        throw
+          [ Just
+              ( Text.red
+                  ( Text.bold
+                      ( Text.Builder.fromText branch
+                          <> " is already checked out in "
+                          <> Text.bold (Text.Builder.fromText directory)
+                      )
+                      <> "."
+                  )
+              )
+          ]
   where
     worktreeDir :: Text
     worktreeDir =
       Text.dropWhileEnd (/= '/') rootdir <> branch
 
-mitCommit :: Mit r [Text] ()
+mitCommit :: Mit r [Stanza] ()
 mitCommit = do
   dieIfNotInGitDir
-  whenM (io gitExistUntrackedFiles) dieIfBuggyGit2
+  whenM (io gitExistUntrackedFiles) dieIfBuggyGit
 
   io gitMergeInProgress >>= \case
     False ->
       io gitDiff >>= \case
         Differences -> mitCommit_
-        NoDifferences -> throw ["There's nothing to commit."]
+        NoDifferences -> throw [Just (Text.red "There's nothing to commit.")]
     True -> mitCommitMerge
 
-mitCommit_ :: Mit r x ()
+mitCommit_ :: Mit r [Stanza] ()
 mitCommit_ = do
   context <- io getContext
   let upstream = "origin/" <> context.branch
@@ -211,12 +199,10 @@ mitCommit_ = do
   existLocalCommits <- io (contextExistLocalCommits context)
 
   when (existRemoteCommits && not existLocalCommits) do
-    io do
-      putStanzas $
-        [ notSynchronizedStanza context.branch upstream ".",
-          runSyncStanza "Run" context.branch upstream
-        ]
-      exitFailure
+    throw
+      [ notSynchronizedStanza context.branch upstream ".",
+        runSyncStanza "Run" context.branch upstream
+      ]
 
   committed <- io gitCommit
 
@@ -269,15 +255,15 @@ mitCommit_ = do
                 renderStanzas
                   [ conflictsStanza
                       ( "These files will be in conflict when you run "
-                          <> Text.Builder.bold (Text.Builder.blue "mit sync")
+                          <> Text.bold (Text.blue "mit sync")
                           <> ":"
                       )
                       conflictsOnSync1,
                     Just $
                       "  Run "
-                        <> Text.Builder.bold (Text.Builder.blue "mit sync")
+                        <> Text.bold (Text.blue "mit sync")
                         <> ", resolve the conflicts, then run "
-                        <> Text.Builder.bold (Text.Builder.blue "mit commit")
+                        <> Text.bold (Text.blue "mit commit")
                         <> " to synchronize "
                         <> branchb context.branch
                         <> " with "
@@ -350,11 +336,11 @@ data PushNotAttemptedReason
   | Offline -- fetch failed, so we seem offline
   | UnseenCommits -- we just pulled remote commits; don't push in case there's something local to address
 
-mitMerge :: Text -> Mit r [Text] ()
+mitMerge :: Text -> Mit r [Stanza] ()
 mitMerge target = do
   dieIfNotInGitDir
-  io dieIfMergeInProgress
-  io (whenM gitExistUntrackedFiles dieIfBuggyGit)
+  dieIfMergeInProgress
+  whenM (io gitExistUntrackedFiles) dieIfBuggyGit
 
   context <- io getContext
   let upstream = "origin/" <> context.branch
@@ -364,23 +350,26 @@ mitMerge target = do
       mitSyncWith Nothing Nothing
     else mitMergeWith context target
 
-mitMergeWith :: Context -> Text -> Mit r x ()
+mitMergeWith :: Context -> Text -> Mit r [Stanza] ()
 mitMergeWith context target = do
   -- When given 'mit merge foo', prefer running 'git merge origin/foo' over 'git merge foo'
-  targetCommit <- io (gitRemoteBranchHead "origin" target & onNothingM (gitBranchHead target & onNothingM exitFailure))
+  targetCommit <-
+    io (gitRemoteBranchHead "origin" target)
+      & onNothingM
+        ( io (gitBranchHead target)
+            & onNothingM (throw [Just (Text.red "No such branch.")])
+        )
 
   let upstream = "origin/" <> context.branch
 
   existRemoteCommits <- io (contextExistRemoteCommits context)
   existLocalCommits <- io (contextExistLocalCommits context)
 
-  io do
-    when (existRemoteCommits && not existLocalCommits) do
-      putStanzas $
-        [ notSynchronizedStanza context.branch upstream ".",
-          runSyncStanza "Run" context.branch upstream
-        ]
-      exitFailure
+  when (existRemoteCommits && not existLocalCommits) do
+    throw
+      [ notSynchronizedStanza context.branch upstream ".",
+        runSyncStanza "Run" context.branch upstream
+      ]
 
   whenJust context.snapshot.stash \_stash ->
     io (Git.git_ (Git.Reset Git.Hard Git.FlagQuiet "HEAD"))
@@ -456,15 +445,15 @@ mitMergeWith context target = do
                 renderStanzas
                   [ conflictsStanza
                       ( "These files will be in conflict when you run "
-                          <> Text.Builder.bold (Text.Builder.blue "mit sync")
+                          <> Text.bold (Text.blue "mit sync")
                           <> ":"
                       )
                       conflictsOnSync1,
                     Just $
                       "  Run "
-                        <> Text.Builder.bold (Text.Builder.blue "mit sync")
+                        <> Text.bold (Text.blue "mit sync")
                         <> ", resolve the conflicts, then run "
-                        <> Text.Builder.bold (Text.Builder.blue "mit commit")
+                        <> Text.bold (Text.blue "mit commit")
                         <> " to synchronize "
                         <> branchb context.branch
                         <> " with "
@@ -476,11 +465,11 @@ mitMergeWith context target = do
       ]
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
-mitSync :: Mit r [Text] ()
+mitSync :: Mit r [Stanza] ()
 mitSync = do
   dieIfNotInGitDir
-  io dieIfMergeInProgress
-  io (whenM gitExistUntrackedFiles dieIfBuggyGit)
+  dieIfMergeInProgress
+  whenM (io gitExistUntrackedFiles) dieIfBuggyGit
   mitSyncWith Nothing Nothing
 
 -- | @mitSyncWith _ maybeUndos@
@@ -580,7 +569,7 @@ mitSyncWith stanza0 maybeUndos = do
           PushWouldBeRejected ->
             Just $
               "  Resolve the conflicts, then run "
-                <> Text.Builder.bold (Text.Builder.blue "mit commit")
+                <> Text.bold (Text.blue "mit commit")
                 <> " to synchronize "
                 <> branchb context.branch
                 <> " with "
@@ -591,12 +580,12 @@ mitSyncWith stanza0 maybeUndos = do
       ]
 
 -- FIXME output what we just undid
-mitUndo :: Mit r [Text] ()
+mitUndo :: Mit r [Stanza] ()
 mitUndo = do
   dieIfNotInGitDir
   context <- io getContext
   case List1.nonEmpty context.state.undos of
-    Nothing -> io exitFailure
+    Nothing -> throw [Just (Text.red "Nothing to undo.")]
     Just undos1 -> io (for_ undos1 applyUndo)
   when (undosContainRevert context.state.undos) mitSync
   where
@@ -616,7 +605,7 @@ data Sync = Sync
 
 canUndoStanza :: Stanza
 canUndoStanza =
-  Just ("  Run " <> Text.Builder.bold (Text.Builder.blue "mit undo") <> " to undo this change.")
+  Just ("  Run " <> Text.bold (Text.blue "mit undo") <> " to undo this change.")
 
 conflictsStanza :: Text.Builder -> List1 GitConflict -> Stanza
 conflictsStanza prefix conflicts =
@@ -624,7 +613,7 @@ conflictsStanza prefix conflicts =
     "  "
       <> prefix
       <> Builder.newline
-      <> Builder.vcat ((\conflict -> "    " <> Text.Builder.red (showGitConflict conflict)) <$> conflicts)
+      <> Builder.vcat ((\conflict -> "    " <> Text.red (showGitConflict conflict)) <$> conflicts)
 
 isSynchronizedStanza2 :: Text -> GitPushWhat -> Stanza
 isSynchronizedStanza2 branch = \case
@@ -632,13 +621,13 @@ isSynchronizedStanza2 branch = \case
   Pushed -> synchronizedStanza branch upstream
   PushWouldntReachRemote -> notSynchronizedStanza branch upstream " because you appear to be offline."
   PushWouldBeRejected -> notSynchronizedStanza branch upstream "; their histories have diverged."
-  TriedToPush -> notSynchronizedStanza branch upstream (" because " <> Text.Builder.bold "git push" <> " failed.")
+  TriedToPush -> notSynchronizedStanza branch upstream (" because " <> Text.bold "git push" <> " failed.")
   where
     upstream = "origin/" <> branch
 
 notSynchronizedStanza :: Text -> Text -> Text.Builder -> Stanza
 notSynchronizedStanza branch other suffix =
-  Just ("  " <> Text.Builder.red (branchb branch <> " is not synchronized with " <> branchb other <> suffix))
+  Just ("  " <> Text.red (branchb branch <> " is not synchronized with " <> branchb other <> suffix))
 
 runSyncStanza :: Text.Builder -> Text -> Text -> Stanza
 runSyncStanza prefix branch upstream =
@@ -646,7 +635,7 @@ runSyncStanza prefix branch upstream =
     "  "
       <> prefix
       <> " "
-      <> Text.Builder.bold (Text.Builder.blue "mit sync")
+      <> Text.bold (Text.blue "mit sync")
       <> " to synchronize "
       <> branchb branch
       <> " with "
@@ -656,7 +645,7 @@ runSyncStanza prefix branch upstream =
 syncStanza :: Sync -> Stanza
 syncStanza sync =
   Just $
-    Text.Builder.italic
+    Text.italic
       (colorize ("    " <> Text.Builder.fromText sync.source <> " → " <> Text.Builder.fromText sync.target))
       <> "\n"
       <> (Builder.vcat ((\commit -> "    " <> prettyGitCommitInfo commit) <$> commits'))
@@ -664,7 +653,7 @@ syncStanza sync =
   where
     colorize :: Text.Builder -> Text.Builder
     colorize =
-      if sync.success then Text.Builder.green else Text.Builder.red
+      if sync.success then Text.green else Text.red
     (commits', more) =
       case Seq1.length sync.commits > 10 of
         False -> (Seq1.toSeq sync.commits, False)
@@ -672,7 +661,7 @@ syncStanza sync =
 
 synchronizedStanza :: Text -> Text -> Stanza
 synchronizedStanza branch other =
-  Just ("  " <> Text.Builder.green (branchb branch <> " is synchronized with " <> branchb other <> "."))
+  Just ("  " <> Text.green (branchb branch <> " is synchronized with " <> branchb other <> "."))
 
 -- FIXME remove
 whatNextStanza :: Text -> PushResult -> Stanza
@@ -708,13 +697,13 @@ whatNextStanza branch = \case
   PushNotAttempted Offline -> runSyncStanza "When you come online, run" branch upstream
   PushNotAttempted UnseenCommits -> runSyncStanza "Examine the repository, then run" branch upstream
   where
-    commit = Text.Builder.bold (Text.Builder.blue "mit commit")
-    sync = Text.Builder.bold (Text.Builder.blue "mit sync")
+    commit = Text.bold (Text.blue "mit commit")
+    sync = Text.bold (Text.blue "mit sync")
     upstream = "origin/" <> branch
 
 branchb :: Text -> Text.Builder
 branchb =
-  Text.Builder.italic . Text.Builder.fromText
+  Text.italic . Text.Builder.fromText
 
 ------------------------------------------------------------------------------------------------------------------------
 -- Context
