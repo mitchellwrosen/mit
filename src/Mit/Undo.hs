@@ -10,6 +10,7 @@ where
 
 import Data.Text qualified as Text
 import Mit.Git
+import Mit.Monad
 import Mit.Prelude
 
 data Undo
@@ -41,7 +42,7 @@ parseUndos = do
           error (show text)
         ]
 
-applyUndo :: Undo -> IO ()
+applyUndo :: Undo -> Mit Int x ()
 applyUndo = \case
   Apply commit -> do
     git_ ["stash", "apply", "--quiet", commit]

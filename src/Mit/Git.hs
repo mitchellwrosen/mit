@@ -11,10 +11,11 @@ import Data.Text.Lazy.Builder qualified as Text (Builder)
 import Data.Text.Lazy.Builder qualified as Text.Builder
 import Ki qualified
 import Mit.Builder qualified as Builder
-import Mit.Config (verbose)
 import Mit.GitCommand qualified as Git
+import Mit.Monad
 import Mit.Prelude
 import Mit.Process
+import Mit.Stanza
 import System.Directory (doesFileExist)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
@@ -26,17 +27,6 @@ import System.Posix.Terminal (queryTerminal)
 import System.Process
 import System.Process.Internals
 import Text.Parsec qualified as Parsec
-
-gitdir :: Text
-gitdir =
-  unsafePerformIO (git ["rev-parse", "--absolute-git-dir"])
-{-# NOINLINE gitdir #-}
-
--- | The root of this git worktree.
-rootdir :: Text
-rootdir =
-  unsafePerformIO (git ["rev-parse", "--show-toplevel"])
-{-# NOINLINE rootdir #-}
 
 data DiffResult
   = Differences
@@ -145,7 +135,7 @@ showGitVersion (GitVersion x y z) =
   Text.pack (show x) <> "." <> Text.pack (show y) <> "." <> Text.pack (show z)
 
 -- | Apply stash, return conflicts.
-gitApplyStash :: Text -> IO [GitConflict]
+gitApplyStash :: Text -> Mit Int x [GitConflict]
 gitApplyStash stash = do
   conflicts <-
     Git.git (Git.StashApply Git.FlagQuiet stash) >>= \case
@@ -156,42 +146,42 @@ gitApplyStash stash = do
 
 -- | Create a branch.
 -- FIXME inline this
-gitBranch :: Text -> IO ()
+gitBranch :: Text -> Mit Int x ()
 gitBranch branch =
   Git.git (Git.Branch Git.FlagNoTrack branch)
 
 -- | Does the given local branch (refs/heads/...) exist?
-gitBranchExists :: Text -> IO Bool
+gitBranchExists :: Text -> Mit Int x Bool
 gitBranchExists branch =
   Git.git (Git.RevParse Git.FlagQuiet Git.FlagVerify ("refs/heads/" <> branch))
 
 -- | Get the head of a local branch (refs/heads/...).
-gitBranchHead :: Text -> IO (Maybe Text)
+gitBranchHead :: Text -> Mit Int x (Maybe Text)
 gitBranchHead branch =
   Git.git (Git.RevParse Git.NoFlagQuiet Git.NoFlagVerify ("refs/heads/" <> branch)) <&> \case
     Left _ -> Nothing
     Right head -> Just head
 
 -- | Get the directory a branch's worktree is checked out in, if it exists.
-gitBranchWorktreeDir :: Text -> IO (Maybe Text)
+gitBranchWorktreeDir :: Text -> Mit Int x (Maybe Text)
 gitBranchWorktreeDir branch = do
   worktrees <- gitWorktreeList
   pure case List.find (\worktree -> worktree.branch == Just branch) worktrees of
     Nothing -> Nothing
     Just worktree -> Just worktree.directory
 
-gitCommit :: IO Bool
+gitCommit :: Mit Int x Bool
 gitCommit =
-  queryTerminal 0 >>= \case
+  io (queryTerminal 0) >>= \case
     False -> do
-      message <- lookupEnv "MIT_COMMIT_MESSAGE"
+      message <- io (lookupEnv "MIT_COMMIT_MESSAGE")
       git ["commit", "--all", "--message", maybe "" Text.pack message]
     True ->
       git2 ["commit", "--patch", "--quiet"] <&> \case
         ExitFailure _ -> False
         ExitSuccess -> True
 
-gitCommitsBetween :: Maybe Text -> Text -> IO (Seq GitCommitInfo)
+gitCommitsBetween :: Maybe Text -> Text -> Mit Int x (Seq GitCommitInfo)
 gitCommitsBetween commit1 commit2 =
   if commit1 == Just commit2
     then pure Seq.empty
@@ -214,14 +204,14 @@ gitCommitsBetween commit1 commit2 =
       _ Seq.:<| x Seq.:<| xs -> x Seq.<| dropEvens xs
       xs -> xs
 
-gitConflicts :: IO [GitConflict]
+gitConflicts :: Mit Int x [GitConflict]
 gitConflicts =
   mapMaybe parseGitConflict <$> Git.git (Git.StatusV1 Git.FlagNoRenames)
 
 -- | Get the conflicts with the given commitish.
 --
 -- Precondition: there is no merge in progress.
-gitConflictsWith :: Text -> IO [GitConflict]
+gitConflictsWith :: Text -> Mit Int x [GitConflict]
 gitConflictsWith commit = do
   maybeStash <- gitStash
   conflicts <-
@@ -233,44 +223,44 @@ gitConflictsWith commit = do
   pure conflicts
 
 -- | Precondition: there are changes to stash
-gitCreateStash :: IO Text
+gitCreateStash :: Mit Int x Text
 gitCreateStash = do
   Git.git_ Git.AddAll -- it seems certain things (like renames), unless staged, cannot be stashed
   stash <- Git.git Git.StashCreate
   gitUnstageChanges
   pure stash
 
-gitDefaultBranch :: Text -> IO Text
+gitDefaultBranch :: Text -> Mit Int x Text
 gitDefaultBranch remote = do
   ref <- Git.git (Git.SymbolicRef ("refs/remotes/" <> remote <> "/HEAD"))
   pure (Text.drop (14 + Text.length remote) ref)
 
 -- FIXME document this
-gitDiff :: IO DiffResult
+gitDiff :: Mit Int x DiffResult
 gitDiff = do
   gitUnstageChanges
   Git.git (Git.Diff Git.FlagQuiet) <&> \case
     False -> Differences
     True -> NoDifferences
 
-gitExistCommitsBetween :: Text -> Text -> IO Bool
+gitExistCommitsBetween :: Text -> Text -> Mit Int x Bool
 gitExistCommitsBetween commit1 commit2 =
   if commit1 == commit2
     then pure False
     else isJust <$> git ["rev-list", "--max-count=1", commit1 <> ".." <> commit2]
 
 -- | Do any untracked files exist?
-gitExistUntrackedFiles :: IO Bool
+gitExistUntrackedFiles :: Mit Int x Bool
 gitExistUntrackedFiles =
   not . null <$> gitListUntrackedFiles
 
-gitFetch :: Text -> IO Bool
+gitFetch :: Text -> Mit Int x Bool
 gitFetch remote = do
-  fetched <- readIORef fetchedRef
+  fetched <- io (readIORef fetchedRef)
   case Map.lookup remote fetched of
     Nothing -> do
       success <- Git.git (Git.Fetch remote)
-      writeIORef fetchedRef (Map.insert remote success fetched)
+      io (writeIORef fetchedRef (Map.insert remote success fetched))
       pure success
     Just success -> pure success
 
@@ -280,44 +270,54 @@ fetchedRef =
   unsafePerformIO (newIORef mempty)
 {-# NOINLINE fetchedRef #-}
 
-gitFetch_ :: Text -> IO ()
+gitFetch_ :: Text -> Mit Int x ()
 gitFetch_ =
   void . gitFetch
 
-gitHead :: IO Text
+gitHead :: Mit Int x Text
 gitHead =
   Git.git (Git.RevParse Git.NoFlagQuiet Git.NoFlagVerify "HEAD")
 
-gitIsMergeCommit :: Text -> IO Bool
+gitIsMergeCommit :: Text -> Mit Int x Bool
 gitIsMergeCommit commit =
   Git.git (Git.RevParse Git.FlagQuiet Git.FlagVerify (commit <> "^2"))
 
 -- | List all untracked files.
-gitListUntrackedFiles :: IO [Text]
+gitListUntrackedFiles :: Mit Int x [Text]
 gitListUntrackedFiles =
   git ["ls-files", "--exclude-standard", "--other"]
 
-gitMergeInProgress :: IO Bool
-gitMergeInProgress =
-  doesFileExist (Text.unpack (gitdir <> "/MERGE_HEAD"))
+gitMergeInProgress :: Mit Int x Bool
+gitMergeInProgress = do
+  gitdir <- gitRevParseAbsoluteGitDir
+  io (doesFileExist (Text.unpack (gitdir <> "/MERGE_HEAD")))
 
-gitPush :: Text -> IO Bool
+gitPush :: Text -> Mit Int x Bool
 gitPush branch =
   git ["push", "--set-upstream", "origin", "--quiet", branch <> ":" <> branch]
 
 -- | Does the given remote branch (refs/remotes/...) exist?
-gitRemoteBranchExists :: Text -> Text -> IO Bool
+gitRemoteBranchExists :: Text -> Text -> Mit Int x Bool
 gitRemoteBranchExists remote branch =
   Git.git (Git.RevParse Git.FlagQuiet Git.FlagVerify ("refs/remotes/" <> remote <> "/" <> branch))
 
 -- | Get the head of a remote branch.
-gitRemoteBranchHead :: Text -> Text -> IO (Maybe Text)
+gitRemoteBranchHead :: Text -> Text -> Mit Int x (Maybe Text)
 gitRemoteBranchHead remote branch =
   Git.git (Git.RevParse Git.NoFlagQuiet Git.NoFlagVerify ("refs/remotes/" <> remote <> "/" <> branch)) <&> \case
     Left _ -> Nothing
     Right head -> Just head
 
-gitShow :: Text -> IO GitCommitInfo
+gitRevParseAbsoluteGitDir :: Mit Int x Text
+gitRevParseAbsoluteGitDir =
+  git ["rev-parse", "--absolute-git-dir"]
+
+-- | The root of this git worktree.
+gitRevParseShowToplevel :: Mit Int x Text
+gitRevParseShowToplevel =
+  git ["rev-parse", "--show-toplevel"]
+
+gitShow :: Text -> Mit Int x GitCommitInfo
 gitShow commit =
   parseGitCommitInfo
     <$> git
@@ -329,7 +329,7 @@ gitShow commit =
       ]
 
 -- | Stash uncommitted changes (if any).
-gitStash :: IO (Maybe Text)
+gitStash :: Mit Int x (Maybe Text)
 gitStash = do
   gitDiff >>= \case
     Differences -> do
@@ -339,16 +339,16 @@ gitStash = do
       pure (Just stash)
     NoDifferences -> pure Nothing
 
-gitUnstageChanges :: IO ()
+gitUnstageChanges :: Mit Int x ()
 gitUnstageChanges = do
   Git.git_ (Git.ResetPaths Git.FlagQuiet ["."])
   untrackedFiles <- gitListUntrackedFiles
   unless (null untrackedFiles) (Git.git_ (Git.Add Git.FlagIntentToAdd untrackedFiles))
 
-gitVersion :: IO GitVersion
+gitVersion :: Mit Int [Stanza] GitVersion
 gitVersion = do
   v0 <- git ["--version"]
-  fromMaybe (throwIO (userError ("Could not parse git version from: " <> Text.unpack v0))) do
+  fromMaybe (throw [Just ("Could not parse git version from: " <> Text.Builder.fromText v0)]) do
     "git" : "version" : v1 : _ <- Just (Text.words v0)
     [sx, sy, sz] <- Just (Text.split (== '.') v1)
     x <- readMaybe (Text.unpack sx)
@@ -365,7 +365,7 @@ data GitWorktree = GitWorktree
 
 -- /dir/one 0efd393c35 [oingo]         -> ("/dir/one", "0efd393c35", Just "oingo")
 -- /dir/two dc0c114266 (detached HEAD) -> ("/dir/two", "dc0c114266", Nothing)
-gitWorktreeList :: IO [GitWorktree]
+gitWorktreeList :: Mit Int x [GitWorktree]
 gitWorktreeList = do
   git ["worktree", "list"] <&> map \line ->
     case Parsec.parse parser "" line of
@@ -404,7 +404,7 @@ parseGitRepo url = do
   url' <- Text.stripSuffix ".git" url
   pure (url, Text.takeWhileEnd (/= '/') url')
 
-git :: ProcessOutput a => [Text] -> IO a
+git :: ProcessOutput a => [Text] -> Mit Int x a
 git args = do
   let spec :: CreateProcess
       spec =
@@ -426,15 +426,16 @@ git args = do
             detach_console = False,
             use_process_jobs = False
           }
-  bracket (createProcess spec) cleanup \(_maybeStdin, maybeStdout, maybeStderr, processHandle) ->
-    Ki.scoped \scope -> do
-      stdoutThread <- Ki.fork scope (drainTextHandle (fromJust maybeStdout))
-      stderrThread <- Ki.fork scope (drainTextHandle (fromJust maybeStderr))
-      exitCode <- waitForProcess processHandle
-      stdoutLines <- atomically (Ki.await stdoutThread)
-      stderrLines <- atomically (Ki.await stderrThread)
-      debugPrintGit args stdoutLines stderrLines exitCode
-      fromProcessOutput stdoutLines stderrLines exitCode
+  block do
+    (_maybeStdin, maybeStdout, maybeStderr, processHandle) <- acquire (bracket (createProcess spec) cleanup)
+    scope <- acquire Ki.scoped
+    stdoutThread <- io (Ki.fork scope (drainTextHandle (fromJust maybeStdout)))
+    stderrThread <- io (Ki.fork scope (drainTextHandle (fromJust maybeStderr)))
+    exitCode <- io (waitForProcess processHandle)
+    stdoutLines <- io (atomically (Ki.await stdoutThread))
+    stderrLines <- io (atomically (Ki.await stderrThread))
+    debugPrintGit args stdoutLines stderrLines exitCode
+    io (fromProcessOutput stdoutLines stderrLines exitCode)
   where
     cleanup :: (Maybe Handle, Maybe Handle, Maybe Handle, ProcessHandle) -> IO ()
     cleanup (maybeStdin, maybeStdout, maybeStderr, process) =
@@ -455,44 +456,49 @@ git args = do
               signalProcessGroup sigTERM pgid
           waitForProcess process
 
-git_ :: [Text] -> IO ()
+git_ :: [Text] -> Mit Int x ()
 git_ =
   git
 
 -- Yucky interactive/inherity variant (so 'git commit' can open an editor).
-git2 :: [Text] -> IO ExitCode
+--
+-- FIXME bracket
+git2 :: [Text] -> Mit Int x ExitCode
 git2 args = do
-  (Nothing, Nothing, Just stderrHandle, processHandle) <-
-    createProcess
-      CreateProcess
-        { child_group = Nothing,
-          child_user = Nothing,
-          close_fds = True,
-          cmdspec = RawCommand "git" (map Text.unpack args),
-          create_group = False,
-          cwd = Nothing,
-          delegate_ctlc = True,
-          env = Nothing,
-          new_session = False,
-          std_err = CreatePipe,
-          std_in = Inherit,
-          std_out = Inherit,
-          -- windows-only
-          create_new_console = False,
-          detach_console = False,
-          use_process_jobs = False
-        }
+  (_, _, stderrHandle, processHandle) <-
+    io do
+      createProcess
+        CreateProcess
+          { child_group = Nothing,
+            child_user = Nothing,
+            close_fds = True,
+            cmdspec = RawCommand "git" (map Text.unpack args),
+            create_group = False,
+            cwd = Nothing,
+            delegate_ctlc = True,
+            env = Nothing,
+            new_session = False,
+            std_err = CreatePipe,
+            std_in = Inherit,
+            std_out = Inherit,
+            -- windows-only
+            create_new_console = False,
+            detach_console = False,
+            use_process_jobs = False
+          }
   exitCode <-
-    waitForProcess processHandle `catch` \case
-      UserInterrupt -> pure (ExitFailure (-130))
-      exception -> throwIO exception
-  stderrLines <- drainTextHandle stderrHandle
+    io do
+      waitForProcess processHandle `catch` \case
+        UserInterrupt -> pure (ExitFailure (-130))
+        exception -> throwIO exception
+  stderrLines <- io (drainTextHandle (fromJust stderrHandle))
   debugPrintGit args Seq.empty stderrLines exitCode
   pure exitCode
 
-debugPrintGit :: [Text] -> Seq Text -> Seq Text -> ExitCode -> IO ()
-debugPrintGit args stdoutLines stderrLines exitCode =
-  case verbose of
+debugPrintGit :: [Text] -> Seq Text -> Seq Text -> ExitCode -> Mit Int x ()
+debugPrintGit args stdoutLines stderrLines exitCode = do
+  verbose <- getEnv
+  io case verbose of
     1 -> Builder.putln (Text.Builder.brightBlack v1)
     2 -> Builder.putln (Text.Builder.brightBlack (v1 <> v2))
     _ -> pure ()

@@ -10,6 +10,7 @@ import Data.Text.Builder.ANSI qualified as Text
 import Data.Text.Lazy.Builder qualified as Text (Builder)
 import Data.Text.Lazy.Builder qualified as Text.Builder
 import Mit.Builder qualified as Builder
+import Mit.Config (verbose)
 import Mit.Directory
 import Mit.Git
 import Mit.GitCommand qualified as Git
@@ -21,7 +22,7 @@ import Mit.State
 import Mit.Undo
 import Options.Applicative qualified as Opt
 import Options.Applicative.Types qualified as Opt (Backtracking (Backtrack))
-import System.Exit (ExitCode (..), exitFailure)
+import System.Exit (exitFailure)
 
 -- FIXME: nicer "git status" story. in particular the conflict markers in the commits after a merge are a bit
 -- ephemeral feeling
@@ -43,7 +44,7 @@ import System.Exit (ExitCode (..), exitFailure)
 main :: IO ()
 main = do
   action <- Opt.customExecParser parserPrefs parserInfo
-  runMit () ([] <$ action) >>= \case
+  runMit verbose ([] <$ action) >>= \case
     [] -> pure ()
     errs -> do
       putStanzas errs
@@ -63,12 +64,12 @@ main = do
           prefTabulateFill = 24 -- grabbed this from optparse-applicative
         }
 
-    parserInfo :: Opt.ParserInfo (Mit () [Stanza] ())
+    parserInfo :: Opt.ParserInfo (Mit Int [Stanza] ())
     parserInfo =
       Opt.info parser $
         Opt.progDesc "mit: a git wrapper with a streamlined UX"
 
-    parser :: Opt.Parser (Mit () [Stanza] ())
+    parser :: Opt.Parser (Mit Int [Stanza] ())
     parser =
       (Opt.hsubparser . fold)
         [ Opt.command "branch" $
@@ -93,9 +94,9 @@ main = do
               (Opt.progDesc "Undo the last `mit` command (if possible).")
         ]
 
-dieIfBuggyGit :: Mit r [Stanza] ()
+dieIfBuggyGit :: Mit Int [Stanza] ()
 dieIfBuggyGit = do
-  version <- io gitVersion
+  version <- gitVersion
   let validate (ver, err) = if version < ver then ((ver, err) :) else id
   case foldr validate [] validations of
     [] -> pure ()
@@ -130,35 +131,39 @@ dieIfBuggyGit = do
         )
       ]
 
-dieIfMergeInProgress :: Mit r [Stanza] ()
+dieIfMergeInProgress :: Mit Int [Stanza] ()
 dieIfMergeInProgress =
-  whenM (io gitMergeInProgress) (throw [Just (Text.red (Text.bold "git merge" <> " in progress."))])
+  whenM gitMergeInProgress (throw [Just (Text.red (Text.bold "git merge" <> " in progress."))])
 
-dieIfNotInGitDir :: Mit r [Stanza] ()
-dieIfNotInGitDir =
-  io (try (evaluate gitdir)) >>= \case
-    Left (_ :: ExitCode) -> throw [Just (Text.red "The current directory doesn't contain a git repository.")]
+dieIfNotInGitDir :: Mit Int [Stanza] ()
+dieIfNotInGitDir = do
+  ublock gitRevParseAbsoluteGitDir >>= \case
+    Left _ -> throw [Just (Text.red "The current directory doesn't contain a git repository.")]
     Right _ -> pure ()
 
-mitBranch :: Text -> Mit r [Stanza] ()
+mitBranch :: Text -> Mit Int [Stanza] ()
 mitBranch branch = do
   dieIfNotInGitDir
 
-  io (gitBranchWorktreeDir branch) >>= \case
+  worktreeDir <- do
+    rootdir <- gitRevParseShowToplevel
+    pure (Text.dropWhileEnd (/= '/') rootdir <> branch)
+
+  gitBranchWorktreeDir branch >>= \case
     Nothing -> do
       whenM (doesDirectoryExist worktreeDir) do
         throw [Just (Text.red ("Directory " <> Text.bold (Text.Builder.fromText worktreeDir) <> " already exists."))]
-      io (git_ ["worktree", "add", "--detach", worktreeDir])
+      git_ ["worktree", "add", "--detach", worktreeDir]
       block do
         cd worktreeDir
-        whenNotM (io (Git.git (Git.Switch branch))) do
-          io (gitBranch branch)
-          io (Git.git_ (Git.Switch branch))
-          io (gitFetch_ "origin")
-          whenM (io (gitRemoteBranchExists "origin" branch)) do
+        whenNotM (Git.git (Git.Switch branch)) do
+          gitBranch branch
+          Git.git_ (Git.Switch branch)
+          gitFetch_ "origin"
+          whenM (gitRemoteBranchExists "origin" branch) do
             let upstream = "origin/" <> branch
-            io (Git.git_ (Git.Reset Git.Hard Git.FlagQuiet upstream))
-            io (Git.git_ (Git.BranchSetUpstreamTo upstream))
+            Git.git_ (Git.Reset Git.Hard Git.FlagQuiet upstream)
+            Git.git_ (Git.BranchSetUpstreamTo upstream)
     Just directory ->
       when (directory /= worktreeDir) do
         throw
@@ -173,30 +178,26 @@ mitBranch branch = do
                   )
               )
           ]
-  where
-    worktreeDir :: Text
-    worktreeDir =
-      Text.dropWhileEnd (/= '/') rootdir <> branch
 
-mitCommit :: Mit r [Stanza] ()
+mitCommit :: Mit Int [Stanza] ()
 mitCommit = do
   dieIfNotInGitDir
-  whenM (io gitExistUntrackedFiles) dieIfBuggyGit
+  whenM gitExistUntrackedFiles dieIfBuggyGit
 
-  io gitMergeInProgress >>= \case
+  gitMergeInProgress >>= \case
     False ->
-      io gitDiff >>= \case
+      gitDiff >>= \case
         Differences -> mitCommit_
         NoDifferences -> throw [Just (Text.red "There's nothing to commit.")]
     True -> mitCommitMerge
 
-mitCommit_ :: Mit r [Stanza] ()
+mitCommit_ :: Mit Int [Stanza] ()
 mitCommit_ = do
-  context <- io getContext
+  context <- getContext
   let upstream = "origin/" <> context.branch
 
-  existRemoteCommits <- io (contextExistRemoteCommits context)
-  existLocalCommits <- io (contextExistLocalCommits context)
+  existRemoteCommits <- contextExistRemoteCommits context
+  existLocalCommits <- contextExistLocalCommits context
 
   when (existRemoteCommits && not existLocalCommits) do
     throw
@@ -204,7 +205,7 @@ mitCommit_ = do
         runSyncStanza "Run" context.branch upstream
       ]
 
-  committed <- io gitCommit
+  committed <- gitCommit
 
   push <- performPush context.branch
 
@@ -223,17 +224,17 @@ mitCommit_ = do
                     else push.undo ++ [Apply (fromJust context.snapshot.stash)]
           }
 
-  io (writeMitState context.branch state)
+  writeMitState context.branch state
 
   remoteCommits <-
     case context.upstreamHead of
       Nothing -> pure Seq.empty
-      Just upstreamHead -> io (gitCommitsBetween (Just "HEAD") upstreamHead)
+      Just upstreamHead -> gitCommitsBetween (Just "HEAD") upstreamHead
 
   conflictsOnSync <-
     if Seq.null remoteCommits
       then pure []
-      else io (gitConflictsWith (fromJust context.upstreamHead))
+      else gitConflictsWith (fromJust context.upstreamHead)
 
   io do
     putStanzas
@@ -280,20 +281,20 @@ mitCommit_ = do
         if not (null state.undos) && committed then canUndoStanza else Nothing
       ]
 
-mitCommitMerge :: Mit r x ()
+mitCommitMerge :: Mit Int x ()
 mitCommitMerge = do
-  context <- io getContext
+  context <- getContext
 
   -- Make the merge commit. Commonly we'll have gotten here by `mit merge <branch>`, so we'll have a `state0.merging`
   -- that tells us we're merging in <branch>. But we also handle the case that we went `git merge` -> `mit commit`,
   -- because why not.
   case context.state.merging of
-    Nothing -> io (git_ ["commit", "--all", "--no-edit"])
+    Nothing -> git_ ["commit", "--all", "--no-edit"]
     Just merging ->
       let message = fold ["⅄ ", if merging == context.branch then "" else merging <> " → ", context.branch]
-       in io (git_ ["commit", "--all", "--message", message])
+       in git_ ["commit", "--all", "--message", message]
 
-  io (writeMitState context.branch context.state {merging = Nothing})
+  writeMitState context.branch context.state {merging = Nothing}
 
   let stanza0 = do
         merging <- context.state.merging
@@ -310,7 +311,7 @@ mitCommitMerge = do
   case undosStash context.state.undos of
     Nothing -> mitSyncWith stanza0 (Just [Reset context.snapshot.head])
     Just stash -> do
-      conflicts <- io (gitApplyStash stash)
+      conflicts <- gitApplyStash stash
       case List1.nonEmpty conflicts of
         -- FIXME we just unstashed, now we're about to stash again :/
         Nothing -> mitSyncWith stanza0 (Just [Reset context.snapshot.head, Apply stash])
@@ -336,13 +337,13 @@ data PushNotAttemptedReason
   | Offline -- fetch failed, so we seem offline
   | UnseenCommits -- we just pulled remote commits; don't push in case there's something local to address
 
-mitMerge :: Text -> Mit r [Stanza] ()
+mitMerge :: Text -> Mit Int [Stanza] ()
 mitMerge target = do
   dieIfNotInGitDir
   dieIfMergeInProgress
-  whenM (io gitExistUntrackedFiles) dieIfBuggyGit
+  whenM gitExistUntrackedFiles dieIfBuggyGit
 
-  context <- io getContext
+  context <- getContext
   let upstream = "origin/" <> context.branch
 
   if target == context.branch || target == upstream
@@ -350,20 +351,20 @@ mitMerge target = do
       mitSyncWith Nothing Nothing
     else mitMergeWith context target
 
-mitMergeWith :: Context -> Text -> Mit r [Stanza] ()
+mitMergeWith :: Context -> Text -> Mit Int [Stanza] ()
 mitMergeWith context target = do
   -- When given 'mit merge foo', prefer running 'git merge origin/foo' over 'git merge foo'
   targetCommit <-
-    io (gitRemoteBranchHead "origin" target)
+    gitRemoteBranchHead "origin" target
       & onNothingM
-        ( io (gitBranchHead target)
+        ( gitBranchHead target
             & onNothingM (throw [Just (Text.red "No such branch.")])
         )
 
   let upstream = "origin/" <> context.branch
 
-  existRemoteCommits <- io (contextExistRemoteCommits context)
-  existLocalCommits <- io (contextExistLocalCommits context)
+  existRemoteCommits <- contextExistRemoteCommits context
+  existLocalCommits <- contextExistLocalCommits context
 
   when (existRemoteCommits && not existLocalCommits) do
     throw
@@ -372,7 +373,7 @@ mitMergeWith context target = do
       ]
 
   whenJust context.snapshot.stash \_stash ->
-    io (Git.git_ (Git.Reset Git.Hard Git.FlagQuiet "HEAD"))
+    Git.git_ (Git.Reset Git.Hard Git.FlagQuiet "HEAD")
 
   merge <- performMerge ("⅄ " <> target <> " → " <> context.branch) targetCommit
 
@@ -380,7 +381,7 @@ mitMergeWith context target = do
     if null merge.conflicts
       then case context.snapshot.stash of
         Nothing -> pure []
-        Just stash -> io (gitApplyStash stash)
+        Just stash -> gitApplyStash stash
       else pure []
 
   push <- performPush context.branch
@@ -398,17 +399,17 @@ mitMergeWith context target = do
                 else undoToSnapshot context.snapshot
           }
 
-  io (writeMitState context.branch state)
+  writeMitState context.branch state
 
   remoteCommits <-
     case context.upstreamHead of
       Nothing -> pure Seq.empty
-      Just upstreamHead -> io (gitCommitsBetween (Just "HEAD") upstreamHead)
+      Just upstreamHead -> gitCommitsBetween (Just "HEAD") upstreamHead
 
   conflictsOnSync <-
     if Seq.null remoteCommits
       then pure []
-      else io (gitConflictsWith (fromJust context.upstreamHead))
+      else gitConflictsWith (fromJust context.upstreamHead)
 
   io do
     putStanzas
@@ -465,11 +466,11 @@ mitMergeWith context target = do
       ]
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
-mitSync :: Mit r [Stanza] ()
+mitSync :: Mit Int [Stanza] ()
 mitSync = do
   dieIfNotInGitDir
   dieIfMergeInProgress
-  whenM (io gitExistUntrackedFiles) dieIfBuggyGit
+  whenM gitExistUntrackedFiles dieIfBuggyGit
   mitSyncWith Nothing Nothing
 
 -- | @mitSyncWith _ maybeUndos@
@@ -492,13 +493,13 @@ mitSync = do
 --
 -- Instead, we want to undo to the point before running the 'mit merge' that caused the conflicts, which were later
 -- resolved by 'mit commit'.
-mitSyncWith :: Stanza -> Maybe [Undo] -> Mit r x ()
+mitSyncWith :: Stanza -> Maybe [Undo] -> Mit Int x ()
 mitSyncWith stanza0 maybeUndos = do
-  context <- io getContext
+  context <- getContext
   let upstream = "origin/" <> context.branch
 
   whenJust context.snapshot.stash \_stash ->
-    io (Git.git_ (Git.Reset Git.Hard Git.FlagQuiet "HEAD"))
+    Git.git_ (Git.Reset Git.Hard Git.FlagQuiet "HEAD")
 
   merge <-
     case context.upstreamHead of
@@ -510,7 +511,7 @@ mitSyncWith stanza0 maybeUndos = do
     if null merge.conflicts
       then case context.snapshot.stash of
         Nothing -> pure []
-        Just stash -> io (gitApplyStash stash)
+        Just stash -> gitApplyStash stash
       else pure []
 
   push <- performPush context.branch
@@ -535,7 +536,7 @@ mitSyncWith stanza0 maybeUndos = do
                   Just undos' -> undos'
           }
 
-  io (writeMitState context.branch state)
+  writeMitState context.branch state
 
   io do
     putStanzas
@@ -580,13 +581,13 @@ mitSyncWith stanza0 maybeUndos = do
       ]
 
 -- FIXME output what we just undid
-mitUndo :: Mit r [Stanza] ()
+mitUndo :: Mit Int [Stanza] ()
 mitUndo = do
   dieIfNotInGitDir
-  context <- io getContext
+  context <- getContext
   case List1.nonEmpty context.state.undos of
     Nothing -> throw [Just (Text.red "Nothing to undo.")]
-    Just undos1 -> io (for_ undos1 applyUndo)
+    Just undos1 -> for_ undos1 applyUndo
   when (undosContainRevert context.state.undos) mitSync
   where
     undosContainRevert :: [Undo] -> Bool
@@ -715,7 +716,7 @@ data Context = Context
     upstreamHead :: Maybe Text
   }
 
-getContext :: IO Context
+getContext :: Mit Int x Context
 getContext = do
   gitFetch_ "origin"
   branch <- Git.git Git.BranchShowCurrent
@@ -724,13 +725,13 @@ getContext = do
   snapshot <- performSnapshot
   pure Context {branch, snapshot, state, upstreamHead}
 
-contextExistLocalCommits :: Context -> IO Bool
+contextExistLocalCommits :: Context -> Mit Int x Bool
 contextExistLocalCommits context =
   case context.upstreamHead of
     Nothing -> pure True
     Just upstreamHead -> gitExistCommitsBetween upstreamHead context.snapshot.head
 
-contextExistRemoteCommits :: Context -> IO Bool
+contextExistRemoteCommits :: Context -> Mit Int x Bool
 contextExistRemoteCommits context =
   case context.upstreamHead of
     Nothing -> pure False
@@ -754,19 +755,19 @@ data GitMerge = GitMerge
 -- conflicts.
 --
 -- Precondition: the working directory is clean. TODO take unused GitStash as argument?
-performMerge :: Text -> Text -> Mit r x GitMerge
+performMerge :: Text -> Text -> Mit Int x GitMerge
 performMerge message commitish = do
-  head <- io gitHead
-  commits <- io (gitCommitsBetween (Just head) commitish)
+  head <- gitHead
+  commits <- gitCommitsBetween (Just head) commitish
   conflicts <-
     if Seq.null commits
       then pure []
       else
-        io (git ["merge", "--ff", "--no-commit", commitish]) >>= \case
-          False -> io gitConflicts
+        git ["merge", "--ff", "--no-commit", commitish] >>= \case
+          False -> gitConflicts
           True -> do
             -- If this was a fast-forward, a merge would not be in progress at this point.
-            io (whenM gitMergeInProgress (git_ ["commit", "--message", message]))
+            whenM gitMergeInProgress (git_ ["commit", "--message", message])
             pure []
   pure GitMerge {commits, conflicts}
 
@@ -796,29 +797,29 @@ pushPushed push =
     TriedToPush -> False
 
 -- TODO get context
-performPush :: Text -> Mit r x GitPush
+performPush :: Text -> Mit Int x GitPush
 performPush branch = do
-  fetched <- io (gitFetch "origin")
-  head <- io gitHead
-  upstreamHead <- io (gitRemoteBranchHead "origin" branch)
-  commits <- io (gitCommitsBetween upstreamHead head)
+  fetched <- gitFetch "origin"
+  head <- gitHead
+  upstreamHead <- gitRemoteBranchHead "origin" branch
+  commits <- gitCommitsBetween upstreamHead head
 
   if Seq.null commits
     then pure GitPush {commits, undo = [], what = NothingToPush2}
     else do
-      existRemoteCommits <- maybe (pure False) (io . gitExistCommitsBetween head) upstreamHead
+      existRemoteCommits <- maybe (pure False) (gitExistCommitsBetween head) upstreamHead
       if existRemoteCommits
         then pure GitPush {commits, undo = [], what = PushWouldBeRejected}
         else
           if fetched
             then
-              io (gitPush branch) >>= \case
+              gitPush branch >>= \case
                 False -> pure GitPush {commits, undo = [], what = TriedToPush}
                 True -> do
                   undo <-
                     if Seq.length commits == 1
                       then
-                        io (gitIsMergeCommit head) <&> \case
+                        gitIsMergeCommit head <&> \case
                           False -> [Revert head]
                           True -> []
                       else pure []
@@ -833,7 +834,7 @@ data GitSnapshot = GitSnapshot
     stash :: Maybe Text
   }
 
-performSnapshot :: IO GitSnapshot
+performSnapshot :: Mit Int x GitSnapshot
 performSnapshot = do
   head <- gitHead
   stash <-

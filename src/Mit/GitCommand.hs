@@ -24,7 +24,7 @@ import Data.Text.Lazy.Builder qualified as Text (Builder)
 import Data.Text.Lazy.Builder qualified as Text.Builder
 import Ki qualified
 import Mit.Builder qualified as Builder
-import Mit.Config (verbose)
+import Mit.Monad
 import Mit.Prelude
 import Mit.Process
 import System.Exit (ExitCode (..))
@@ -168,15 +168,15 @@ renderFlagVerify = \case
 ------------------------------------------------------------------------------------------------------------------------
 -- Git process  stuff
 
-git :: ProcessOutput a => Command -> IO a
+git :: ProcessOutput a => Command -> Mit Int x a
 git =
   runGit . renderCommand
 
-git_ :: Command -> IO ()
+git_ :: Command -> Mit Int x ()
 git_ =
   git
 
-runGit :: ProcessOutput a => [Text] -> IO a
+runGit :: ProcessOutput a => [Text] -> Mit Int x a
 runGit args = do
   let spec :: CreateProcess
       spec =
@@ -198,15 +198,16 @@ runGit args = do
             detach_console = False,
             use_process_jobs = False
           }
-  bracket (createProcess spec) cleanup \(_maybeStdin, maybeStdout, maybeStderr, processHandle) ->
-    Ki.scoped \scope -> do
-      stdoutThread <- Ki.fork scope (drainTextHandle (fromJust maybeStdout))
-      stderrThread <- Ki.fork scope (drainTextHandle (fromJust maybeStderr))
-      exitCode <- waitForProcess processHandle
-      stdoutLines <- atomically (Ki.await stdoutThread)
-      stderrLines <- atomically (Ki.await stderrThread)
-      debugPrintGit args stdoutLines stderrLines exitCode
-      fromProcessOutput stdoutLines stderrLines exitCode
+  block do
+    (_maybeStdin, maybeStdout, maybeStderr, processHandle) <- acquire (bracket (createProcess spec) cleanup)
+    scope <- acquire Ki.scoped
+    stdoutThread <- io (Ki.fork scope (drainTextHandle (fromJust maybeStdout)))
+    stderrThread <- io (Ki.fork scope (drainTextHandle (fromJust maybeStderr)))
+    exitCode <- io (waitForProcess processHandle)
+    stdoutLines <- io (atomically (Ki.await stdoutThread))
+    stderrLines <- io (atomically (Ki.await stderrThread))
+    debugPrintGit args stdoutLines stderrLines exitCode
+    io (fromProcessOutput stdoutLines stderrLines exitCode)
   where
     cleanup :: (Maybe Handle, Maybe Handle, Maybe Handle, ProcessHandle) -> IO ()
     cleanup (maybeStdin, maybeStdout, maybeStderr, process) =
@@ -227,9 +228,10 @@ runGit args = do
               signalProcessGroup sigTERM pgid
           waitForProcess process
 
-debugPrintGit :: [Text] -> Seq Text -> Seq Text -> ExitCode -> IO ()
-debugPrintGit args stdoutLines stderrLines exitCode =
-  case verbose of
+debugPrintGit :: [Text] -> Seq Text -> Seq Text -> ExitCode -> Mit Int x ()
+debugPrintGit args stdoutLines stderrLines exitCode = do
+  verbose <- getEnv
+  io case verbose of
     1 -> Builder.putln (Text.Builder.brightBlack v1)
     2 -> Builder.putln (Text.Builder.brightBlack (v1 <> v2))
     _ -> pure ()

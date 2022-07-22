@@ -7,6 +7,7 @@ module Mit.Monad
     acquire,
     acquire_,
     block,
+    ublock,
   )
 where
 
@@ -63,4 +64,10 @@ block :: Mit r a a -> Mit r x a
 block m =
   Mit \k r -> do
     a <- runMit r m
+    k a r
+
+ublock :: Mit r a a -> Mit r x (Either SomeException a)
+ublock m =
+  Mit \k r -> do
+    a <- try (runMit r m)
     k a r

@@ -11,6 +11,7 @@ import Data.Text qualified as Text
 import Data.Text.Encoding.Base64 qualified as Text
 import Data.Text.IO qualified as Text
 import Mit.Git
+import Mit.Monad
 import Mit.Prelude
 import Mit.Undo
 import System.Directory (removeFile)
@@ -26,9 +27,10 @@ emptyMitState :: MitState ()
 emptyMitState =
   MitState {head = (), merging = Nothing, undos = []}
 
-deleteMitState :: Text -> IO ()
-deleteMitState branch64 =
-  removeFile (mitfile branch64) `catch` \(_ :: IOException) -> pure ()
+deleteMitState :: Text -> Mit Int x ()
+deleteMitState branch64 = do
+  mitfile <- getMitfile branch64
+  io (removeFile mitfile `catch` \(_ :: IOException) -> pure ())
 
 parseMitState :: Text -> Maybe (MitState Text)
 parseMitState contents = do
@@ -42,10 +44,11 @@ parseMitState contents = do
   undos <- Text.stripPrefix "undos " undosLine >>= parseUndos
   pure MitState {head, merging, undos}
 
-readMitState :: Text -> IO (MitState ())
+readMitState :: Text -> Mit Int x (MitState ())
 readMitState branch = do
   head <- gitHead
-  try (Text.readFile (mitfile branch64)) >>= \case
+  mitfile <- getMitfile branch64
+  io (try (Text.readFile mitfile)) >>= \case
     Left (_ :: IOException) -> pure emptyMitState
     Right contents -> do
       let maybeState = do
@@ -60,7 +63,7 @@ readMitState branch = do
   where
     branch64 = Text.encodeBase64 branch
 
-writeMitState :: Text -> MitState () -> IO ()
+writeMitState :: Text -> MitState () -> Mit Int x ()
 writeMitState branch state = do
   head <- gitHead
   let contents :: Text
@@ -70,8 +73,10 @@ writeMitState branch state = do
             "merging " <> fromMaybe Text.empty state.merging,
             "undos " <> showUndos state.undos
           ]
-  Text.writeFile (mitfile (Text.encodeBase64 branch)) contents `catch` \(_ :: IOException) -> pure ()
+  mitfile <- getMitfile (Text.encodeBase64 branch)
+  io (Text.writeFile mitfile contents `catch` \(_ :: IOException) -> pure ())
 
-mitfile :: Text -> FilePath
-mitfile branch64 =
-  Text.unpack (gitdir <> "/.mit-" <> branch64)
+getMitfile :: Text -> Mit Int x FilePath
+getMitfile branch64 = do
+  gitdir <- gitRevParseAbsoluteGitDir
+  pure (Text.unpack (gitdir <> "/.mit-" <> branch64))
