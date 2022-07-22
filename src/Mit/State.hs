@@ -10,6 +10,7 @@ where
 import Data.Text qualified as Text
 import Data.Text.Encoding.Base64 qualified as Text
 import Data.Text.IO qualified as Text
+import Mit.Env (Env (..))
 import Mit.Git
 import Mit.Monad
 import Mit.Prelude
@@ -27,7 +28,7 @@ emptyMitState :: MitState ()
 emptyMitState =
   MitState {head = (), merging = Nothing, undos = []}
 
-deleteMitState :: Text -> Mit Int x ()
+deleteMitState :: Text -> Mit Env x ()
 deleteMitState branch64 = do
   mitfile <- getMitfile branch64
   io (removeFile mitfile `catch` \(_ :: IOException) -> pure ())
@@ -44,7 +45,7 @@ parseMitState contents = do
   undos <- Text.stripPrefix "undos " undosLine >>= parseUndos
   pure MitState {head, merging, undos}
 
-readMitState :: Text -> Mit Int x (MitState ())
+readMitState :: Text -> Mit Env x (MitState ())
 readMitState branch = do
   head <- gitHead
   mitfile <- getMitfile branch64
@@ -63,7 +64,7 @@ readMitState branch = do
   where
     branch64 = Text.encodeBase64 branch
 
-writeMitState :: Text -> MitState () -> Mit Int x ()
+writeMitState :: Text -> MitState () -> Mit Env x ()
 writeMitState branch state = do
   head <- gitHead
   let contents :: Text
@@ -76,7 +77,7 @@ writeMitState branch state = do
   mitfile <- getMitfile (Text.encodeBase64 branch)
   io (Text.writeFile mitfile contents `catch` \(_ :: IOException) -> pure ())
 
-getMitfile :: Text -> Mit Int x FilePath
+getMitfile :: Text -> Mit Env x FilePath
 getMitfile branch64 = do
-  gitdir <- gitRevParseAbsoluteGitDir
-  pure (Text.unpack (gitdir <> "/.mit-" <> branch64))
+  env <- getEnv
+  pure (Text.unpack (env.gitdir <> "/.mit-" <> branch64))

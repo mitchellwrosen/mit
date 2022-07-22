@@ -12,6 +12,7 @@ import Data.Text.Lazy.Builder qualified as Text (Builder)
 import Data.Text.Lazy.Builder qualified as Text.Builder
 import Mit.Builder qualified as Builder
 import Mit.Directory
+import Mit.Env
 import Mit.Git
 import Mit.GitCommand qualified as Git
 import Mit.Monad
@@ -32,7 +33,6 @@ import System.Exit (exitFailure)
 -- TODO mit init
 -- TODO mit delete-branch
 -- TODO tweak things to work with git < 2.30.1
--- TODO rewrite mit commit algorithm in readme
 -- TODO git(hub,lab) flow or something?
 -- TODO 'mit branch' with dirty working directory - apply changes to new worktree?
 -- TODO undo in more cases?
@@ -44,7 +44,17 @@ import System.Exit (exitFailure)
 main :: IO ()
 main = do
   (verbosity, action) <- Opt.customExecParser parserPrefs parserInfo
-  runMit (clamp (0, 2) verbosity) ([] <$ action) >>= \case
+
+  let action2 :: Mit () [Stanza] ()
+      action2 = do
+        withEnv (\() -> Env {gitdir = "", verbosity}) gitRevParseAbsoluteGitDir >>= \case
+          Nothing -> throw [Just (Text.red "The current directory doesn't contain a git repository.")]
+          Just gitdir ->
+            withEnv
+              (\() -> Env {gitdir, verbosity})
+              action
+
+  runMit () ([] <$ action2) >>= \case
     [] -> pure ()
     errs -> do
       putStanzas errs
@@ -64,15 +74,17 @@ main = do
           prefTabulateFill = 24 -- grabbed this from optparse-applicative
         }
 
-    parserInfo :: Opt.ParserInfo (Int, Mit Int [Stanza] ())
+    parserInfo :: Opt.ParserInfo (Int, Mit Env [Stanza] ())
     parserInfo =
       Opt.info parser $
         Opt.progDesc "mit: a git wrapper with a streamlined UX"
 
-    parser :: Opt.Parser (Int, Mit Int [Stanza] ())
+    parser :: Opt.Parser (Int, Mit Env [Stanza] ())
     parser =
       (,)
-        <$> Opt.option Opt.auto (Opt.help "Verbosity" <> Opt.metavar "«n»" <> Opt.short 'v' <> Opt.value 0)
+        <$> ( clamp (0, 2)
+                <$> Opt.option Opt.auto (Opt.help "Verbosity" <> Opt.metavar "«n»" <> Opt.short 'v' <> Opt.value 0)
+            )
         <*> (Opt.hsubparser . fold)
           [ Opt.command "branch" $
               Opt.info
@@ -96,7 +108,7 @@ main = do
                 (Opt.progDesc "Undo the last `mit` command (if possible).")
           ]
 
-dieIfBuggyGit :: Mit Int [Stanza] ()
+dieIfBuggyGit :: Mit Env [Stanza] ()
 dieIfBuggyGit = do
   version <- gitVersion
   let validate (ver, err) = if version < ver then ((ver, err) :) else id
@@ -133,20 +145,12 @@ dieIfBuggyGit = do
         )
       ]
 
-dieIfMergeInProgress :: Mit Int [Stanza] ()
+dieIfMergeInProgress :: Mit Env [Stanza] ()
 dieIfMergeInProgress =
   whenM gitMergeInProgress (throw [Just (Text.red (Text.bold "git merge" <> " in progress."))])
 
-dieIfNotInGitDir :: Mit Int [Stanza] ()
-dieIfNotInGitDir = do
-  ublock gitRevParseAbsoluteGitDir >>= \case
-    Left _ -> throw [Just (Text.red "The current directory doesn't contain a git repository.")]
-    Right _ -> pure ()
-
-mitBranch :: Text -> Mit Int [Stanza] ()
+mitBranch :: Text -> Mit Env [Stanza] ()
 mitBranch branch = do
-  dieIfNotInGitDir
-
   worktreeDir <- do
     rootdir <- gitRevParseShowToplevel
     pure (Text.dropWhileEnd (/= '/') rootdir <> branch)
@@ -181,9 +185,8 @@ mitBranch branch = do
               )
           ]
 
-mitCommit :: Mit Int [Stanza] ()
+mitCommit :: Mit Env [Stanza] ()
 mitCommit = do
-  dieIfNotInGitDir
   whenM gitExistUntrackedFiles dieIfBuggyGit
 
   gitMergeInProgress >>= \case
@@ -193,7 +196,7 @@ mitCommit = do
         NoDifferences -> throw [Just (Text.red "There's nothing to commit.")]
     True -> mitCommitMerge
 
-mitCommit_ :: Mit Int [Stanza] ()
+mitCommit_ :: Mit Env [Stanza] ()
 mitCommit_ = do
   context <- getContext
   let upstream = "origin/" <> context.branch
@@ -283,7 +286,7 @@ mitCommit_ = do
         if not (null state.undos) && committed then canUndoStanza else Nothing
       ]
 
-mitCommitMerge :: Mit Int x ()
+mitCommitMerge :: Mit Env x ()
 mitCommitMerge = do
   context <- getContext
 
@@ -339,9 +342,8 @@ data PushNotAttemptedReason
   | Offline -- fetch failed, so we seem offline
   | UnseenCommits -- we just pulled remote commits; don't push in case there's something local to address
 
-mitMerge :: Text -> Mit Int [Stanza] ()
+mitMerge :: Text -> Mit Env [Stanza] ()
 mitMerge target = do
-  dieIfNotInGitDir
   dieIfMergeInProgress
   whenM gitExistUntrackedFiles dieIfBuggyGit
 
@@ -353,7 +355,7 @@ mitMerge target = do
       mitSyncWith Nothing Nothing
     else mitMergeWith context target
 
-mitMergeWith :: Context -> Text -> Mit Int [Stanza] ()
+mitMergeWith :: Context -> Text -> Mit Env [Stanza] ()
 mitMergeWith context target = do
   -- When given 'mit merge foo', prefer running 'git merge origin/foo' over 'git merge foo'
   targetCommit <-
@@ -468,9 +470,8 @@ mitMergeWith context target = do
       ]
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
-mitSync :: Mit Int [Stanza] ()
+mitSync :: Mit Env [Stanza] ()
 mitSync = do
-  dieIfNotInGitDir
   dieIfMergeInProgress
   whenM gitExistUntrackedFiles dieIfBuggyGit
   mitSyncWith Nothing Nothing
@@ -495,7 +496,7 @@ mitSync = do
 --
 -- Instead, we want to undo to the point before running the 'mit merge' that caused the conflicts, which were later
 -- resolved by 'mit commit'.
-mitSyncWith :: Stanza -> Maybe [Undo] -> Mit Int x ()
+mitSyncWith :: Stanza -> Maybe [Undo] -> Mit Env x ()
 mitSyncWith stanza0 maybeUndos = do
   context <- getContext
   let upstream = "origin/" <> context.branch
@@ -583,9 +584,8 @@ mitSyncWith stanza0 maybeUndos = do
       ]
 
 -- FIXME output what we just undid
-mitUndo :: Mit Int [Stanza] ()
+mitUndo :: Mit Env [Stanza] ()
 mitUndo = do
-  dieIfNotInGitDir
   context <- getContext
   case List1.nonEmpty context.state.undos of
     Nothing -> throw [Just (Text.red "Nothing to undo.")]
@@ -718,7 +718,7 @@ data Context = Context
     upstreamHead :: Maybe Text
   }
 
-getContext :: Mit Int x Context
+getContext :: Mit Env x Context
 getContext = do
   gitFetch_ "origin"
   branch <- Git.git Git.BranchShowCurrent
@@ -727,13 +727,13 @@ getContext = do
   snapshot <- performSnapshot
   pure Context {branch, snapshot, state, upstreamHead}
 
-contextExistLocalCommits :: Context -> Mit Int x Bool
+contextExistLocalCommits :: Context -> Mit Env x Bool
 contextExistLocalCommits context =
   case context.upstreamHead of
     Nothing -> pure True
     Just upstreamHead -> gitExistCommitsBetween upstreamHead context.snapshot.head
 
-contextExistRemoteCommits :: Context -> Mit Int x Bool
+contextExistRemoteCommits :: Context -> Mit Env x Bool
 contextExistRemoteCommits context =
   case context.upstreamHead of
     Nothing -> pure False
@@ -757,7 +757,7 @@ data GitMerge = GitMerge
 -- conflicts.
 --
 -- Precondition: the working directory is clean. TODO take unused GitStash as argument?
-performMerge :: Text -> Text -> Mit Int x GitMerge
+performMerge :: Text -> Text -> Mit Env x GitMerge
 performMerge message commitish = do
   head <- gitHead
   commits <- gitCommitsBetween (Just head) commitish
@@ -799,7 +799,7 @@ pushPushed push =
     TriedToPush -> False
 
 -- TODO get context
-performPush :: Text -> Mit Int x GitPush
+performPush :: Text -> Mit Env x GitPush
 performPush branch = do
   fetched <- gitFetch "origin"
   head <- gitHead
@@ -836,7 +836,7 @@ data GitSnapshot = GitSnapshot
     stash :: Maybe Text
   }
 
-performSnapshot :: Mit Int x GitSnapshot
+performSnapshot :: Mit Env x GitSnapshot
 performSnapshot = do
   head <- gitHead
   stash <-

@@ -9,6 +9,7 @@ module Mit.Undo
 where
 
 import Data.Text qualified as Text
+import Mit.Env (Env)
 import Mit.Git
 import Mit.Monad
 import Mit.Prelude
@@ -42,7 +43,7 @@ parseUndos = do
           error (show text)
         ]
 
-applyUndo :: Undo -> Mit Int x ()
+applyUndo :: Undo -> Mit Env x ()
 applyUndo = \case
   Apply commit -> do
     git_ ["stash", "apply", "--quiet", commit]

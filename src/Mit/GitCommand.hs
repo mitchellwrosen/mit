@@ -24,6 +24,7 @@ import Data.Text.Lazy.Builder qualified as Text (Builder)
 import Data.Text.Lazy.Builder qualified as Text.Builder
 import Ki qualified
 import Mit.Builder qualified as Builder
+import Mit.Env (Env (..))
 import Mit.Monad
 import Mit.Prelude
 import Mit.Process
@@ -168,15 +169,15 @@ renderFlagVerify = \case
 ------------------------------------------------------------------------------------------------------------------------
 -- Git process  stuff
 
-git :: ProcessOutput a => Command -> Mit Int x a
+git :: ProcessOutput a => Command -> Mit Env x a
 git =
   runGit . renderCommand
 
-git_ :: Command -> Mit Int x ()
+git_ :: Command -> Mit Env x ()
 git_ =
   git
 
-runGit :: ProcessOutput a => [Text] -> Mit Int x a
+runGit :: ProcessOutput a => [Text] -> Mit Env x a
 runGit args = do
   let spec :: CreateProcess
       spec =
@@ -228,10 +229,10 @@ runGit args = do
               signalProcessGroup sigTERM pgid
           waitForProcess process
 
-debugPrintGit :: [Text] -> Seq Text -> Seq Text -> ExitCode -> Mit Int x ()
+debugPrintGit :: [Text] -> Seq Text -> Seq Text -> ExitCode -> Mit Env x ()
 debugPrintGit args stdoutLines stderrLines exitCode = do
-  verbose <- getEnv
-  io case verbose of
+  env <- getEnv
+  io case env.verbosity of
     1 -> Builder.putln (Text.Builder.brightBlack v1)
     2 -> Builder.putln (Text.Builder.brightBlack (v1 <> v2))
     _ -> pure ()

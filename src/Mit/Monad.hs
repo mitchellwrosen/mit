@@ -3,11 +3,11 @@ module Mit.Monad
     runMit,
     io,
     getEnv,
+    withEnv,
     throw,
     acquire,
     acquire_,
     block,
-    ublock,
   )
 where
 
@@ -31,7 +31,8 @@ instance MonadIO (Mit r x) where
   liftIO = io
 
 unMit :: Mit r x a -> (a -> r -> IO x) -> r -> IO x
-unMit (Mit k) = k
+unMit (Mit k) =
+  k
 
 runMit :: r -> Mit r a a -> IO a
 runMit r m =
@@ -47,14 +48,17 @@ getEnv :: Mit r x r
 getEnv =
   Mit \k r -> k r r
 
+withEnv :: (r -> s) -> Mit s x a -> Mit r x a
+withEnv f m =
+  Mit \k r -> unMit m (\a _ -> k a r) (f r)
+
 throw :: x -> Mit r x a
 throw x =
   Mit \_ _ -> pure x
 
 acquire :: (forall b. (a -> IO b) -> IO b) -> Mit r x a
 acquire f =
-  Mit \k r ->
-    f \a -> k a r
+  Mit \k r -> f \a -> k a r
 
 acquire_ :: (forall b. IO b -> IO b) -> Mit r x ()
 acquire_ f =
@@ -64,10 +68,4 @@ block :: Mit r a a -> Mit r x a
 block m =
   Mit \k r -> do
     a <- runMit r m
-    k a r
-
-ublock :: Mit r a a -> Mit r x (Either SomeException a)
-ublock m =
-  Mit \k r -> do
-    a <- try (runMit r m)
     k a r

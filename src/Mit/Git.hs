@@ -11,6 +11,7 @@ import Data.Text.Lazy.Builder qualified as Text (Builder)
 import Data.Text.Lazy.Builder qualified as Text.Builder
 import Ki qualified
 import Mit.Builder qualified as Builder
+import Mit.Env (Env (..))
 import Mit.GitCommand qualified as Git
 import Mit.Monad
 import Mit.Prelude
@@ -135,7 +136,7 @@ showGitVersion (GitVersion x y z) =
   Text.pack (show x) <> "." <> Text.pack (show y) <> "." <> Text.pack (show z)
 
 -- | Apply stash, return conflicts.
-gitApplyStash :: Text -> Mit Int x [GitConflict]
+gitApplyStash :: Text -> Mit Env x [GitConflict]
 gitApplyStash stash = do
   conflicts <-
     Git.git (Git.StashApply Git.FlagQuiet stash) >>= \case
@@ -146,31 +147,31 @@ gitApplyStash stash = do
 
 -- | Create a branch.
 -- FIXME inline this
-gitBranch :: Text -> Mit Int x ()
+gitBranch :: Text -> Mit Env x ()
 gitBranch branch =
   Git.git (Git.Branch Git.FlagNoTrack branch)
 
 -- | Does the given local branch (refs/heads/...) exist?
-gitBranchExists :: Text -> Mit Int x Bool
+gitBranchExists :: Text -> Mit Env x Bool
 gitBranchExists branch =
   Git.git (Git.RevParse Git.FlagQuiet Git.FlagVerify ("refs/heads/" <> branch))
 
 -- | Get the head of a local branch (refs/heads/...).
-gitBranchHead :: Text -> Mit Int x (Maybe Text)
+gitBranchHead :: Text -> Mit Env x (Maybe Text)
 gitBranchHead branch =
   Git.git (Git.RevParse Git.NoFlagQuiet Git.NoFlagVerify ("refs/heads/" <> branch)) <&> \case
     Left _ -> Nothing
     Right head -> Just head
 
 -- | Get the directory a branch's worktree is checked out in, if it exists.
-gitBranchWorktreeDir :: Text -> Mit Int x (Maybe Text)
+gitBranchWorktreeDir :: Text -> Mit Env x (Maybe Text)
 gitBranchWorktreeDir branch = do
   worktrees <- gitWorktreeList
   pure case List.find (\worktree -> worktree.branch == Just branch) worktrees of
     Nothing -> Nothing
     Just worktree -> Just worktree.directory
 
-gitCommit :: Mit Int x Bool
+gitCommit :: Mit Env x Bool
 gitCommit =
   io (queryTerminal 0) >>= \case
     False -> do
@@ -181,7 +182,7 @@ gitCommit =
         ExitFailure _ -> False
         ExitSuccess -> True
 
-gitCommitsBetween :: Maybe Text -> Text -> Mit Int x (Seq GitCommitInfo)
+gitCommitsBetween :: Maybe Text -> Text -> Mit Env x (Seq GitCommitInfo)
 gitCommitsBetween commit1 commit2 =
   if commit1 == Just commit2
     then pure Seq.empty
@@ -204,17 +205,17 @@ gitCommitsBetween commit1 commit2 =
       _ Seq.:<| x Seq.:<| xs -> x Seq.<| dropEvens xs
       xs -> xs
 
-gitConflicts :: Mit Int x [GitConflict]
+gitConflicts :: Mit Env x [GitConflict]
 gitConflicts =
   mapMaybe parseGitConflict <$> Git.git (Git.StatusV1 Git.FlagNoRenames)
 
 -- | Get the conflicts with the given commitish.
 --
 -- Precondition: there is no merge in progress.
-gitConflictsWith :: Text -> Mit Int x [GitConflict]
+gitConflictsWith :: Text -> Mit Env x [GitConflict]
 gitConflictsWith commit = do
   maybeStash <- gitStash
-  conflicts <-
+  conflicts <- do
     Git.git (Git.Merge Git.FlagNoCommit Git.FlagNoFF commit) >>= \case
       False -> gitConflicts
       True -> pure []
@@ -223,38 +224,38 @@ gitConflictsWith commit = do
   pure conflicts
 
 -- | Precondition: there are changes to stash
-gitCreateStash :: Mit Int x Text
+gitCreateStash :: Mit Env x Text
 gitCreateStash = do
   Git.git_ Git.AddAll -- it seems certain things (like renames), unless staged, cannot be stashed
   stash <- Git.git Git.StashCreate
   gitUnstageChanges
   pure stash
 
-gitDefaultBranch :: Text -> Mit Int x Text
+gitDefaultBranch :: Text -> Mit Env x Text
 gitDefaultBranch remote = do
   ref <- Git.git (Git.SymbolicRef ("refs/remotes/" <> remote <> "/HEAD"))
   pure (Text.drop (14 + Text.length remote) ref)
 
 -- FIXME document this
-gitDiff :: Mit Int x DiffResult
+gitDiff :: Mit Env x DiffResult
 gitDiff = do
   gitUnstageChanges
   Git.git (Git.Diff Git.FlagQuiet) <&> \case
     False -> Differences
     True -> NoDifferences
 
-gitExistCommitsBetween :: Text -> Text -> Mit Int x Bool
+gitExistCommitsBetween :: Text -> Text -> Mit Env x Bool
 gitExistCommitsBetween commit1 commit2 =
   if commit1 == commit2
     then pure False
     else isJust <$> git ["rev-list", "--max-count=1", commit1 <> ".." <> commit2]
 
 -- | Do any untracked files exist?
-gitExistUntrackedFiles :: Mit Int x Bool
+gitExistUntrackedFiles :: Mit Env x Bool
 gitExistUntrackedFiles =
   not . null <$> gitListUntrackedFiles
 
-gitFetch :: Text -> Mit Int x Bool
+gitFetch :: Text -> Mit Env x Bool
 gitFetch remote = do
   fetched <- io (readIORef fetchedRef)
   case Map.lookup remote fetched of
@@ -270,54 +271,56 @@ fetchedRef =
   unsafePerformIO (newIORef mempty)
 {-# NOINLINE fetchedRef #-}
 
-gitFetch_ :: Text -> Mit Int x ()
+gitFetch_ :: Text -> Mit Env x ()
 gitFetch_ =
   void . gitFetch
 
-gitHead :: Mit Int x Text
+gitHead :: Mit Env x Text
 gitHead =
   Git.git (Git.RevParse Git.NoFlagQuiet Git.NoFlagVerify "HEAD")
 
-gitIsMergeCommit :: Text -> Mit Int x Bool
+gitIsMergeCommit :: Text -> Mit Env x Bool
 gitIsMergeCommit commit =
   Git.git (Git.RevParse Git.FlagQuiet Git.FlagVerify (commit <> "^2"))
 
 -- | List all untracked files.
-gitListUntrackedFiles :: Mit Int x [Text]
+gitListUntrackedFiles :: Mit Env x [Text]
 gitListUntrackedFiles =
   git ["ls-files", "--exclude-standard", "--other"]
 
-gitMergeInProgress :: Mit Int x Bool
+gitMergeInProgress :: Mit Env x Bool
 gitMergeInProgress = do
-  gitdir <- gitRevParseAbsoluteGitDir
-  io (doesFileExist (Text.unpack (gitdir <> "/MERGE_HEAD")))
+  env <- getEnv
+  io (doesFileExist (Text.unpack (env.gitdir <> "/MERGE_HEAD")))
 
-gitPush :: Text -> Mit Int x Bool
+gitPush :: Text -> Mit Env x Bool
 gitPush branch =
   git ["push", "--set-upstream", "origin", "--quiet", branch <> ":" <> branch]
 
 -- | Does the given remote branch (refs/remotes/...) exist?
-gitRemoteBranchExists :: Text -> Text -> Mit Int x Bool
+gitRemoteBranchExists :: Text -> Text -> Mit Env x Bool
 gitRemoteBranchExists remote branch =
   Git.git (Git.RevParse Git.FlagQuiet Git.FlagVerify ("refs/remotes/" <> remote <> "/" <> branch))
 
 -- | Get the head of a remote branch.
-gitRemoteBranchHead :: Text -> Text -> Mit Int x (Maybe Text)
+gitRemoteBranchHead :: Text -> Text -> Mit Env x (Maybe Text)
 gitRemoteBranchHead remote branch =
   Git.git (Git.RevParse Git.NoFlagQuiet Git.NoFlagVerify ("refs/remotes/" <> remote <> "/" <> branch)) <&> \case
     Left _ -> Nothing
     Right head -> Just head
 
-gitRevParseAbsoluteGitDir :: Mit Int x Text
+gitRevParseAbsoluteGitDir :: Mit Env x (Maybe Text)
 gitRevParseAbsoluteGitDir =
-  git ["rev-parse", "--absolute-git-dir"]
+  git ["rev-parse", "--absolute-git-dir"] <&> \case
+    Left _ -> Nothing
+    Right dir -> Just dir
 
 -- | The root of this git worktree.
-gitRevParseShowToplevel :: Mit Int x Text
+gitRevParseShowToplevel :: Mit Env x Text
 gitRevParseShowToplevel =
   git ["rev-parse", "--show-toplevel"]
 
-gitShow :: Text -> Mit Int x GitCommitInfo
+gitShow :: Text -> Mit Env x GitCommitInfo
 gitShow commit =
   parseGitCommitInfo
     <$> git
@@ -329,7 +332,7 @@ gitShow commit =
       ]
 
 -- | Stash uncommitted changes (if any).
-gitStash :: Mit Int x (Maybe Text)
+gitStash :: Mit Env x (Maybe Text)
 gitStash = do
   gitDiff >>= \case
     Differences -> do
@@ -339,13 +342,13 @@ gitStash = do
       pure (Just stash)
     NoDifferences -> pure Nothing
 
-gitUnstageChanges :: Mit Int x ()
+gitUnstageChanges :: Mit Env x ()
 gitUnstageChanges = do
   Git.git_ (Git.ResetPaths Git.FlagQuiet ["."])
   untrackedFiles <- gitListUntrackedFiles
   unless (null untrackedFiles) (Git.git_ (Git.Add Git.FlagIntentToAdd untrackedFiles))
 
-gitVersion :: Mit Int [Stanza] GitVersion
+gitVersion :: Mit Env [Stanza] GitVersion
 gitVersion = do
   v0 <- git ["--version"]
   fromMaybe (throw [Just ("Could not parse git version from: " <> Text.Builder.fromText v0)]) do
@@ -365,7 +368,7 @@ data GitWorktree = GitWorktree
 
 -- /dir/one 0efd393c35 [oingo]         -> ("/dir/one", "0efd393c35", Just "oingo")
 -- /dir/two dc0c114266 (detached HEAD) -> ("/dir/two", "dc0c114266", Nothing)
-gitWorktreeList :: Mit Int x [GitWorktree]
+gitWorktreeList :: Mit Env x [GitWorktree]
 gitWorktreeList = do
   git ["worktree", "list"] <&> map \line ->
     case Parsec.parse parser "" line of
@@ -404,7 +407,7 @@ parseGitRepo url = do
   url' <- Text.stripSuffix ".git" url
   pure (url, Text.takeWhileEnd (/= '/') url')
 
-git :: ProcessOutput a => [Text] -> Mit Int x a
+git :: ProcessOutput a => [Text] -> Mit Env x a
 git args = do
   let spec :: CreateProcess
       spec =
@@ -456,14 +459,14 @@ git args = do
               signalProcessGroup sigTERM pgid
           waitForProcess process
 
-git_ :: [Text] -> Mit Int x ()
+git_ :: [Text] -> Mit Env x ()
 git_ =
   git
 
 -- Yucky interactive/inherity variant (so 'git commit' can open an editor).
 --
 -- FIXME bracket
-git2 :: [Text] -> Mit Int x ExitCode
+git2 :: [Text] -> Mit Env x ExitCode
 git2 args = do
   (_, _, stderrHandle, processHandle) <-
     io do
@@ -495,10 +498,10 @@ git2 args = do
   debugPrintGit args Seq.empty stderrLines exitCode
   pure exitCode
 
-debugPrintGit :: [Text] -> Seq Text -> Seq Text -> ExitCode -> Mit Int x ()
+debugPrintGit :: [Text] -> Seq Text -> Seq Text -> ExitCode -> Mit Env x ()
 debugPrintGit args stdoutLines stderrLines exitCode = do
-  verbose <- getEnv
-  io case verbose of
+  env <- getEnv
+  io case env.verbosity of
     1 -> Builder.putln (Text.Builder.brightBlack v1)
     2 -> Builder.putln (Text.Builder.brightBlack (v1 <> v2))
     _ -> pure ()
