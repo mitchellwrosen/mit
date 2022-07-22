@@ -4,13 +4,13 @@ module Mit
 where
 
 import Data.List.NonEmpty qualified as List1
+import Data.Ord (clamp)
 import Data.Sequence qualified as Seq
 import Data.Text qualified as Text
 import Data.Text.Builder.ANSI qualified as Text
 import Data.Text.Lazy.Builder qualified as Text (Builder)
 import Data.Text.Lazy.Builder qualified as Text.Builder
 import Mit.Builder qualified as Builder
-import Mit.Config (verbose)
 import Mit.Directory
 import Mit.Git
 import Mit.GitCommand qualified as Git
@@ -43,8 +43,8 @@ import System.Exit (exitFailure)
 
 main :: IO ()
 main = do
-  action <- Opt.customExecParser parserPrefs parserInfo
-  runMit verbose ([] <$ action) >>= \case
+  (verbosity, action) <- Opt.customExecParser parserPrefs parserInfo
+  runMit (clamp (0, 2) verbosity) ([] <$ action) >>= \case
     [] -> pure ()
     errs -> do
       putStanzas errs
@@ -64,35 +64,37 @@ main = do
           prefTabulateFill = 24 -- grabbed this from optparse-applicative
         }
 
-    parserInfo :: Opt.ParserInfo (Mit Int [Stanza] ())
+    parserInfo :: Opt.ParserInfo (Int, Mit Int [Stanza] ())
     parserInfo =
       Opt.info parser $
         Opt.progDesc "mit: a git wrapper with a streamlined UX"
 
-    parser :: Opt.Parser (Mit Int [Stanza] ())
+    parser :: Opt.Parser (Int, Mit Int [Stanza] ())
     parser =
-      (Opt.hsubparser . fold)
-        [ Opt.command "branch" $
-            Opt.info
-              (mitBranch <$> Opt.strArgument (Opt.metavar "≪branch≫"))
-              (Opt.progDesc "Create a new branch in a new worktree."),
-          Opt.command "commit" $
-            Opt.info
-              (pure mitCommit)
-              (Opt.progDesc "Create a commit interactively."),
-          Opt.command "merge" $
-            Opt.info
-              (mitMerge <$> Opt.strArgument (Opt.metavar "≪branch≫"))
-              (Opt.progDesc "Merge the given branch into the current branch."),
-          Opt.command "sync" $
-            Opt.info
-              (pure mitSync)
-              (Opt.progDesc "Sync with the remote named `origin`."),
-          Opt.command "undo" $
-            Opt.info
-              (pure mitUndo)
-              (Opt.progDesc "Undo the last `mit` command (if possible).")
-        ]
+      (,)
+        <$> Opt.option Opt.auto (Opt.help "Verbosity" <> Opt.metavar "«n»" <> Opt.short 'v' <> Opt.value 0)
+        <*> (Opt.hsubparser . fold)
+          [ Opt.command "branch" $
+              Opt.info
+                (mitBranch <$> Opt.strArgument (Opt.metavar "≪branch≫"))
+                (Opt.progDesc "Create a new branch in a new worktree."),
+            Opt.command "commit" $
+              Opt.info
+                (pure mitCommit)
+                (Opt.progDesc "Create a commit interactively."),
+            Opt.command "merge" $
+              Opt.info
+                (mitMerge <$> Opt.strArgument (Opt.metavar "≪branch≫"))
+                (Opt.progDesc "Merge the given branch into the current branch."),
+            Opt.command "sync" $
+              Opt.info
+                (pure mitSync)
+                (Opt.progDesc "Sync with the remote named `origin`."),
+            Opt.command "undo" $
+              Opt.info
+                (pure mitUndo)
+                (Opt.progDesc "Undo the last `mit` command (if possible).")
+          ]
 
 dieIfBuggyGit :: Mit Int [Stanza] ()
 dieIfBuggyGit = do

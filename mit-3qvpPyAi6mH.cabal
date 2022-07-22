@@ -83,7 +83,6 @@ library
   exposed-modules:
     Mit
     Mit.Builder
-    Mit.Config
     Mit.Directory
     Mit.Git
     Mit.GitCommand
