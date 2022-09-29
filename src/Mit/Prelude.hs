@@ -6,13 +6,14 @@ where
 
 import Control.Applicative as X ((<|>))
 import Control.Category as X hiding (id, (.))
-import Control.Exception as X hiding (handle, throw)
-import Control.Monad as X
-import Control.Monad.IO.Class as X (MonadIO (..))
 import Control.Concurrent.STM as X (atomically)
+import Control.Exception as X hiding (handle, throw)
+import Control.Monad as X hiding (return)
+import Control.Monad.IO.Class as X (MonadIO (..))
 import Data.Char as X
 import Data.Foldable as X
 import Data.Function as X
+import Data.Functor as X (($>))
 import Data.IORef as X
 import Data.List.NonEmpty qualified as List1
 import Data.Map as X (Map)
@@ -27,7 +28,7 @@ import Data.Word as X (Word64)
 import GHC.Stack as X (HasCallStack)
 import Mit.Seq1 as X (Seq1)
 import Text.Read as X (readMaybe)
-import Prelude as X hiding (head, id)
+import Prelude as X hiding (head, id, return)
 
 type List1 =
   List1.NonEmpty

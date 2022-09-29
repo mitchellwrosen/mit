@@ -9,9 +9,9 @@ import Mit.Monad
 import Mit.Prelude
 import System.Directory qualified as Directory
 
-cd :: Text -> Mit r x ()
+cd :: Text -> Mit r (X x a) a -> Mit r x a
 cd dir =
-  acquire_ (Directory.withCurrentDirectory (Text.unpack dir))
+  with_ (Directory.withCurrentDirectory (Text.unpack dir))
 
 -- | Change directories (delimited by 'block').
 doesDirectoryExist :: MonadIO m => Text -> m Bool

@@ -199,16 +199,16 @@ runGit args = do
             detach_console = False,
             use_process_jobs = False
           }
-  block do
-    (_maybeStdin, maybeStdout, maybeStderr, processHandle) <- acquire (bracket (createProcess spec) cleanup)
-    scope <- acquire Ki.scoped
-    stdoutThread <- io (Ki.fork scope (drainTextHandle (fromJust maybeStdout)))
-    stderrThread <- io (Ki.fork scope (drainTextHandle (fromJust maybeStderr)))
-    exitCode <- io (waitForProcess processHandle)
-    stdoutLines <- io (atomically (Ki.await stdoutThread))
-    stderrLines <- io (atomically (Ki.await stderrThread))
-    debugPrintGit args stdoutLines stderrLines exitCode
-    io (fromProcessOutput stdoutLines stderrLines exitCode)
+
+  with (bracket (createProcess spec) cleanup) \(_maybeStdin, maybeStdout, maybeStderr, processHandle) -> do
+    with Ki.scoped \scope -> do
+      stdoutThread <- io (Ki.fork scope (drainTextHandle (fromJust maybeStdout)))
+      stderrThread <- io (Ki.fork scope (drainTextHandle (fromJust maybeStderr)))
+      exitCode <- io (waitForProcess processHandle)
+      stdoutLines <- io (atomically (Ki.await stdoutThread))
+      stderrLines <- io (atomically (Ki.await stderrThread))
+      debugPrintGit args stdoutLines stderrLines exitCode
+      io (fromProcessOutput stdoutLines stderrLines exitCode)
   where
     cleanup :: (Maybe Handle, Maybe Handle, Maybe Handle, ProcessHandle) -> IO ()
     cleanup (maybeStdin, maybeStdout, maybeStderr, process) =

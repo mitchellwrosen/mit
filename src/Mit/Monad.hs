@@ -4,68 +4,96 @@ module Mit.Monad
     io,
     getEnv,
     withEnv,
-    throw,
-    acquire,
-    acquire_,
-    block,
+    label,
+    Label,
+    X,
+    with,
+    with_,
   )
 where
 
+import Control.Monad qualified
 import Mit.Prelude
 
 newtype Mit r x a
-  = Mit ((a -> r -> IO x) -> r -> IO x)
+  = Mit (r -> (a -> IO x) -> IO x)
   deriving stock (Functor)
 
 instance Applicative (Mit r x) where
-  pure x = Mit \k r -> k x r
+  pure x = Mit \_ k -> k x
   (<*>) = ap
 
 instance Monad (Mit r x) where
   return = pure
   Mit mx >>= f =
-    Mit \k ->
-      mx (\a -> unMit (f a) k)
+    Mit \r k ->
+      mx r (\a -> unMit (f a) r k)
 
 instance MonadIO (Mit r x) where
   liftIO = io
 
-unMit :: Mit r x a -> (a -> r -> IO x) -> r -> IO x
+unMit :: Mit r x a -> r -> (a -> IO x) -> IO x
 unMit (Mit k) =
   k
 
 runMit :: r -> Mit r a a -> IO a
 runMit r m =
-  unMit m (\x _ -> pure x) r
+  unMit m r pure
+
+return :: x -> Mit r x a
+return x =
+  Mit \_ _ -> pure x
 
 io :: IO a -> Mit r x a
 io m =
-  Mit \k r -> do
+  Mit \_ k -> do
     x <- m
-    k x r
+    k x
 
 getEnv :: Mit r x r
 getEnv =
-  Mit \k r -> k r r
+  Mit \r k -> k r
 
 withEnv :: (r -> s) -> Mit s x a -> Mit r x a
 withEnv f m =
-  Mit \k r -> unMit m (\a _ -> k a r) (f r)
+  Mit \r k -> unMit m (f r) k
 
-throw :: x -> Mit r x a
-throw x =
-  Mit \_ _ -> pure x
+label :: forall r x a. ((forall xx void. Label (X x a) xx => a -> Mit r xx void) -> Mit r (X x a) a) -> Mit r x a
+label f =
+  Mit \r k -> do
+    unX k (unMit (f \a -> return (bury @(X x a) (XR a))) r (pure . XR))
 
-acquire :: (forall b. (a -> IO b) -> IO b) -> Mit r x a
-acquire f =
-  Mit \k r -> f \a -> k a r
+with :: (forall v. (a -> IO v) -> IO v) -> (a -> Mit r (X x b) b) -> Mit r x b
+with f action =
+  Mit \r k ->
+    unX k (f \a -> unMit (action a) r (pure . XR))
 
-acquire_ :: (forall b. IO b -> IO b) -> Mit r x ()
-acquire_ f =
-  acquire \k -> f (k ())
+with_ :: (forall v. IO v -> IO v) -> Mit r (X x a) a -> Mit r x a
+with_ f action =
+  Mit \r k ->
+    unX k (f (unMit action r (pure . XR)))
 
-block :: Mit r a a -> Mit r x a
-block m =
-  Mit \k r -> do
-    a <- runMit r m
-    k a r
+-- instance Label (X a b) (X a b)
+-- instance Label (X a b) (X (X a b) c)
+-- instance Label (X a b) (X (X (X a b) c) d)
+-- etc...
+
+data X a b
+  = XL a
+  | XR b
+
+unX :: (a -> IO b) -> IO (X b a) -> IO b
+unX k mx =
+  mx >>= \case
+    XL b -> pure b
+    XR a -> k a
+
+class Label a b where
+  bury :: a -> b
+  default bury :: a ~ b => a -> b
+  bury = id
+
+instance Label (X a b) (X a b)
+
+instance {-# OVERLAPPABLE #-} Label a b => Label a (X b c) where
+  bury = XL . bury

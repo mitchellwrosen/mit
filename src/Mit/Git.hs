@@ -348,10 +348,10 @@ gitUnstageChanges = do
   untrackedFiles <- gitListUntrackedFiles
   unless (null untrackedFiles) (Git.git_ (Git.Add Git.FlagIntentToAdd untrackedFiles))
 
-gitVersion :: Mit Env [Stanza] GitVersion
-gitVersion = do
+gitVersion :: (forall void. [Stanza] -> Mit Env x void) -> Mit Env x GitVersion
+gitVersion return = do
   v0 <- git ["--version"]
-  fromMaybe (throw [Just ("Could not parse git version from: " <> Text.Builder.fromText v0)]) do
+  fromMaybe (return [Just ("Could not parse git version from: " <> Text.Builder.fromText v0)]) do
     "git" : "version" : v1 : _ <- Just (Text.words v0)
     [sx, sy, sz] <- Just (Text.split (== '.') v1)
     x <- readMaybe (Text.unpack sx)
@@ -429,16 +429,15 @@ git args = do
             detach_console = False,
             use_process_jobs = False
           }
-  block do
-    (_maybeStdin, maybeStdout, maybeStderr, processHandle) <- acquire (bracket (createProcess spec) cleanup)
-    scope <- acquire Ki.scoped
-    stdoutThread <- io (Ki.fork scope (drainTextHandle (fromJust maybeStdout)))
-    stderrThread <- io (Ki.fork scope (drainTextHandle (fromJust maybeStderr)))
-    exitCode <- io (waitForProcess processHandle)
-    stdoutLines <- io (atomically (Ki.await stdoutThread))
-    stderrLines <- io (atomically (Ki.await stderrThread))
-    debugPrintGit args stdoutLines stderrLines exitCode
-    io (fromProcessOutput stdoutLines stderrLines exitCode)
+  with (bracket (createProcess spec) cleanup) \(_maybeStdin, maybeStdout, maybeStderr, processHandle) -> do
+    with Ki.scoped \scope -> do
+      stdoutThread <- io (Ki.fork scope (drainTextHandle (fromJust maybeStdout)))
+      stderrThread <- io (Ki.fork scope (drainTextHandle (fromJust maybeStderr)))
+      exitCode <- io (waitForProcess processHandle)
+      stdoutLines <- io (atomically (Ki.await stdoutThread))
+      stderrLines <- io (atomically (Ki.await stderrThread))
+      debugPrintGit args stdoutLines stderrLines exitCode
+      io (fromProcessOutput stdoutLines stderrLines exitCode)
   where
     cleanup :: (Maybe Handle, Maybe Handle, Maybe Handle, ProcessHandle) -> IO ()
     cleanup (maybeStdin, maybeStdout, maybeStderr, process) =

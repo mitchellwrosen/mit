@@ -45,22 +45,24 @@ main :: IO ()
 main = do
   (verbosity, command) <- Opt.customExecParser parserPrefs parserInfo
 
-  let action2 :: Mit () [Stanza] ()
-      action2 = do
+  let action :: Mit () x [Stanza]
+      action = do
         withEnv (\() -> Env {gitdir = "", verbosity}) gitRevParseAbsoluteGitDir >>= \case
-          Nothing -> throw [Just (Text.red "The current directory doesn't contain a git repository.")]
-          Just gitdir ->
+          Nothing -> pure [Just (Text.red "The current directory doesn't contain a git repository.")]
+          Just gitdir -> do
             withEnv
               (\() -> Env {gitdir, verbosity})
-              ( case command of
-                  MitCommand'Branch branch -> mitBranch branch
-                  MitCommand'Commit -> mitCommit
-                  MitCommand'Merge branch -> mitMerge branch
-                  MitCommand'Sync -> mitSync
-                  MitCommand'Undo -> mitUndo
+              ( do
+                  label \return ->
+                    case command of
+                      MitCommand'Branch branch -> mitBranch return branch $> []
+                      MitCommand'Commit -> mitCommit return $> []
+                      MitCommand'Merge branch -> mitMerge return branch $> []
+                      MitCommand'Sync -> mitSync return $> []
+                      MitCommand'Undo -> mitUndo return $> []
               )
 
-  runMit () ([] <$ action2) >>= \case
+  runMit () action >>= \case
     [] -> pure ()
     errs -> do
       putStanzas errs
@@ -121,14 +123,14 @@ data MitCommand
   | MitCommand'Sync
   | MitCommand'Undo
 
-dieIfBuggyGit :: Mit Env [Stanza] ()
-dieIfBuggyGit = do
-  version <- gitVersion
+dieIfBuggyGit :: (forall void. [Stanza] -> Mit Env x void) -> Mit Env x ()
+dieIfBuggyGit return = do
+  version <- gitVersion return
   let validate (ver, err) = if version < ver then ((ver, err) :) else id
   case foldr validate [] validations of
     [] -> pure ()
     errors ->
-      throw $
+      return $
         map
           ( \(ver, err) ->
               Just
@@ -158,12 +160,12 @@ dieIfBuggyGit = do
         )
       ]
 
-dieIfMergeInProgress :: Mit Env [Stanza] ()
-dieIfMergeInProgress =
-  whenM gitMergeInProgress (throw [Just (Text.red (Text.bold "git merge" <> " in progress."))])
+dieIfMergeInProgress :: (forall void. [Stanza] -> Mit Env x void) -> Mit Env x ()
+dieIfMergeInProgress return =
+  whenM gitMergeInProgress (return [Just (Text.red (Text.bold "git merge" <> " in progress."))])
 
-mitBranch :: Text -> Mit Env [Stanza] ()
-mitBranch branch = do
+mitBranch :: (forall void. [Stanza] -> Mit Env x void) -> Text -> Mit Env x ()
+mitBranch return branch = do
   worktreeDir <- do
     rootdir <- gitRevParseShowToplevel
     pure (Text.dropWhileEnd (/= '/') rootdir <> branch)
@@ -171,10 +173,9 @@ mitBranch branch = do
   gitBranchWorktreeDir branch >>= \case
     Nothing -> do
       whenM (doesDirectoryExist worktreeDir) do
-        throw [Just (Text.red ("Directory " <> Text.bold (Text.Builder.fromText worktreeDir) <> " already exists."))]
+        return [Just (Text.red ("Directory " <> Text.bold (Text.Builder.fromText worktreeDir) <> " already exists."))]
       git_ ["worktree", "add", "--detach", worktreeDir]
-      block do
-        cd worktreeDir
+      cd worktreeDir do
         whenNotM (Git.git (Git.Switch branch)) do
           gitBranch branch
           Git.git_ (Git.Switch branch)
@@ -185,7 +186,7 @@ mitBranch branch = do
             Git.git_ (Git.BranchSetUpstreamTo upstream)
     Just directory ->
       when (directory /= worktreeDir) do
-        throw
+        return
           [ Just
               ( Text.red
                   ( Text.bold
@@ -198,19 +199,19 @@ mitBranch branch = do
               )
           ]
 
-mitCommit :: Mit Env [Stanza] ()
-mitCommit = do
-  whenM gitExistUntrackedFiles dieIfBuggyGit
+mitCommit :: (forall void. [Stanza] -> Mit Env x void) -> Mit Env x ()
+mitCommit return = do
+  whenM gitExistUntrackedFiles (dieIfBuggyGit return)
 
   gitMergeInProgress >>= \case
     False ->
       gitDiff >>= \case
-        Differences -> mitCommit_
-        NoDifferences -> throw [Just (Text.red "There's nothing to commit.")]
+        Differences -> mitCommit_ return
+        NoDifferences -> return [Just (Text.red "There's nothing to commit.")]
     True -> mitCommitMerge
 
-mitCommit_ :: Mit Env [Stanza] ()
-mitCommit_ = do
+mitCommit_ :: (forall void. [Stanza] -> Mit Env x void) -> Mit Env x ()
+mitCommit_ return = do
   context <- getContext
   let upstream = "origin/" <> context.branch
 
@@ -218,7 +219,7 @@ mitCommit_ = do
   existLocalCommits <- contextExistLocalCommits context
 
   when (existRemoteCommits && not existLocalCommits) do
-    throw
+    return
       [ notSynchronizedStanza context.branch upstream ".",
         runSyncStanza "Run" context.branch upstream
       ]
@@ -355,10 +356,10 @@ data PushNotAttemptedReason
   | Offline -- fetch failed, so we seem offline
   | UnseenCommits -- we just pulled remote commits; don't push in case there's something local to address
 
-mitMerge :: Text -> Mit Env [Stanza] ()
-mitMerge target = do
-  dieIfMergeInProgress
-  whenM gitExistUntrackedFiles dieIfBuggyGit
+mitMerge :: (forall void. [Stanza] -> Mit Env x void) -> Text -> Mit Env x ()
+mitMerge return target = do
+  dieIfMergeInProgress return
+  whenM gitExistUntrackedFiles (dieIfBuggyGit return)
 
   context <- getContext
   let upstream = "origin/" <> context.branch
@@ -366,16 +367,16 @@ mitMerge target = do
   if target == context.branch || target == upstream
     then -- If on branch `foo`, treat `mit merge foo` and `mit merge origin/foo` as `mit sync`
       mitSyncWith Nothing Nothing
-    else mitMergeWith context target
+    else mitMergeWith return context target
 
-mitMergeWith :: Context -> Text -> Mit Env [Stanza] ()
-mitMergeWith context target = do
+mitMergeWith :: (forall void. [Stanza] -> Mit Env x void) -> Context -> Text -> Mit Env x ()
+mitMergeWith return context target = do
   -- When given 'mit merge foo', prefer running 'git merge origin/foo' over 'git merge foo'
   targetCommit <-
     gitRemoteBranchHead "origin" target
       & onNothingM
         ( gitBranchHead target
-            & onNothingM (throw [Just (Text.red "No such branch.")])
+            & onNothingM (return [Just (Text.red "No such branch.")])
         )
 
   let upstream = "origin/" <> context.branch
@@ -384,7 +385,7 @@ mitMergeWith context target = do
   existLocalCommits <- contextExistLocalCommits context
 
   when (existRemoteCommits && not existLocalCommits) do
-    throw
+    return
       [ notSynchronizedStanza context.branch upstream ".",
         runSyncStanza "Run" context.branch upstream
       ]
@@ -483,10 +484,10 @@ mitMergeWith context target = do
       ]
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
-mitSync :: Mit Env [Stanza] ()
-mitSync = do
-  dieIfMergeInProgress
-  whenM gitExistUntrackedFiles dieIfBuggyGit
+mitSync :: (forall void. [Stanza] -> Mit Env x void) -> Mit Env x ()
+mitSync return = do
+  dieIfMergeInProgress return
+  whenM gitExistUntrackedFiles (dieIfBuggyGit return)
   mitSyncWith Nothing Nothing
 
 -- | @mitSyncWith _ maybeUndos@
@@ -597,13 +598,13 @@ mitSyncWith stanza0 maybeUndos = do
       ]
 
 -- FIXME output what we just undid
-mitUndo :: Mit Env [Stanza] ()
-mitUndo = do
+mitUndo :: (forall void. [Stanza] -> Mit Env x void) -> Mit Env x ()
+mitUndo return = do
   context <- getContext
   case List1.nonEmpty context.state.undos of
-    Nothing -> throw [Just (Text.red "Nothing to undo.")]
+    Nothing -> return [Just (Text.red "Nothing to undo.")]
     Just undos1 -> for_ undos1 applyUndo
-  when (undosContainRevert context.state.undos) mitSync
+  when (undosContainRevert context.state.undos) (mitSync return)
   where
     undosContainRevert :: [Undo] -> Bool
     undosContainRevert = \case
