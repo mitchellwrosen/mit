@@ -43,7 +43,7 @@ import System.Exit (exitFailure)
 
 main :: IO ()
 main = do
-  (verbosity, action) <- Opt.customExecParser parserPrefs parserInfo
+  (verbosity, command) <- Opt.customExecParser parserPrefs parserInfo
 
   let action2 :: Mit () [Stanza] ()
       action2 = do
@@ -52,7 +52,13 @@ main = do
           Just gitdir ->
             withEnv
               (\() -> Env {gitdir, verbosity})
-              action
+              ( case command of
+                  MitCommand'Branch branch -> mitBranch branch
+                  MitCommand'Commit -> mitCommit
+                  MitCommand'Merge branch -> mitMerge branch
+                  MitCommand'Sync -> mitSync
+                  MitCommand'Undo -> mitUndo
+              )
 
   runMit () ([] <$ action2) >>= \case
     [] -> pure ()
@@ -74,12 +80,12 @@ main = do
           prefTabulateFill = 24 -- grabbed this from optparse-applicative
         }
 
-    parserInfo :: Opt.ParserInfo (Int, Mit Env [Stanza] ())
+    parserInfo :: Opt.ParserInfo (Int, MitCommand)
     parserInfo =
       Opt.info parser $
         Opt.progDesc "mit: a git wrapper with a streamlined UX"
 
-    parser :: Opt.Parser (Int, Mit Env [Stanza] ())
+    parser :: Opt.Parser (Int, MitCommand)
     parser =
       (,)
         <$> ( clamp (0, 2)
@@ -88,25 +94,32 @@ main = do
         <*> (Opt.hsubparser . fold)
           [ Opt.command "branch" $
               Opt.info
-                (mitBranch <$> Opt.strArgument (Opt.metavar "≪branch≫"))
+                (MitCommand'Branch <$> Opt.strArgument (Opt.metavar "≪branch≫"))
                 (Opt.progDesc "Create a new branch in a new worktree."),
             Opt.command "commit" $
               Opt.info
-                (pure mitCommit)
+                (pure MitCommand'Commit)
                 (Opt.progDesc "Create a commit interactively."),
             Opt.command "merge" $
               Opt.info
-                (mitMerge <$> Opt.strArgument (Opt.metavar "≪branch≫"))
+                (MitCommand'Merge <$> Opt.strArgument (Opt.metavar "≪branch≫"))
                 (Opt.progDesc "Merge the given branch into the current branch."),
             Opt.command "sync" $
               Opt.info
-                (pure mitSync)
+                (pure MitCommand'Sync)
                 (Opt.progDesc "Sync with the remote named `origin`."),
             Opt.command "undo" $
               Opt.info
-                (pure mitUndo)
+                (pure MitCommand'Undo)
                 (Opt.progDesc "Undo the last `mit` command (if possible).")
           ]
+
+data MitCommand
+  = MitCommand'Branch Text
+  | MitCommand'Commit
+  | MitCommand'Merge Text
+  | MitCommand'Sync
+  | MitCommand'Undo
 
 dieIfBuggyGit :: Mit Env [Stanza] ()
 dieIfBuggyGit = do
