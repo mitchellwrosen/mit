@@ -1,5 +1,45 @@
 -- | High-level git operations
-module Mit.Git where
+module Mit.Git
+  ( DiffResult (..),
+    GitCommitInfo,
+    prettyGitCommitInfo,
+    GitConflict,
+    showGitConflict,
+    GitVersion (..),
+    showGitVersion,
+    git,
+    git_,
+    gitApplyStash,
+    gitBranch,
+    gitBranchHead,
+    gitBranchWorktreeDir,
+    gitCommit,
+    gitCommitsBetween,
+    gitConflicts,
+    gitConflictsWith,
+    gitCreateStash,
+    gitDiff,
+    gitExistCommitsBetween,
+    gitExistUntrackedFiles,
+    gitFetch,
+    gitFetch_,
+    gitHead,
+    gitIsMergeCommit,
+    gitMaybeHead,
+    gitMergeInProgress,
+    gitPush,
+    gitRemoteBranchExists,
+    gitRemoteBranchHead,
+    gitRevParseAbsoluteGitDir,
+    gitRevParseShowToplevel,
+    gitUnstageChanges,
+    gitVersion,
+    -- unused, but useful? not sure
+    gitDefaultBranch,
+    gitShow,
+    parseGitRepo,
+  )
+where
 
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
@@ -150,11 +190,6 @@ gitApplyStash stash = do
 gitBranch :: Text -> Mit Env x ()
 gitBranch branch =
   Git.git (Git.Branch Git.FlagNoTrack branch)
-
--- | Does the given local branch (refs/heads/...) exist?
-gitBranchExists :: Text -> Mit Env x Bool
-gitBranchExists branch =
-  Git.git (Git.RevParse Git.FlagQuiet Git.FlagVerify ("refs/heads/" <> branch))
 
 -- | Get the head of a local branch (refs/heads/...).
 gitBranchHead :: Text -> Mit Env x (Maybe Text)
