@@ -79,7 +79,7 @@ library
     optparse-applicative == 0.17.0.0,
     parsec == 3.1.15.1,
     process == 1.6.15.0,
-    stm == 2.5.0.2,
+    stm == 2.5.1.0,
     text == 2.0.1,
     text-ansi == 0.1.1,
     unix == 2.7.2.2,
