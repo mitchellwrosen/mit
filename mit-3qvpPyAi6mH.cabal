@@ -11,7 +11,7 @@ maintainer: Mitchell Rosen <mitchellwrosen@gmail.com>
 name: mit-3qvpPyAi6mH
 stability: experimental
 synopsis: A git wrapper with a streamlined UX
-version: 9
+version: 10
 
 description:
   A git wrapper with a streamlined UX.
@@ -19,7 +19,7 @@ description:
   To install the @mit@ command-line tool, run the following:
 
   @
-  cabal install -w ghc-9.2.2 mit-3qvpPyAi6mH
+  cabal install mit-3qvpPyAi6mH
   @
 
   This package's library component does not follow the Package Versioning Policy.
