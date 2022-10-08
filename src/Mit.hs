@@ -45,7 +45,7 @@ main :: IO ()
 main = do
   (verbosity, command) <- Opt.customExecParser parserPrefs parserInfo
 
-  let action :: Mit () x [Stanza]
+  let action :: forall x. Mit () x [Stanza]
       action = do
         withEnv (\() -> Env {gitdir = "", verbosity}) gitRevParseAbsoluteGitDir >>= \case
           Nothing -> pure [Just (Text.red "The current directory doesn't contain a git repository.")]
@@ -53,13 +53,13 @@ main = do
             withEnv
               (\() -> Env {gitdir, verbosity})
               ( do
-                  label \return ->
+                  label \return -> do
                     case command of
                       MitCommand'Branch branch -> mitBranch return branch $> []
-                      MitCommand'Commit -> mitCommit return $> []
-                      MitCommand'Merge branch -> mitMerge return branch $> []
-                      MitCommand'Sync -> mitSync return $> []
-                      MitCommand'Undo -> mitUndo return $> []
+                      MitCommand'Commit -> mitCommit @x return $> []
+                      MitCommand'Merge branch -> mitMerge @x return branch $> []
+                      MitCommand'Sync -> mitSync @x return $> []
+                      MitCommand'Undo -> mitUndo @x return $> []
               )
 
   runMit () action >>= \case
@@ -123,7 +123,7 @@ data MitCommand
   | MitCommand'Sync
   | MitCommand'Undo
 
-dieIfBuggyGit :: (forall void. [Stanza] -> Mit Env x void) -> Mit Env x ()
+dieIfBuggyGit :: forall x xx. Label (X x [Stanza]) xx => Goto Env x [Stanza] -> Mit Env xx ()
 dieIfBuggyGit return = do
   version <- gitVersion return
   let validate (ver, err) = if version < ver then ((ver, err) :) else id
@@ -164,7 +164,10 @@ dieIfMergeInProgress :: (forall void. [Stanza] -> Mit Env x void) -> Mit Env x (
 dieIfMergeInProgress return =
   whenM gitMergeInProgress (return [Just (Text.red (Text.bold "git merge" <> " in progress."))])
 
-mitBranch :: (forall void. [Stanza] -> Mit Env x void) -> Text -> Mit Env x ()
+mitBranch ::
+  Goto Env x [Stanza] ->
+  Text ->
+  Mit Env (X x [Stanza]) ()
 mitBranch return branch = do
   worktreeDir <- do
     rootdir <- gitRevParseShowToplevel
@@ -199,9 +202,9 @@ mitBranch return branch = do
               )
           ]
 
-mitCommit :: (forall void. [Stanza] -> Mit Env x void) -> Mit Env x ()
+mitCommit :: forall x xx. Label (X x [Stanza]) xx => Goto Env x [Stanza] -> Mit Env xx ()
 mitCommit return = do
-  whenM gitExistUntrackedFiles (dieIfBuggyGit return)
+  whenM gitExistUntrackedFiles (dieIfBuggyGit @x return)
 
   gitMergeInProgress >>= \case
     False ->
@@ -356,10 +359,10 @@ data PushNotAttemptedReason
   | Offline -- fetch failed, so we seem offline
   | UnseenCommits -- we just pulled remote commits; don't push in case there's something local to address
 
-mitMerge :: (forall void. [Stanza] -> Mit Env x void) -> Text -> Mit Env x ()
+mitMerge :: forall x xx. Label (X x [Stanza]) xx => Goto Env x [Stanza] -> Text -> Mit Env xx ()
 mitMerge return target = do
   dieIfMergeInProgress return
-  whenM gitExistUntrackedFiles (dieIfBuggyGit return)
+  whenM gitExistUntrackedFiles (dieIfBuggyGit @x return)
 
   context <- getContext
   let upstream = "origin/" <> context.branch
@@ -484,10 +487,10 @@ mitMergeWith return context target = do
       ]
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
-mitSync :: (forall void. [Stanza] -> Mit Env x void) -> Mit Env x ()
+mitSync :: forall x xx. Label (X x [Stanza]) xx => Goto Env x [Stanza] -> Mit Env xx ()
 mitSync return = do
   dieIfMergeInProgress return
-  whenM gitExistUntrackedFiles (dieIfBuggyGit return)
+  whenM gitExistUntrackedFiles (dieIfBuggyGit @x return)
   mitSyncWith Nothing Nothing
 
 -- | @mitSyncWith _ maybeUndos@
@@ -598,13 +601,13 @@ mitSyncWith stanza0 maybeUndos = do
       ]
 
 -- FIXME output what we just undid
-mitUndo :: (forall void. [Stanza] -> Mit Env x void) -> Mit Env x ()
+mitUndo :: forall x xx. Label (X x [Stanza]) xx => Goto Env x [Stanza] -> Mit Env xx ()
 mitUndo return = do
   context <- getContext
   case List1.nonEmpty context.state.undos of
     Nothing -> return [Just (Text.red "Nothing to undo.")]
     Just undos1 -> for_ undos1 applyUndo
-  when (undosContainRevert context.state.undos) (mitSync return)
+  when (undosContainRevert context.state.undos) (mitSync @x return)
   where
     undosContainRevert :: [Undo] -> Bool
     undosContainRevert = \case

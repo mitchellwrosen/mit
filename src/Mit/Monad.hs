@@ -4,11 +4,12 @@ module Mit.Monad
     io,
     getEnv,
     withEnv,
-    label,
+    Goto,
     Label,
-    X,
+    label,
     with,
     with_,
+    X,
   )
 where
 
@@ -58,7 +59,10 @@ withEnv :: (r -> s) -> Mit s x a -> Mit r x a
 withEnv f m =
   Mit \r k -> unMit m (f r) k
 
-label :: forall r x a. ((forall xx void. Label (X x a) xx => a -> Mit r xx void) -> Mit r (X x a) a) -> Mit r x a
+type Goto r x a =
+  forall xx void. Label (X x a) xx => a -> Mit r xx void
+
+label :: forall r x a. (Goto r x a -> Mit r (X x a) a) -> Mit r x a
 label f =
   Mit \r k -> do
     unX k (unMit (f \a -> return (bury @(X x a) (XR a))) r (pure . XR))
@@ -93,7 +97,8 @@ class Label a b where
   default bury :: a ~ b => a -> b
   bury = id
 
-instance Label (X a b) (X a b)
+-- FIXME I don't really think this is correct...
+instance {-# INCOHERENT #-} Label (X a b) (X a b)
 
-instance {-# OVERLAPPABLE #-} Label a b => Label a (X b c) where
+instance Label (X a b) (X c d) => Label (X a b) (X (X c d) e) where
   bury = XL . bury

@@ -24,6 +24,7 @@ import Data.Text as X (Text)
 import Data.Text qualified as Text
 import Data.Text.IO qualified as Text
 import Data.Traversable as X
+import Data.Void as X (Void)
 import Data.Word as X (Word64)
 import GHC.Stack as X (HasCallStack)
 import Mit.Seq1 as X (Seq1)
