@@ -46,21 +46,28 @@ parseMitState contents = do
   pure MitState {head, merging, undos}
 
 readMitState :: Text -> Mit Env x (MitState ())
-readMitState branch = do
-  head <- gitHead
-  mitfile <- getMitfile branch64
-  io (try (Text.readFile mitfile)) >>= \case
-    Left (_ :: IOException) -> pure emptyMitState
-    Right contents -> do
-      let maybeState = do
-            state <- parseMitState contents
-            guard (head == state.head)
-            pure state
+readMitState branch =
+  label \return -> do
+    head <-
+      gitMaybeHead >>= \case
+        Nothing -> return emptyMitState
+        Just head -> pure head
+    mitfile <- getMitfile branch64
+    contents <-
+      io (try (Text.readFile mitfile)) >>= \case
+        Left (_ :: IOException) -> return emptyMitState
+        Right contents -> pure contents
+    let maybeState = do
+          state <- parseMitState contents
+          guard (head == state.head)
+          pure state
+    state <-
       case maybeState of
         Nothing -> do
           deleteMitState branch64
-          pure emptyMitState
-        Just state -> pure (state {head = ()} :: MitState ())
+          return emptyMitState
+        Just state -> pure state
+    pure (state {head = ()} :: MitState ())
   where
     branch64 = Text.encodeBase64 branch
 

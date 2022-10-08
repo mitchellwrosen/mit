@@ -275,6 +275,7 @@ gitFetch_ :: Text -> Mit Env x ()
 gitFetch_ =
   void . gitFetch
 
+-- | Get the head commit.
 gitHead :: Mit Env x Text
 gitHead =
   Git.git (Git.RevParse Git.NoFlagQuiet Git.NoFlagVerify "HEAD")
@@ -287,6 +288,13 @@ gitIsMergeCommit commit =
 gitListUntrackedFiles :: Mit Env x [Text]
 gitListUntrackedFiles =
   git ["ls-files", "--exclude-standard", "--other"]
+
+-- | Get the head commit, if it exists.
+gitMaybeHead :: Mit Env x (Maybe Text)
+gitMaybeHead =
+  Git.git (Git.RevParse Git.NoFlagQuiet Git.NoFlagVerify "HEAD") <&> \case
+    Left _ -> Nothing
+    Right commit -> Just commit
 
 gitMergeInProgress :: Mit Env x Bool
 gitMergeInProgress = do
