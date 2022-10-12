@@ -169,15 +169,15 @@ renderFlagVerify = \case
 ------------------------------------------------------------------------------------------------------------------------
 -- Git process  stuff
 
-git :: ProcessOutput a => Command -> Mit Env x a
+git :: ProcessOutput a => Command -> Mit Env a
 git =
   runGit . renderCommand
 
-git_ :: Command -> Mit Env x ()
+git_ :: Command -> Mit Env ()
 git_ =
   git
 
-runGit :: ProcessOutput a => [Text] -> Mit Env x a
+runGit :: ProcessOutput a => [Text] -> Mit Env a
 runGit args = do
   let spec :: CreateProcess
       spec =
@@ -229,7 +229,7 @@ runGit args = do
               signalProcessGroup sigTERM pgid
           waitForProcess process
 
-debugPrintGit :: [Text] -> Seq Text -> Seq Text -> ExitCode -> Mit Env x ()
+debugPrintGit :: [Text] -> Seq Text -> Seq Text -> ExitCode -> Mit Env ()
 debugPrintGit args stdoutLines stderrLines exitCode = do
   env <- getEnv
   io case env.verbosity of

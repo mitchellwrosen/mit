@@ -43,7 +43,7 @@ parseUndos = do
           error (show text)
         ]
 
-applyUndo :: Undo -> Mit Env x ()
+applyUndo :: Undo -> Mit Env ()
 applyUndo = \case
   Apply commit -> do
     git_ ["stash", "apply", "--quiet", commit]

@@ -9,7 +9,7 @@ import Mit.Monad
 import Mit.Prelude
 import System.Directory qualified as Directory
 
-cd :: Text -> Mit r (X x a) a -> Mit r x a
+cd :: Text -> Mit r a -> Mit r a
 cd dir =
   with_ (Directory.withCurrentDirectory (Text.unpack dir))
 

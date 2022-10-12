@@ -28,7 +28,7 @@ emptyMitState :: MitState ()
 emptyMitState =
   MitState {head = (), merging = Nothing, undos = []}
 
-deleteMitState :: Text -> Mit Env x ()
+deleteMitState :: Text -> Mit Env ()
 deleteMitState branch64 = do
   mitfile <- getMitfile branch64
   io (removeFile mitfile `catch` \(_ :: IOException) -> pure ())
@@ -45,7 +45,7 @@ parseMitState contents = do
   undos <- Text.stripPrefix "undos " undosLine >>= parseUndos
   pure MitState {head, merging, undos}
 
-readMitState :: Text -> Mit Env x (MitState ())
+readMitState :: Text -> Mit Env (MitState ())
 readMitState branch =
   label \return -> do
     head <-
@@ -71,7 +71,7 @@ readMitState branch =
   where
     branch64 = Text.encodeBase64 branch
 
-writeMitState :: Text -> MitState () -> Mit Env x ()
+writeMitState :: Text -> MitState () -> Mit Env ()
 writeMitState branch state = do
   head <- gitHead
   let contents :: Text
@@ -84,7 +84,7 @@ writeMitState branch state = do
   mitfile <- getMitfile (Text.encodeBase64 branch)
   io (Text.writeFile mitfile contents `catch` \(_ :: IOException) -> pure ())
 
-getMitfile :: Text -> Mit Env x FilePath
+getMitfile :: Text -> Mit Env FilePath
 getMitfile branch64 = do
   env <- getEnv
   pure (Text.unpack (env.gitdir <> "/.mit-" <> branch64))

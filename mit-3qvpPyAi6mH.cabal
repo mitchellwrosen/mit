@@ -33,6 +33,7 @@ common component
     BlockArguments
     DataKinds
     DefaultSignatures
+    DeriveAnyClass
     DeriveFunctor
     DerivingStrategies
     DuplicateRecordFields

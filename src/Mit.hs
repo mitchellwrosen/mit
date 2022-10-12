@@ -45,7 +45,7 @@ main :: IO ()
 main = do
   (verbosity, command) <- Opt.customExecParser parserPrefs parserInfo
 
-  let action :: forall x. Mit () x [Stanza]
+  let action :: Mit () [Stanza]
       action = do
         withEnv (\() -> Env {gitdir = "", verbosity}) gitRevParseAbsoluteGitDir >>= \case
           Nothing -> pure [Just (Text.red "The current directory doesn't contain a git repository.")]
@@ -56,10 +56,10 @@ main = do
                   label \return -> do
                     case command of
                       MitCommand'Branch branch -> mitBranch return branch $> []
-                      MitCommand'Commit -> mitCommit @x return $> []
-                      MitCommand'Merge branch -> mitMerge @x return branch $> []
-                      MitCommand'Sync -> mitSync @x return $> []
-                      MitCommand'Undo -> mitUndo @x return $> []
+                      MitCommand'Commit -> mitCommit return $> []
+                      MitCommand'Merge branch -> mitMerge return branch $> []
+                      MitCommand'Sync -> mitSync return $> []
+                      MitCommand'Undo -> mitUndo return $> []
               )
 
   runMit () action >>= \case
@@ -123,7 +123,7 @@ data MitCommand
   | MitCommand'Sync
   | MitCommand'Undo
 
-dieIfBuggyGit :: forall x xx. Label (X x [Stanza]) xx => Goto Env x [Stanza] -> Mit Env xx ()
+dieIfBuggyGit :: Goto Env [Stanza] -> Mit Env ()
 dieIfBuggyGit return = do
   version <- gitVersion return
   let validate (ver, err) = if version < ver then ((ver, err) :) else id
@@ -160,14 +160,11 @@ dieIfBuggyGit return = do
         )
       ]
 
-dieIfMergeInProgress :: (forall void. [Stanza] -> Mit Env x void) -> Mit Env x ()
+dieIfMergeInProgress :: Goto Env [Stanza] -> Mit Env ()
 dieIfMergeInProgress return =
   whenM gitMergeInProgress (return [Just (Text.red (Text.bold "git merge" <> " in progress."))])
 
-mitBranch ::
-  Goto Env x [Stanza] ->
-  Text ->
-  Mit Env (X x [Stanza]) ()
+mitBranch :: Goto Env [Stanza] -> Text -> Mit Env ()
 mitBranch return branch = do
   worktreeDir <- do
     rootdir <- gitRevParseShowToplevel
@@ -202,9 +199,9 @@ mitBranch return branch = do
               )
           ]
 
-mitCommit :: forall x xx. Label (X x [Stanza]) xx => Goto Env x [Stanza] -> Mit Env xx ()
+mitCommit :: Goto Env [Stanza] -> Mit Env ()
 mitCommit return = do
-  whenM gitExistUntrackedFiles (dieIfBuggyGit @x return)
+  whenM gitExistUntrackedFiles (dieIfBuggyGit return)
 
   gitMergeInProgress >>= \case
     False ->
@@ -213,7 +210,7 @@ mitCommit return = do
         NoDifferences -> return [Just (Text.red "There's nothing to commit.")]
     True -> mitCommitMerge
 
-mitCommit_ :: (forall void. [Stanza] -> Mit Env x void) -> Mit Env x ()
+mitCommit_ :: Goto Env [Stanza] -> Mit Env ()
 mitCommit_ return = do
   context <- getContext
   let upstream = "origin/" <> context.branch
@@ -308,7 +305,7 @@ mitCommit_ return = do
         if not (null state.undos) && committed then canUndoStanza else Nothing
       ]
 
-mitCommitMerge :: Mit Env x ()
+mitCommitMerge :: Mit Env ()
 mitCommitMerge = do
   context <- getContext
 
@@ -364,10 +361,10 @@ data PushNotAttemptedReason
   | Offline -- fetch failed, so we seem offline
   | UnseenCommits -- we just pulled remote commits; don't push in case there's something local to address
 
-mitMerge :: forall x xx. Label (X x [Stanza]) xx => Goto Env x [Stanza] -> Text -> Mit Env xx ()
+mitMerge :: Goto Env [Stanza] -> Text -> Mit Env ()
 mitMerge return target = do
   dieIfMergeInProgress return
-  whenM gitExistUntrackedFiles (dieIfBuggyGit @x return)
+  whenM gitExistUntrackedFiles (dieIfBuggyGit return)
 
   context <- getContext
   let upstream = "origin/" <> context.branch
@@ -375,9 +372,9 @@ mitMerge return target = do
   if target == context.branch || target == upstream
     then -- If on branch `foo`, treat `mit merge foo` and `mit merge origin/foo` as `mit sync`
       mitSyncWith Nothing Nothing
-    else mitMergeWith @x return context target
+    else mitMergeWith return context target
 
-mitMergeWith :: forall x xx. Label (X x [Stanza]) xx => Goto Env x [Stanza] -> Context -> Text -> Mit Env xx ()
+mitMergeWith :: Goto Env [Stanza] -> Context -> Text -> Mit Env ()
 mitMergeWith return context target = do
   -- When given 'mit merge foo', prefer running 'git merge origin/foo' over 'git merge foo'
   targetCommit <-
@@ -494,10 +491,10 @@ mitMergeWith return context target = do
       ]
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
-mitSync :: forall x xx. Label (X x [Stanza]) xx => Goto Env x [Stanza] -> Mit Env xx ()
+mitSync :: Goto Env [Stanza] -> Mit Env ()
 mitSync return = do
   dieIfMergeInProgress return
-  whenM gitExistUntrackedFiles (dieIfBuggyGit @x return)
+  whenM gitExistUntrackedFiles (dieIfBuggyGit return)
   mitSyncWith Nothing Nothing
 
 -- | @mitSyncWith _ maybeUndos@
@@ -520,7 +517,7 @@ mitSync return = do
 --
 -- Instead, we want to undo to the point before running the 'mit merge' that caused the conflicts, which were later
 -- resolved by 'mit commit'.
-mitSyncWith :: Stanza -> Maybe [Undo] -> Mit Env x ()
+mitSyncWith :: Stanza -> Maybe [Undo] -> Mit Env ()
 mitSyncWith stanza0 maybeUndos = do
   context <- getContext
   let upstream = "origin/" <> context.branch
@@ -610,13 +607,13 @@ mitSyncWith stanza0 maybeUndos = do
       ]
 
 -- FIXME output what we just undid
-mitUndo :: forall x xx. Label (X x [Stanza]) xx => Goto Env x [Stanza] -> Mit Env xx ()
+mitUndo :: Goto Env [Stanza] -> Mit Env ()
 mitUndo return = do
   context <- getContext
   case List1.nonEmpty context.state.undos of
     Nothing -> return [Just (Text.red "Nothing to undo.")]
     Just undos1 -> for_ undos1 applyUndo
-  when (undosContainRevert context.state.undos) (mitSync @x return)
+  when (undosContainRevert context.state.undos) (mitSync return)
   where
     undosContainRevert :: [Undo] -> Bool
     undosContainRevert = \case
@@ -744,7 +741,7 @@ data Context = Context
     upstreamHead :: Maybe Text
   }
 
-getContext :: Mit Env x Context
+getContext :: Mit Env Context
 getContext = do
   gitFetch_ "origin"
   branch <- Git.git Git.BranchShowCurrent
@@ -753,7 +750,7 @@ getContext = do
   snapshot <- performSnapshot
   pure Context {branch, snapshot, state, upstreamHead}
 
-contextExistLocalCommits :: Context -> Mit Env x Bool
+contextExistLocalCommits :: Context -> Mit Env Bool
 contextExistLocalCommits context =
   case context.upstreamHead of
     Nothing -> pure True
@@ -762,7 +759,7 @@ contextExistLocalCommits context =
         Nothing -> pure False
         Just snapshot -> gitExistCommitsBetween upstreamHead snapshot.head
 
-contextExistRemoteCommits :: Context -> Mit Env x Bool
+contextExistRemoteCommits :: Context -> Mit Env Bool
 contextExistRemoteCommits context =
   case context.upstreamHead of
     Nothing -> pure False
@@ -794,7 +791,7 @@ data GitMerge = GitMerge
 -- conflicts.
 --
 -- Precondition: the working directory is clean. TODO take unused GitStash as argument?
-performMerge :: Text -> Text -> Mit Env x GitMerge
+performMerge :: Text -> Text -> Mit Env GitMerge
 performMerge message commitish = do
   head <- gitHead
   commits <- gitCommitsBetween (Just head) commitish
@@ -836,7 +833,7 @@ pushPushed push =
     TriedToPush -> False
 
 -- TODO get context
-performPush :: Text -> Mit Env x GitPush
+performPush :: Text -> Mit Env GitPush
 performPush branch = do
   fetched <- gitFetch "origin"
   head <- gitHead
@@ -873,7 +870,7 @@ data GitSnapshot = GitSnapshot
     stash :: Maybe Text
   }
 
-performSnapshot :: Mit Env x (Maybe GitSnapshot)
+performSnapshot :: Mit Env (Maybe GitSnapshot)
 performSnapshot = do
   gitMaybeHead >>= \case
     Nothing -> pure Nothing
