@@ -14,7 +14,6 @@ import Mit.Builder qualified as Builder
 import Mit.Directory
 import Mit.Env
 import Mit.Git
-import Mit.GitCommand qualified as Git
 import Mit.Monad
 import Mit.Prelude
 import Mit.Seq1 qualified as Seq1
@@ -167,7 +166,7 @@ dieIfMergeInProgress return =
 mitBranch :: Goto Env [Stanza] -> Text -> Mit Env ()
 mitBranch return branch = do
   worktreeDir <- do
-    rootdir <- gitRevParseShowToplevel
+    rootdir <- git ["rev-parse", "--show-toplevel"]
     pure (Text.dropWhileEnd (/= '/') rootdir <> branch)
 
   gitBranchWorktreeDir branch >>= \case
@@ -176,14 +175,14 @@ mitBranch return branch = do
         return [Just (Text.red ("Directory " <> Text.bold (Text.Builder.fromText worktreeDir) <> " already exists."))]
       git_ ["worktree", "add", "--detach", worktreeDir]
       cd worktreeDir do
-        whenNotM (Git.git (Git.Switch branch)) do
-          gitBranch branch
-          Git.git_ (Git.Switch branch)
+        whenNotM (git ["switch", branch]) do
+          git_ ["branch", "--no-track", branch]
+          git_ ["switch", branch]
           gitFetch_ "origin"
           whenM (gitRemoteBranchExists "origin" branch) do
             let upstream = "origin/" <> branch
-            Git.git_ (Git.Reset Git.Hard Git.FlagQuiet upstream)
-            Git.git_ (Git.BranchSetUpstreamTo upstream)
+            git_ ["reset", "--hard", "--quiet", upstream]
+            git_ ["branch", "--set-upstream-to", upstream]
     Just directory ->
       when (directory /= worktreeDir) do
         return
@@ -396,7 +395,7 @@ mitMergeWith return context target = do
       ]
 
   whenJust (contextStash context) \_stash ->
-    Git.git_ (Git.Reset Git.Hard Git.FlagQuiet "HEAD")
+    gitDeleteChanges
 
   merge <- performMerge ("⅄ " <> target <> " → " <> context.branch) targetCommit
 
@@ -523,7 +522,7 @@ mitSyncWith stanza0 maybeUndos = do
   let upstream = "origin/" <> context.branch
 
   whenJust (contextStash context) \_stash ->
-    Git.git_ (Git.Reset Git.Hard Git.FlagQuiet "HEAD")
+    gitDeleteChanges
 
   merge <-
     case context.upstreamHead of
@@ -744,7 +743,7 @@ data Context = Context
 getContext :: Mit Env Context
 getContext = do
   gitFetch_ "origin"
-  branch <- Git.git Git.BranchShowCurrent
+  branch <- git ["branch", "--show-current"]
   upstreamHead <- gitRemoteBranchHead "origin" branch
   state <- readMitState branch
   snapshot <- performSnapshot

@@ -91,7 +91,6 @@ library
     Mit.Directory
     Mit.Env
     Mit.Git
-    Mit.GitCommand
     Mit.Monad
     Mit.Prelude
     Mit.Process

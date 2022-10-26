@@ -10,7 +10,6 @@ module Mit.Git
     git,
     git_,
     gitApplyStash,
-    gitBranch,
     gitBranchHead,
     gitBranchWorktreeDir,
     gitCommit,
@@ -18,6 +17,7 @@ module Mit.Git
     gitConflicts,
     gitConflictsWith,
     gitCreateStash,
+    gitDeleteChanges,
     gitDiff,
     gitExistCommitsBetween,
     gitExistUntrackedFiles,
@@ -31,7 +31,6 @@ module Mit.Git
     gitRemoteBranchExists,
     gitRemoteBranchHead,
     gitRevParseAbsoluteGitDir,
-    gitRevParseShowToplevel,
     gitUnstageChanges,
     gitVersion,
     -- unused, but useful? not sure
@@ -52,7 +51,7 @@ import Data.Text.Lazy.Builder qualified as Text.Builder
 import Ki qualified
 import Mit.Builder qualified as Builder
 import Mit.Env (Env (..))
-import Mit.GitCommand qualified as Git
+-- import Mit.GitCommand qualified as Git
 import Mit.Monad
 import Mit.Prelude
 import Mit.Process
@@ -179,22 +178,16 @@ showGitVersion (GitVersion x y z) =
 gitApplyStash :: Text -> Mit Env [GitConflict]
 gitApplyStash stash = do
   conflicts <-
-    Git.git (Git.StashApply Git.FlagQuiet stash) >>= \case
+    git ["stash", "apply", "--quiet", stash] >>= \case
       False -> gitConflicts
       True -> pure []
   gitUnstageChanges
   pure conflicts
 
--- | Create a branch.
--- FIXME inline this
-gitBranch :: Text -> Mit Env ()
-gitBranch branch =
-  Git.git (Git.Branch Git.FlagNoTrack branch)
-
 -- | Get the head of a local branch (refs/heads/...).
 gitBranchHead :: Text -> Mit Env (Maybe Text)
 gitBranchHead branch =
-  Git.git (Git.RevParse Git.NoFlagQuiet Git.NoFlagVerify ("refs/heads/" <> branch)) <&> \case
+  git ["rev-parse", "refs/heads/" <> branch] <&> \case
     Left _ -> Nothing
     Right head -> Just head
 
@@ -242,7 +235,7 @@ gitCommitsBetween commit1 commit2 =
 
 gitConflicts :: Mit Env [GitConflict]
 gitConflicts =
-  mapMaybe parseGitConflict <$> Git.git (Git.StatusV1 Git.FlagNoRenames)
+  mapMaybe parseGitConflict <$> git ["status", "--no-renames", "--porcelain=v1"]
 
 -- | Get the conflicts with the given commitish.
 --
@@ -251,31 +244,36 @@ gitConflictsWith :: Text -> Mit Env [GitConflict]
 gitConflictsWith commit = do
   maybeStash <- gitStash
   conflicts <- do
-    Git.git (Git.Merge Git.FlagNoCommit Git.FlagNoFF commit) >>= \case
+    git ["merge", "--no-commit", "--no-ff", commit] >>= \case
       False -> gitConflicts
       True -> pure []
-  whenM gitMergeInProgress (Git.git_ Git.MergeAbort)
-  whenJust maybeStash \stash -> Git.git (Git.StashApply Git.FlagQuiet stash)
+  whenM gitMergeInProgress (git_ ["merge", "--abort"])
+  whenJust maybeStash \stash -> git ["stash", "apply", "--quiet", stash]
   pure conflicts
 
 -- | Precondition: there are changes to stash
 gitCreateStash :: Mit Env Text
 gitCreateStash = do
-  Git.git_ Git.AddAll -- it seems certain things (like renames), unless staged, cannot be stashed
-  stash <- Git.git Git.StashCreate
+  git_ ["add", "--all"] -- it seems certain things (like renames), unless staged, cannot be stashed
+  stash <- git ["stash", "create"]
   gitUnstageChanges
   pure stash
 
 gitDefaultBranch :: Text -> Mit Env Text
 gitDefaultBranch remote = do
-  ref <- Git.git (Git.SymbolicRef ("refs/remotes/" <> remote <> "/HEAD"))
+  ref <- git ["symbolic-ref", "refs/remotes/" <> remote <> "/HEAD"]
   pure (Text.drop (14 + Text.length remote) ref)
+
+-- | Delete all changes in the index and working tree.
+gitDeleteChanges :: Mit Env ()
+gitDeleteChanges =
+  git_ ["reset", "--hard", "--quiet", "HEAD"]
 
 -- FIXME document this
 gitDiff :: Mit Env DiffResult
 gitDiff = do
   gitUnstageChanges
-  Git.git (Git.Diff Git.FlagQuiet) <&> \case
+  git ["diff", "--quiet"] <&> \case
     False -> Differences
     True -> NoDifferences
 
@@ -295,7 +293,7 @@ gitFetch remote = do
   fetched <- io (readIORef fetchedRef)
   case Map.lookup remote fetched of
     Nothing -> do
-      success <- Git.git (Git.Fetch remote)
+      success <- git ["fetch", remote]
       io (writeIORef fetchedRef (Map.insert remote success fetched))
       pure success
     Just success -> pure success
@@ -313,11 +311,12 @@ gitFetch_ =
 -- | Get the head commit.
 gitHead :: Mit Env Text
 gitHead =
-  Git.git (Git.RevParse Git.NoFlagQuiet Git.NoFlagVerify "HEAD")
+  git ["rev-parse", "HEAD"]
 
+-- | Get whether a commit is a merge commit.
 gitIsMergeCommit :: Text -> Mit Env Bool
 gitIsMergeCommit commit =
-  Git.git (Git.RevParse Git.FlagQuiet Git.FlagVerify (commit <> "^2"))
+  git ["rev-parse", "--quiet", "--verify", commit <> "^2"]
 
 -- | List all untracked files.
 gitListUntrackedFiles :: Mit Env [Text]
@@ -327,10 +326,11 @@ gitListUntrackedFiles =
 -- | Get the head commit, if it exists.
 gitMaybeHead :: Mit Env (Maybe Text)
 gitMaybeHead =
-  Git.git (Git.RevParse Git.NoFlagQuiet Git.NoFlagVerify "HEAD") <&> \case
+  git ["rev-parse", "HEAD"] <&> \case
     Left _ -> Nothing
     Right commit -> Just commit
 
+-- | Get whether a merge is in progress.
 gitMergeInProgress :: Mit Env Bool
 gitMergeInProgress = do
   env <- getEnv
@@ -343,12 +343,12 @@ gitPush branch =
 -- | Does the given remote branch (refs/remotes/...) exist?
 gitRemoteBranchExists :: Text -> Text -> Mit Env Bool
 gitRemoteBranchExists remote branch =
-  Git.git (Git.RevParse Git.FlagQuiet Git.FlagVerify ("refs/remotes/" <> remote <> "/" <> branch))
+  git ["rev-parse", "--quiet", "--verify", "refs/remotes/" <> remote <> "/" <> branch]
 
 -- | Get the head of a remote branch.
 gitRemoteBranchHead :: Text -> Text -> Mit Env (Maybe Text)
 gitRemoteBranchHead remote branch =
-  Git.git (Git.RevParse Git.NoFlagQuiet Git.NoFlagVerify ("refs/remotes/" <> remote <> "/" <> branch)) <&> \case
+  git ["rev-parse", "refs/remotes/" <> remote <> "/" <> branch] <&> \case
     Left _ -> Nothing
     Right head -> Just head
 
@@ -357,11 +357,6 @@ gitRevParseAbsoluteGitDir =
   git ["rev-parse", "--absolute-git-dir"] <&> \case
     Left _ -> Nothing
     Right dir -> Just dir
-
--- | The root of this git worktree.
-gitRevParseShowToplevel :: Mit Env Text
-gitRevParseShowToplevel =
-  git ["rev-parse", "--show-toplevel"]
 
 gitShow :: Text -> Mit Env GitCommitInfo
 gitShow commit =
@@ -380,16 +375,17 @@ gitStash = do
   gitDiff >>= \case
     Differences -> do
       stash <- gitCreateStash
-      Git.git_ (Git.Clean Git.FlagD Git.FlagForce)
-      Git.git_ (Git.Reset Git.Hard Git.FlagQuiet "HEAD")
+      git_ ["clean", "-d", "--force"]
+      gitDeleteChanges
       pure (Just stash)
     NoDifferences -> pure Nothing
 
 gitUnstageChanges :: Mit Env ()
 gitUnstageChanges = do
-  Git.git_ (Git.ResetPaths Git.FlagQuiet ["."])
+  git_ ["reset", "--quiet", "--", "."]
   untrackedFiles <- gitListUntrackedFiles
-  unless (null untrackedFiles) (Git.git_ (Git.Add Git.FlagIntentToAdd untrackedFiles))
+  when (not (null untrackedFiles)) do
+    git_ ("add" : "--intent-to-add" : untrackedFiles)
 
 gitVersion :: Goto Env [Stanza] -> Mit Env GitVersion
 gitVersion return = do
