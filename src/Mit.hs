@@ -208,7 +208,7 @@ mitCommit return = do
 mitCommit_ :: Goto Env [Stanza] -> Mit Env ()
 mitCommit_ return = do
   context <- getContext
-  let upstream = "origin/" <> context.branch
+  let upstream = contextUpstream context
 
   existRemoteCommits <- contextExistRemoteCommits context
   existLocalCommits <- contextExistLocalCommits context
@@ -303,6 +303,7 @@ mitCommit_ return = do
 mitCommitMerge :: Mit Env ()
 mitCommitMerge = do
   context <- getContext
+  let upstream = contextUpstream context
 
   -- Make the merge commit. Commonly we'll have gotten here by `mit merge <branch>`, so we'll have a `state0.merging`
   -- that tells us we're merging in <branch>. But we also handle the case that we went `git merge` -> `mit commit`,
@@ -339,17 +340,16 @@ mitCommitMerge = do
             putStanzas
               [ stanza0,
                 conflictsStanza "These files are in conflict:" conflicts1,
-                -- Fake like we didn't push due to merge conflicts just to print "resolve conflicts and commit"
-                whatNextStanza (PushNotAttempted MergeConflicts),
+                Just $
+                  "  Resolve the conflicts, then run "
+                    <> Text.bold (Text.blue "mit commit")
+                    <> " to synchronize "
+                    <> branchb context.branch
+                    <> " with "
+                    <> branchb upstream
+                    <> ".",
                 if null context.state.undos then Nothing else canUndoStanza
               ]
-
--- FIXME delete
-data PushResult
-  = PushNotAttempted PushNotAttemptedReason
-
-data PushNotAttemptedReason
-  = MergeConflicts -- local merge conflicts that need to be resolved right now
 
 mitMerge :: Goto Env [Stanza] -> Text -> Mit Env ()
 mitMerge return target = do
@@ -357,7 +357,7 @@ mitMerge return target = do
   whenM gitExistUntrackedFiles (dieIfBuggyGit return)
 
   context <- getContext
-  let upstream = "origin/" <> context.branch
+  let upstream = contextUpstream context
 
   if target == context.branch || target == upstream
     then -- If on branch `foo`, treat `mit merge foo` and `mit merge origin/foo` as `mit sync`
@@ -374,7 +374,7 @@ mitMergeWith return context target = do
             & onNothingM (return [Just (Text.red "No such branch.")])
         )
 
-  let upstream = "origin/" <> context.branch
+  let upstream = contextUpstream context
 
   existRemoteCommits <- contextExistRemoteCommits context
   existLocalCommits <- contextExistLocalCommits context
@@ -510,7 +510,7 @@ mitSync return = do
 mitSyncWith :: Stanza -> Maybe [Undo] -> Mit Env ()
 mitSyncWith stanza0 maybeUndos = do
   context <- getContext
-  let upstream = "origin/" <> context.branch
+  let upstream = contextUpstream context
 
   whenJust (contextStash context) \_stash ->
     gitDeleteChanges
@@ -679,14 +679,6 @@ synchronizedStanza :: Text -> Text -> Stanza
 synchronizedStanza branch other =
   Just ("  " <> Text.green (branchb branch <> " is synchronized with " <> branchb other <> "."))
 
--- FIXME remove
-whatNextStanza :: PushResult -> Stanza
-whatNextStanza = \case
-  PushNotAttempted MergeConflicts ->
-    Just ("  Resolve the merge conflicts, then run " <> commit <> ".")
-  where
-    commit = Text.bold (Text.blue "mit commit")
-
 branchb :: Text -> Text.Builder
 branchb =
   Text.italic . Text.Builder.fromText
@@ -732,6 +724,10 @@ contextStash :: Context -> Maybe Text
 contextStash context = do
   snapshot <- context.snapshot
   snapshot.stash
+
+contextUpstream :: Context -> Text
+contextUpstream context =
+  "origin/" <> context.branch
 
 ------------------------------------------------------------------------------------------------------------------------
 -- Git merge
@@ -782,6 +778,10 @@ data GitPushWhat
   | PushWouldntReachRemote
   | PushWouldBeRejected
   | TriedToPush
+
+-- Just ("  Resolve the merge conflicts, then run " <> commit <> ".")
+-- where
+-- commit = Text.bold (Text.blue "mit commit")
 
 pushPushed :: GitPush -> Bool
 pushPushed push =
