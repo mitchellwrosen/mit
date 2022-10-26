@@ -222,6 +222,16 @@ mitCommit_ return = do
   committed <- gitCommit
 
   push <- performPush context.branch
+  undoPush <-
+    case push of
+      Pushed commits ->
+        case Seq1.toList commits of
+          [commit] ->
+            gitIsMergeCommit commit.hash <&> \case
+              False -> [Revert commit.hash]
+              True -> []
+          _ -> pure []
+      _ -> pure []
 
   let state =
         MitState
@@ -234,13 +244,13 @@ mitCommit_ return = do
                   case context.snapshot of
                     Nothing -> []
                     Just snapshot -> undoToSnapshot snapshot
-                (True, False) -> push.undo
+                (True, False) -> undoPush
                 (True, True) ->
-                  if null push.undo
+                  if null undoPush
                     then []
                     else case context.snapshot of
-                      Nothing -> push.undo
-                      Just snapshot -> push.undo ++ [Apply (fromJust snapshot.stash)]
+                      Nothing -> undoPush
+                      Just snapshot -> undoPush ++ [Apply (fromJust snapshot.stash)]
           }
 
   writeMitState context.branch state
@@ -257,18 +267,17 @@ mitCommit_ return = do
 
   io do
     putStanzas
-      [ isSynchronizedStanza2 context.branch push.what,
+      [ isSynchronizedStanza context.branch push,
         do
           commits <- Seq1.fromSeq remoteCommits
           syncStanza Sync {commits, success = False, source = upstream, target = context.branch},
         do
-          commits <- Seq1.fromSeq push.commits
+          commits <- pushCommits push
           syncStanza Sync {commits, success = pushPushed push, source = context.branch, target = upstream},
-        case push.what of
-          NothingToPush2 -> Nothing
-          Pushed -> Nothing
-          PushWouldntReachRemote -> runSyncStanza "When you come online, run" context.branch upstream
-          PushWouldBeRejected ->
+        case push of
+          DidntPush NothingToPush -> Nothing
+          DidntPush (PushWouldntReachRemote _) -> runSyncStanza "When you come online, run" context.branch upstream
+          DidntPush (PushWouldBeRejected _) ->
             case List1.nonEmpty conflictsOnSync of
               Nothing -> runSyncStanza "Run" context.branch upstream
               Just conflictsOnSync1 ->
@@ -290,7 +299,8 @@ mitCommit_ return = do
                         <> branchb upstream
                         <> "."
                   ]
-          TriedToPush -> runSyncStanza "Run" context.branch upstream,
+          DidntPush (TriedToPush _) -> runSyncStanza "Run" context.branch upstream
+          Pushed _ -> Nothing,
         -- Whether we say we can undo from here is not exactly if the state says we can undo, because of one corner
         -- case: we ran 'mit commit', then aborted the commit, and ultimately didn't push any other local changes.
         --
@@ -440,7 +450,7 @@ mitMergeWith return context target = do
                 source = target,
                 target = context.branch
               },
-        isSynchronizedStanza2 context.branch push.what,
+        isSynchronizedStanza context.branch push,
         do
           commits <- Seq1.fromSeq remoteCommits
           syncStanza Sync {commits, success = False, source = upstream, target = context.branch},
@@ -449,12 +459,11 @@ mitMergeWith return context target = do
           conflicts1 <- List1.nonEmpty merge.conflicts <|> List1.nonEmpty stashConflicts
           conflictsStanza "These files are in conflict:" conflicts1,
         -- TODO audit this
-        case push.what of
-          NothingToPush2 -> Nothing
-          Pushed -> Nothing
-          PushWouldntReachRemote -> runSyncStanza "When you come online, run" context.branch upstream
+        case push of
+          DidntPush NothingToPush -> Nothing
+          DidntPush (PushWouldntReachRemote _) -> runSyncStanza "When you come online, run" context.branch upstream
           -- FIXME hrm, but we might have merge conflicts and/or stash conflicts!
-          PushWouldBeRejected ->
+          DidntPush (PushWouldBeRejected _) ->
             case List1.nonEmpty conflictsOnSync of
               Nothing -> runSyncStanza "Run" context.branch upstream
               Just conflictsOnSync1 ->
@@ -476,7 +485,8 @@ mitMergeWith return context target = do
                         <> branchb upstream
                         <> "."
                   ]
-          TriedToPush -> runSyncStanza "Run" context.branch upstream,
+          DidntPush (TriedToPush _) -> runSyncStanza "Run" context.branch upstream
+          Pushed _ -> Nothing,
         if not (null state.undos) then canUndoStanza else Nothing
       ]
 
@@ -557,7 +567,7 @@ mitSyncWith stanza0 maybeUndos = do
   io do
     putStanzas
       [ stanza0,
-        isSynchronizedStanza2 context.branch push.what,
+        isSynchronizedStanza context.branch push,
         do
           commits1 <- Seq1.fromSeq merge.commits
           syncStanza
@@ -568,7 +578,7 @@ mitSyncWith stanza0 maybeUndos = do
                 target = context.branch
               },
         do
-          commits <- Seq1.fromSeq push.commits
+          commits <- pushCommits push
           syncStanza
             Sync
               { commits,
@@ -579,11 +589,10 @@ mitSyncWith stanza0 maybeUndos = do
         do
           conflicts1 <- List1.nonEmpty merge.conflicts <|> List1.nonEmpty stashConflicts
           conflictsStanza "These files are in conflict:" conflicts1,
-        case push.what of
-          NothingToPush2 -> Nothing
-          Pushed -> Nothing
-          PushWouldntReachRemote -> runSyncStanza "When you come online, run" context.branch upstream
-          PushWouldBeRejected ->
+        case push of
+          DidntPush NothingToPush -> Nothing
+          DidntPush (PushWouldntReachRemote _) -> runSyncStanza "When you come online, run" context.branch upstream
+          DidntPush (PushWouldBeRejected _) ->
             Just $
               "  Resolve the conflicts, then run "
                 <> Text.bold (Text.blue "mit commit")
@@ -592,7 +601,8 @@ mitSyncWith stanza0 maybeUndos = do
                 <> " with "
                 <> branchb upstream
                 <> "."
-          TriedToPush -> runSyncStanza "Run" context.branch upstream,
+          DidntPush (TriedToPush _) -> runSyncStanza "Run" context.branch upstream
+          Pushed _ -> Nothing,
         if not (null state.undos) then canUndoStanza else Nothing
       ]
 
@@ -631,13 +641,13 @@ conflictsStanza prefix conflicts =
       <> Builder.newline
       <> Builder.vcat ((\conflict -> "    " <> Text.red (showGitConflict conflict)) <$> conflicts)
 
-isSynchronizedStanza2 :: Text -> GitPushWhat -> Stanza
-isSynchronizedStanza2 branch = \case
-  NothingToPush2 -> synchronizedStanza branch upstream
-  Pushed -> synchronizedStanza branch upstream
-  PushWouldntReachRemote -> notSynchronizedStanza branch upstream " because you appear to be offline."
-  PushWouldBeRejected -> notSynchronizedStanza branch upstream "; their histories have diverged."
-  TriedToPush -> notSynchronizedStanza branch upstream (" because " <> Text.bold "git push" <> " failed.")
+isSynchronizedStanza :: Text -> GitPush -> Stanza
+isSynchronizedStanza branch = \case
+  DidntPush NothingToPush -> synchronizedStanza branch upstream
+  DidntPush (PushWouldntReachRemote _) -> notSynchronizedStanza branch upstream " because you appear to be offline."
+  DidntPush (PushWouldBeRejected _) -> notSynchronizedStanza branch upstream "; their histories have diverged."
+  DidntPush (TriedToPush _) -> notSynchronizedStanza branch upstream (" because " <> Text.bold "git push" <> " failed.")
+  Pushed _ -> synchronizedStanza branch upstream
   where
     upstream = "origin/" <> branch
 
@@ -766,31 +776,35 @@ performMerge message commitish = do
 ------------------------------------------------------------------------------------------------------------------------
 -- Git push
 
-data GitPush = GitPush
-  { commits :: Seq GitCommitInfo,
-    undo :: [Undo],
-    what :: GitPushWhat
-  }
+-- | The result of (considering a) git push.
+data GitPush
+  = -- | We didn't push anthing.
+    DidntPush DidntPushReason
+  | -- | We successfully pushed commits.
+    Pushed (Seq1 GitCommitInfo)
 
-data GitPushWhat
-  = NothingToPush2
-  | Pushed
-  | PushWouldntReachRemote
-  | PushWouldBeRejected
-  | TriedToPush
+data DidntPushReason
+  = -- | There was nothing to push.
+    NothingToPush
+  | -- | We have commits to push, but we appear to be offline.
+    PushWouldntReachRemote (Seq1 GitCommitInfo)
+  | -- | We have commits to push, but there are also remote commits to merge.
+    PushWouldBeRejected (Seq1 GitCommitInfo)
+  | -- | We had commits to push, and tried to push, but it failed.
+    TriedToPush (Seq1 GitCommitInfo)
 
--- Just ("  Resolve the merge conflicts, then run " <> commit <> ".")
--- where
--- commit = Text.bold (Text.blue "mit commit")
+pushCommits :: GitPush -> Maybe (Seq1 GitCommitInfo)
+pushCommits = \case
+  DidntPush NothingToPush -> Nothing
+  DidntPush (PushWouldntReachRemote commits) -> Just commits
+  DidntPush (PushWouldBeRejected commits) -> Just commits
+  DidntPush (TriedToPush commits) -> Just commits
+  Pushed commits -> Just commits
 
 pushPushed :: GitPush -> Bool
-pushPushed push =
-  case push.what of
-    NothingToPush2 -> False
-    Pushed -> True
-    PushWouldntReachRemote -> False
-    PushWouldBeRejected -> False
-    TriedToPush -> False
+pushPushed = \case
+  DidntPush _ -> False
+  Pushed _ -> True
 
 -- TODO get context
 performPush :: Text -> Mit Env GitPush
@@ -800,27 +814,19 @@ performPush branch = do
   upstreamHead <- gitRemoteBranchHead "origin" branch
   commits <- gitCommitsBetween upstreamHead head
 
-  if Seq.null commits
-    then pure GitPush {commits, undo = [], what = NothingToPush2}
-    else do
+  case Seq1.fromSeq commits of
+    Nothing -> pure (DidntPush NothingToPush)
+    Just commits1 -> do
       existRemoteCommits <- maybe (pure False) (gitExistCommitsBetween head) upstreamHead
       if existRemoteCommits
-        then pure GitPush {commits, undo = [], what = PushWouldBeRejected}
+        then pure (DidntPush (PushWouldBeRejected commits1))
         else
           if fetched
-            then
-              gitPush branch >>= \case
-                False -> pure GitPush {commits, undo = [], what = TriedToPush}
-                True -> do
-                  undo <-
-                    if Seq.length commits == 1
-                      then
-                        gitIsMergeCommit head <&> \case
-                          False -> [Revert head]
-                          True -> []
-                      else pure []
-                  pure GitPush {commits, undo, what = Pushed}
-            else pure GitPush {commits, undo = [], what = PushWouldntReachRemote}
+            then do
+              gitPush branch <&> \case
+                False -> DidntPush (TriedToPush commits1)
+                True -> Pushed commits1
+            else pure (DidntPush (PushWouldntReachRemote commits1))
 
 ------------------------------------------------------------------------------------------------------------------------
 -- Git snapshot

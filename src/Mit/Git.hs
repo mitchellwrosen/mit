@@ -1,7 +1,7 @@
 -- | High-level git operations
 module Mit.Git
   ( DiffResult (..),
-    GitCommitInfo,
+    GitCommitInfo (..),
     prettyGitCommitInfo,
     GitConflict,
     showGitConflict,
