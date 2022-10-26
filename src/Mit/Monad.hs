@@ -69,7 +69,10 @@ label f =
       Right x -> k x
 
 data X = forall a. X Unique a
-  deriving anyclass (Exception)
+
+instance Exception X where
+  toException = asyncExceptionToException
+  fromException = asyncExceptionFromException
 
 instance Show X where
   show _ = ""
