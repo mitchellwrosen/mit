@@ -48,6 +48,8 @@ import Data.Text.Builder.ANSI qualified as Text.Builder
 import Data.Text.IO qualified as Text
 import Data.Text.Lazy.Builder qualified as Text (Builder)
 import Data.Text.Lazy.Builder qualified as Text.Builder
+import Data.Text.Lazy.Builder.RealFloat qualified as Text.Builder
+import GHC.Clock (getMonotonicTime)
 import Ki qualified
 import Mit.Builder qualified as Builder
 import Mit.Env (Env (..))
@@ -465,14 +467,16 @@ git args = do
             detach_console = False,
             use_process_jobs = False
           }
+  t0 <- io getMonotonicTime
   with (bracket (createProcess spec) cleanup) \(_maybeStdin, maybeStdout, maybeStderr, processHandle) -> do
     with Ki.scoped \scope -> do
       stdoutThread <- io (Ki.fork scope (drainTextHandle (fromJust maybeStdout)))
       stderrThread <- io (Ki.fork scope (drainTextHandle (fromJust maybeStderr)))
       exitCode <- io (waitForProcess processHandle)
+      t1 <- io getMonotonicTime
       stdoutLines <- io (atomically (Ki.await stdoutThread))
       stderrLines <- io (atomically (Ki.await stderrThread))
-      debugPrintGit args stdoutLines stderrLines exitCode
+      debugPrintGit args stdoutLines stderrLines exitCode (t1 - t0)
       io (fromProcessOutput stdoutLines stderrLines exitCode)
   where
     cleanup :: (Maybe Handle, Maybe Handle, Maybe Handle, ProcessHandle) -> IO ()
@@ -503,6 +507,7 @@ git_ =
 -- FIXME bracket
 git2 :: [Text] -> Mit Env ExitCode
 git2 args = do
+  t0 <- io getMonotonicTime
   (_, _, stderrHandle, processHandle) <-
     io do
       createProcess
@@ -529,19 +534,27 @@ git2 args = do
       waitForProcess processHandle `catch` \case
         UserInterrupt -> pure (ExitFailure (-130))
         exception -> throwIO exception
+  t1 <- io getMonotonicTime
   stderrLines <- io (drainTextHandle (fromJust stderrHandle))
-  debugPrintGit args Seq.empty stderrLines exitCode
+  debugPrintGit args Seq.empty stderrLines exitCode (t1 - t0)
   pure exitCode
 
-debugPrintGit :: [Text] -> Seq Text -> Seq Text -> ExitCode -> Mit Env ()
-debugPrintGit args stdoutLines stderrLines exitCode = do
+debugPrintGit :: [Text] -> Seq Text -> Seq Text -> ExitCode -> Double -> Mit Env ()
+debugPrintGit args stdoutLines stderrLines exitCode sec = do
   env <- getEnv
   io case env.verbosity of
     1 -> Builder.putln (Text.Builder.brightBlack v1)
     2 -> Builder.putln (Text.Builder.brightBlack (v1 <> v2))
     _ -> pure ()
   where
-    v1 = Text.Builder.bold (marker <> " git " <> Builder.hcat (map quote args))
+    v1 =
+      Text.Builder.bold
+        ( marker
+            <> " ["
+            <> Text.Builder.formatRealFloat Text.Builder.Fixed (Just 0) (sec * 1000)
+            <> "ms] git "
+            <> Builder.hcat (map quote args)
+        )
     v2 = foldMap (\line -> "\n    " <> Text.Builder.fromText line) (stdoutLines <> stderrLines)
 
     quote :: Text -> Text.Builder
