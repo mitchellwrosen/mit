@@ -340,21 +340,16 @@ mitCommitMerge = do
               [ stanza0,
                 conflictsStanza "These files are in conflict:" conflicts1,
                 -- Fake like we didn't push due to merge conflicts just to print "resolve conflicts and commit"
-                whatNextStanza context.branch (PushNotAttempted MergeConflicts),
+                whatNextStanza (PushNotAttempted MergeConflicts),
                 if null context.state.undos then Nothing else canUndoStanza
               ]
 
 -- FIXME delete
 data PushResult
-  = PushAttempted Bool
-  | PushNotAttempted PushNotAttemptedReason
+  = PushNotAttempted PushNotAttemptedReason
 
 data PushNotAttemptedReason
-  = ForkedHistory [GitConflict] -- local history has forked, need to sync.
-  | MergeConflicts -- local merge conflicts that need to be resolved right now
-  | NothingToPush -- no commits to push
-  | Offline -- fetch failed, so we seem offline
-  | UnseenCommits -- we just pulled remote commits; don't push in case there's something local to address
+  = MergeConflicts -- local merge conflicts that need to be resolved right now
 
 mitMerge :: Goto Env [Stanza] -> Text -> Mit Env ()
 mitMerge return target = do
@@ -685,42 +680,12 @@ synchronizedStanza branch other =
   Just ("  " <> Text.green (branchb branch <> " is synchronized with " <> branchb other <> "."))
 
 -- FIXME remove
-whatNextStanza :: Text -> PushResult -> Stanza
-whatNextStanza branch = \case
-  PushAttempted False -> runSyncStanza "Run" branch upstream
-  PushAttempted True -> Nothing
-  PushNotAttempted (ForkedHistory conflicts) ->
-    Just $
-      if null conflicts
-        then
-          "  Run "
-            <> sync
-            <> ", examine the repository, then run "
-            <> sync
-            <> " again to synchronize "
-            <> branchb branch
-            <> " with "
-            <> branchb upstream
-            <> "."
-        else
-          "  Run "
-            <> sync
-            <> ", resolve the conflicts, then run "
-            <> commit
-            <> " to synchronize "
-            <> branchb branch
-            <> " with "
-            <> branchb upstream
-            <> "."
+whatNextStanza :: PushResult -> Stanza
+whatNextStanza = \case
   PushNotAttempted MergeConflicts ->
     Just ("  Resolve the merge conflicts, then run " <> commit <> ".")
-  PushNotAttempted NothingToPush -> Nothing
-  PushNotAttempted Offline -> runSyncStanza "When you come online, run" branch upstream
-  PushNotAttempted UnseenCommits -> runSyncStanza "Examine the repository, then run" branch upstream
   where
     commit = Text.bold (Text.blue "mit commit")
-    sync = Text.bold (Text.blue "mit sync")
-    upstream = "origin/" <> branch
 
 branchb :: Text -> Text.Builder
 branchb =
