@@ -86,5 +86,5 @@ writeMitState branch state = do
 
 getMitfile :: Text -> Mit Env FilePath
 getMitfile branch64 = do
-  env <- getEnv
-  pure (Text.unpack (env.gitdir <> "/.mit-" <> branch64))
+  gitdir <- gitRevParseAbsoluteGitDir
+  pure (Text.unpack (gitdir <> "/.mit-" <> branch64))

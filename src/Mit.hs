@@ -44,24 +44,20 @@ main :: IO ()
 main = do
   (verbosity, command) <- Opt.customExecParser parserPrefs parserInfo
 
-  let action :: Mit () [Stanza]
+  let action :: Mit Env [Stanza]
       action = do
-        withEnv (\() -> Env {gitdir = "", verbosity}) gitRevParseAbsoluteGitDir >>= \case
-          Nothing -> pure [Just (Text.red "The current directory doesn't contain a git repository.")]
-          Just gitdir -> do
-            withEnv
-              (\() -> Env {gitdir, verbosity})
-              ( do
-                  label \return -> do
-                    case command of
-                      MitCommand'Branch branch -> mitBranch return branch $> []
-                      MitCommand'Commit -> mitCommit return $> []
-                      MitCommand'Merge branch -> mitMerge return branch $> []
-                      MitCommand'Sync -> mitSync return $> []
-                      MitCommand'Undo -> mitUndo return $> []
-              )
+        gitRevParseAbsoluteGitDir >>= \case
+          False -> pure [Just (Text.red "The current directory doesn't contain a git repository.")]
+          True -> do
+            label \return -> do
+              case command of
+                MitCommand'Branch branch -> mitBranch return branch $> []
+                MitCommand'Commit -> mitCommit return $> []
+                MitCommand'Merge branch -> mitMerge return branch $> []
+                MitCommand'Sync -> mitSync return $> []
+                MitCommand'Undo -> mitUndo return $> []
 
-  runMit () action >>= \case
+  runMit Env {verbosity} action >>= \case
     [] -> pure ()
     errs -> do
       putStanzas errs

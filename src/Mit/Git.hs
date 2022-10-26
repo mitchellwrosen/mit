@@ -51,7 +51,6 @@ import Data.Text.Lazy.Builder qualified as Text.Builder
 import Ki qualified
 import Mit.Builder qualified as Builder
 import Mit.Env (Env (..))
--- import Mit.GitCommand qualified as Git
 import Mit.Monad
 import Mit.Prelude
 import Mit.Process
@@ -333,8 +332,8 @@ gitMaybeHead =
 -- | Get whether a merge is in progress.
 gitMergeInProgress :: Mit Env Bool
 gitMergeInProgress = do
-  env <- getEnv
-  io (doesFileExist (Text.unpack (env.gitdir <> "/MERGE_HEAD")))
+  gitdir <- gitRevParseAbsoluteGitDir
+  io (doesFileExist (Text.unpack (gitdir <> "/MERGE_HEAD")))
 
 gitPush :: Text -> Mit Env Bool
 gitPush branch =
@@ -352,11 +351,9 @@ gitRemoteBranchHead remote branch =
     Left _ -> Nothing
     Right head -> Just head
 
-gitRevParseAbsoluteGitDir :: Mit Env (Maybe Text)
+gitRevParseAbsoluteGitDir :: ProcessOutput a => Mit Env a
 gitRevParseAbsoluteGitDir =
-  git ["rev-parse", "--absolute-git-dir"] <&> \case
-    Left _ -> Nothing
-    Right dir -> Just dir
+  git ["rev-parse", "--absolute-git-dir"]
 
 gitShow :: Text -> Mit Env GitCommitInfo
 gitShow commit =
