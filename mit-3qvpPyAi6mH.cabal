@@ -11,7 +11,7 @@ maintainer: Mitchell Rosen <mitchellwrosen@gmail.com>
 name: mit-3qvpPyAi6mH
 stability: experimental
 synopsis: A git wrapper with a streamlined UX
-version: 10
+version: 11
 
 description:
   A git wrapper with a streamlined UX.
