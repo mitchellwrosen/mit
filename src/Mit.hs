@@ -3,6 +3,7 @@ module Mit
   )
 where
 
+import Control.Applicative (many)
 import Data.List.NonEmpty qualified as List1
 import Data.Ord (clamp)
 import Data.Sequence qualified as Seq
@@ -85,9 +86,7 @@ main = do
     parser :: Opt.Parser (Int, MitCommand)
     parser =
       (,)
-        <$> ( clamp (0, 2)
-                <$> Opt.option Opt.auto (Opt.help "Verbosity" <> Opt.metavar "«n»" <> Opt.short 'v' <> Opt.value 0)
-            )
+        <$> (clamp (0, 2) . length <$> many (Opt.flag' () (Opt.help "Verbose (-v or -vv)" <> Opt.short 'v')))
         <*> (Opt.hsubparser . fold)
           [ Opt.command "branch" $
               Opt.info
