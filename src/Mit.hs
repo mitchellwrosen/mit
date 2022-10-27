@@ -410,7 +410,7 @@ mitMergeWith context target = do
   merge <- performMerge ("⅄ " <> target <> " → " <> context.branch) targetCommit
 
   stashConflicts <-
-    if null merge.conflicts
+    if isNothing (mergeConflicts merge)
       then case snapshotStash context.snapshot of
         Nothing -> pure []
         Just stash -> gitApplyStash stash
@@ -422,11 +422,11 @@ mitMergeWith context target = do
         MitState
           { head = (),
             merging =
-              if null merge.conflicts
+              if isNothing (mergeConflicts merge)
                 then Nothing
                 else Just target,
             undos =
-              if pushPushed push || Seq.null merge.commits
+              if pushPushed push || isNothing (mergeCommits merge)
                 then []
                 else undoToSnapshot context.snapshot
           }
@@ -445,15 +445,15 @@ mitMergeWith context target = do
 
   io do
     putStanzas
-      [ if null merge.conflicts
+      [ if isNothing (mergeConflicts merge)
           then synchronizedStanza context.branch target
           else notSynchronizedStanza context.branch target ".",
         do
-          commits1 <- Seq1.fromSeq merge.commits
+          commits <- mergeCommits merge
           syncStanza
             Sync
-              { commits = commits1,
-                success = null merge.conflicts,
+              { commits,
+                success = isNothing (mergeConflicts merge),
                 source = target,
                 target = context.branch
               },
@@ -463,7 +463,7 @@ mitMergeWith context target = do
           syncStanza Sync {commits, success = False, source = upstream, target = context.branch},
         -- TODO show commits to remote
         do
-          conflicts1 <- List1.nonEmpty merge.conflicts <|> List1.nonEmpty stashConflicts
+          conflicts1 <- (Seq1.toList1 <$> mergeConflicts merge) <|> List1.nonEmpty stashConflicts
           conflictsStanza "These files are in conflict:" conflicts1,
         -- TODO audit this
         case push of
@@ -532,11 +532,11 @@ mitSyncWith stanza0 maybeUndos = do
   merge <-
     case context.upstreamHead of
       -- Yay: no upstream branch is not different from an up-to-date local branch
-      Nothing -> pure GitMerge {commits = Seq.empty, conflicts = []}
+      Nothing -> pure NothingToMerge
       Just upstreamHead -> performMerge ("⅄ " <> context.branch) upstreamHead
 
   stashConflicts <-
-    if null merge.conflicts
+    if isNothing (mergeConflicts merge)
       then case snapshotStash context.snapshot of
         Nothing -> pure []
         Just stash -> gitApplyStash stash
@@ -548,7 +548,7 @@ mitSyncWith stanza0 maybeUndos = do
         MitState
           { head = (),
             merging =
-              if null merge.conflicts
+              if isNothing (mergeConflicts merge)
                 then Nothing
                 else Just context.branch,
             undos =
@@ -556,7 +556,7 @@ mitSyncWith stanza0 maybeUndos = do
                 then []
                 else case maybeUndos of
                   Nothing ->
-                    if Seq.null merge.commits
+                    if isNothing (mergeCommits merge)
                       then []
                       else undoToSnapshot context.snapshot
                   -- FIXME hm, could consider appending those undos instead, even if they obviate the recent stash/merge
@@ -571,11 +571,11 @@ mitSyncWith stanza0 maybeUndos = do
       [ stanza0,
         isSynchronizedStanza context.branch push,
         do
-          commits1 <- Seq1.fromSeq merge.commits
+          commits <- mergeCommits merge
           syncStanza
             Sync
-              { commits = commits1,
-                success = null merge.conflicts,
+              { commits,
+                success = isNothing (mergeConflicts merge),
                 source = upstream,
                 target = context.branch
               },
@@ -589,7 +589,7 @@ mitSyncWith stanza0 maybeUndos = do
                 target = upstream
               },
         do
-          conflicts1 <- List1.nonEmpty merge.conflicts <|> List1.nonEmpty stashConflicts
+          conflicts1 <- (Seq1.toList1 <$> mergeConflicts merge) <|> List1.nonEmpty stashConflicts
           conflictsStanza "These files are in conflict:" conflicts1,
         case push of
           DidntPush NothingToPush -> Nothing
@@ -729,36 +729,40 @@ contextUpstream context =
 ------------------------------------------------------------------------------------------------------------------------
 -- Git merge
 
--- | The result of a @git merge@.
---
--- Impossible case: Impossible case: empty list of commits, non-empty list of conflicts.
-data GitMerge = GitMerge
-  { -- | The list of commits that were applied (or would be applied once conflicts are resolved), minus the merge commit
-    -- itself.
-    commits :: Seq GitCommitInfo,
-    conflicts :: [GitConflict]
-  }
+-- | The result of a @git merge@. Lists of commits do not contain the merge commit itself.
+data GitMerge
+  = NothingToMerge
+  | TriedToMerge (Seq1 GitCommitInfo) (Seq1 GitConflict)
+  | Merged (Seq1 GitCommitInfo) -- note: doesn't distinguish between FF and non-FF
 
--- Perform a fast-forward-if-possible git merge, and return the commits that were applied (or *would be* applied) (minus
--- the merge commit), along with the conflicting files. Impossible case: empty list of commits, non-empty list of
--- conflicts.
---
--- Precondition: the working directory is clean. TODO take unused GitStash as argument?
+mergeCommits :: GitMerge -> Maybe (Seq1 GitCommitInfo)
+mergeCommits = \case
+  NothingToMerge -> Nothing
+  TriedToMerge commits _conflicts -> Just commits
+  Merged commits -> Just commits
+
+mergeConflicts :: GitMerge -> Maybe (Seq1 GitConflict)
+mergeConflicts = \case
+  NothingToMerge -> Nothing
+  TriedToMerge _commits conflicts -> Just conflicts
+  Merged _commits -> Nothing
+
+-- Perform a fast-forward-if-possible git merge.
 performMerge :: Text -> Text -> Mit Env GitMerge
 performMerge message commitish = do
   head <- gitHead
-  commits <- gitCommitsBetween (Just head) commitish
-  conflicts <-
-    if Seq.null commits
-      then pure []
-      else
-        git ["merge", "--ff", "--no-commit", commitish] >>= \case
-          False -> gitConflicts
-          True -> do
-            -- If this was a fast-forward, a merge would not be in progress at this point.
-            whenM gitMergeInProgress (git_ ["commit", "--message", message])
-            pure []
-  pure GitMerge {commits, conflicts}
+  commits0 <- gitCommitsBetween (Just head) commitish
+  case Seq1.fromSeq commits0 of
+    Nothing -> pure NothingToMerge
+    Just commits -> do
+      git ["merge", "--ff", "--no-commit", commitish] >>= \case
+        False -> do
+          conflicts <- gitConflicts
+          pure (TriedToMerge commits (Seq1.unsafeFromList conflicts))
+        True -> do
+          -- If this was a fast-forward, a merge would not be in progress at this point.
+          whenM gitMergeInProgress (git_ ["commit", "--message", message])
+          pure (Merged commits)
 
 ------------------------------------------------------------------------------------------------------------------------
 -- Git push
