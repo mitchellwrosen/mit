@@ -95,6 +95,7 @@ library
     Mit.Git
     Mit.Monad
     Mit.Prelude
+    Mit.Pretty
     Mit.Process
     Mit.Seq
     Mit.Seq1

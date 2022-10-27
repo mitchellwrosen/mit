@@ -15,10 +15,15 @@ type Stanza =
   Maybe Text.Builder
 
 renderStanzas :: [Stanza] -> Stanza
-renderStanzas stanzas =
-  case catMaybes stanzas of
+renderStanzas stanzas0 =
+  case catMaybes stanzas0 of
     [] -> Nothing
-    stanzas' -> Just (mconcat (List.intersperse (Builder.newline <> Builder.newline) stanzas'))
+    stanzas ->
+      stanzas
+        & map ("  " <>)
+        & List.intersperse (Builder.newline <> Builder.newline)
+        & mconcat
+        & Just
 
 putStanzas :: [Stanza] -> IO ()
 putStanzas stanzas =

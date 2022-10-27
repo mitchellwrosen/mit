@@ -17,6 +17,7 @@ import Mit.Env
 import Mit.Git
 import Mit.Monad
 import Mit.Prelude
+import Mit.Pretty qualified as Pretty
 import Mit.Seq1 qualified as Seq1
 import Mit.Stanza
 import Mit.State
@@ -168,27 +169,41 @@ mitBranch branch = do
   gitBranchWorktreeDir branch >>= \case
     Nothing -> do
       whenM (doesDirectoryExist worktreeDir) do
-        abort [Just (Text.red ("Directory " <> Text.bold (Text.Builder.fromText worktreeDir) <> " already exists."))]
+        abort [Just (Text.red ("Directory " <> Pretty.directory worktreeDir <> " already exists."))]
       git_ ["worktree", "add", "--detach", worktreeDir]
-      cd worktreeDir do
-        whenNotM (git ["switch", branch]) do
-          git_ ["branch", "--no-track", branch]
-          git_ ["switch", branch]
-          gitFetch_ "origin"
-          whenM (gitRemoteBranchExists "origin" branch) do
+      stanzas <-
+        label \done ->
+          cd worktreeDir do
+            whenM (git ["switch", branch]) do
+              done [Just ("Checked out " <> Pretty.branch branch <> " in " <> Pretty.directory worktreeDir <> ".")]
+            git_ ["branch", "--no-track", branch]
+            git_ ["switch", branch]
+            gitFetch_ "origin"
+            whenNotM (gitRemoteBranchExists "origin" branch) do
+              done [Just ("Created " <> Pretty.branch branch <> " in " <> Pretty.directory worktreeDir <> ".")]
             let upstream = "origin/" <> branch
             git_ ["reset", "--hard", "--quiet", upstream]
             git_ ["branch", "--set-upstream-to", upstream]
+            pure
+              [ Just
+                  ( "Created "
+                      <> Pretty.branch branch
+                      <> " in "
+                      <> Pretty.directory worktreeDir
+                      <> ", tracking "
+                      <> Pretty.branch upstream
+                      <> "."
+                  )
+              ]
+      io (putStanzas stanzas)
     Just directory ->
       when (directory /= worktreeDir) do
         abort
           [ Just
               ( Text.red
-                  ( Text.bold
-                      ( Text.Builder.fromText branch
-                          <> " is already checked out in "
-                          <> Text.bold (Text.Builder.fromText directory)
-                      )
+                  ( Pretty.branch branch
+                      <> " is already checked out in "
+                      <> Pretty.directory directory
                       <> "."
                   )
               )
@@ -283,20 +298,17 @@ mitCommit_ = do
               Just conflictsOnSync1 ->
                 renderStanzas
                   [ conflictsStanza
-                      ( "These files will be in conflict when you run "
-                          <> Text.bold (Text.blue "mit sync")
-                          <> ":"
-                      )
+                      ("These files will be in conflict when you run " <> Pretty.command "mit sync" <> ":")
                       conflictsOnSync1,
                     Just $
-                      "  Run "
-                        <> Text.bold (Text.blue "mit sync")
+                      "Run "
+                        <> Pretty.command "mit sync"
                         <> ", resolve the conflicts, then run "
-                        <> Text.bold (Text.blue "mit commit")
+                        <> Pretty.command "mit commit"
                         <> " to synchronize "
-                        <> branchb context.branch
+                        <> Pretty.branch context.branch
                         <> " with "
-                        <> branchb upstream
+                        <> Pretty.branch upstream
                         <> "."
                   ]
           DidntPush (TriedToPush _) -> runSyncStanza "Run" context.branch upstream
@@ -351,12 +363,12 @@ mitCommitMerge = do
               [ stanza0,
                 conflictsStanza "These files are in conflict:" conflicts1,
                 Just $
-                  "  Resolve the conflicts, then run "
-                    <> Text.bold (Text.blue "mit commit")
+                  "Resolve the conflicts, then run "
+                    <> Pretty.command "mit commit"
                     <> " to synchronize "
-                    <> branchb context.branch
+                    <> Pretty.branch context.branch
                     <> " with "
-                    <> branchb upstream
+                    <> Pretty.branch upstream
                     <> ".",
                 if null context.state.undos then Nothing else canUndoStanza
               ]
@@ -469,20 +481,17 @@ mitMergeWith context target = do
               Just conflictsOnSync1 ->
                 renderStanzas
                   [ conflictsStanza
-                      ( "These files will be in conflict when you run "
-                          <> Text.bold (Text.blue "mit sync")
-                          <> ":"
-                      )
+                      ("These files will be in conflict when you run " <> Pretty.command "mit sync" <> ":")
                       conflictsOnSync1,
                     Just $
-                      "  Run "
-                        <> Text.bold (Text.blue "mit sync")
+                      "Run "
+                        <> Pretty.command "mit sync"
                         <> ", resolve the conflicts, then run "
-                        <> Text.bold (Text.blue "mit commit")
+                        <> Pretty.command "mit commit"
                         <> " to synchronize "
-                        <> branchb context.branch
+                        <> Pretty.branch context.branch
                         <> " with "
-                        <> branchb upstream
+                        <> Pretty.branch upstream
                         <> "."
                   ]
           DidntPush (TriedToPush _) -> runSyncStanza "Run" context.branch upstream
@@ -594,12 +603,12 @@ mitSyncWith stanza0 maybeUndos = do
           DidntPush (PushWouldntReachRemote _) -> runSyncStanza "When you come online, run" context.branch upstream
           DidntPush (PushWouldBeRejected _) ->
             Just $
-              "  Resolve the conflicts, then run "
-                <> Text.bold (Text.blue "mit commit")
+              "Resolve the conflicts, then run "
+                <> Pretty.command "mit commit"
                 <> " to synchronize "
-                <> branchb context.branch
+                <> Pretty.branch context.branch
                 <> " with "
-                <> branchb upstream
+                <> Pretty.branch upstream
                 <> "."
           DidntPush (TriedToPush _) -> runSyncStanza "Run" context.branch upstream
           Pushed _ -> Nothing,
@@ -631,15 +640,14 @@ data Sync = Sync
 
 canUndoStanza :: Stanza
 canUndoStanza =
-  Just ("  Run " <> Text.bold (Text.blue "mit undo") <> " to undo this change.")
+  Just ("Run " <> Pretty.command "mit undo" <> " to undo this change.")
 
 conflictsStanza :: Text.Builder -> List1 GitConflict -> Stanza
 conflictsStanza prefix conflicts =
   Just $
-    "  "
-      <> prefix
+    prefix
       <> Builder.newline
-      <> Builder.vcat ((\conflict -> "    " <> Text.red (showGitConflict conflict)) <$> conflicts)
+      <> Builder.vcat ((\conflict -> "  " <> Text.red (showGitConflict conflict)) <$> conflicts)
 
 isSynchronizedStanza :: Text -> GitPush -> Stanza
 isSynchronizedStanza branch = \case
@@ -653,29 +661,28 @@ isSynchronizedStanza branch = \case
 
 notSynchronizedStanza :: Text -> Text -> Text.Builder -> Stanza
 notSynchronizedStanza branch other suffix =
-  Just ("  " <> Text.red (branchb branch <> " is not synchronized with " <> branchb other <> suffix))
+  Just (Text.red (Pretty.branch branch <> " is not synchronized with " <> Pretty.branch other <> suffix))
 
 runSyncStanza :: Text.Builder -> Text -> Text -> Stanza
 runSyncStanza prefix branch upstream =
   Just $
-    "  "
-      <> prefix
+    prefix
       <> " "
-      <> Text.bold (Text.blue "mit sync")
+      <> Pretty.command "mit sync"
       <> " to synchronize "
-      <> branchb branch
+      <> Pretty.branch branch
       <> " with "
-      <> branchb upstream
+      <> Pretty.branch upstream
       <> "."
 
 syncStanza :: Sync -> Stanza
 syncStanza sync =
   Just $
     Text.italic
-      (colorize ("    " <> Text.Builder.fromText sync.source <> " → " <> Text.Builder.fromText sync.target))
+      (colorize ("  " <> Text.Builder.fromText sync.source <> " → " <> Text.Builder.fromText sync.target))
       <> "\n"
-      <> (Builder.vcat ((\commit -> "    " <> prettyGitCommitInfo commit) <$> commits'))
-      <> (if more then "    ..." else Builder.empty)
+      <> (Builder.vcat ((\commit -> "  " <> prettyGitCommitInfo commit) <$> commits'))
+      <> (if more then "  ..." else Builder.empty)
   where
     colorize :: Text.Builder -> Text.Builder
     colorize =
@@ -687,11 +694,7 @@ syncStanza sync =
 
 synchronizedStanza :: Text -> Text -> Stanza
 synchronizedStanza branch other =
-  Just ("  " <> Text.green (branchb branch <> " is synchronized with " <> branchb other <> "."))
-
-branchb :: Text -> Text.Builder
-branchb =
-  Text.italic . Text.Builder.fromText
+  Just (Text.green (Pretty.branch branch <> " is synchronized with " <> Pretty.branch other <> "."))
 
 ------------------------------------------------------------------------------------------------------------------------
 -- Context
