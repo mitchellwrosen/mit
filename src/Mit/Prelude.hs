@@ -64,6 +64,10 @@ onLeftM :: Monad m => (a -> m b) -> m (Either a b) -> m b
 onLeftM mx my =
   my >>= either mx pure
 
+onNothing :: Applicative m => m a -> Maybe a -> m a
+onNothing mx =
+  maybe mx pure
+
 onNothingM :: Monad m => m a -> m (Maybe a) -> m a
 onNothingM mx my =
   my >>= maybe mx pure

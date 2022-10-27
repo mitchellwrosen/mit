@@ -612,16 +612,11 @@ mitSyncWith stanza0 maybeUndos = do
 mitUndo :: Abort [Stanza] => Mit Env ()
 mitUndo = do
   context <- getContext
-  case List1.nonEmpty context.state.undos of
-    Nothing -> abort [Just (Text.red "Nothing to undo.")]
-    Just undos1 -> for_ undos1 applyUndo
-  when (undosContainRevert context.state.undos) mitSync
-  where
-    undosContainRevert :: [Undo] -> Bool
-    undosContainRevert = \case
-      [] -> False
-      Revert _ : _ -> True
-      _ : undos -> undosContainRevert undos
+  undos <- List1.nonEmpty context.state.undos & onNothing (abort [Just (Text.red "Nothing to undo.")])
+  for_ undos applyUndo
+  head <- gitHead
+  -- It's impossible for the snapshot to have a Nothing head (empty repo) if we got this far, since we had undos
+  when (head /= unsafeSnapshotHead context.snapshot) mitSync
 
 -- FIXME this type kinda sux now, replace with GitMerge probably?
 data Sync = Sync
