@@ -674,8 +674,8 @@ syncStanza sync =
     Text.italic
       (colorize ("  " <> Text.Builder.fromText sync.source <> " → " <> Text.Builder.fromText sync.target))
       <> "\n"
-      <> (Builder.vcat ((\commit -> "  " <> prettyGitCommitInfo commit) <$> commits'))
-      <> (if more then "  ..." else Builder.empty)
+      <> (Builder.vcat ((\commit -> "    " <> prettyGitCommitInfo commit) <$> commits'))
+      <> (if more then "    ..." else Builder.empty)
   where
     colorize :: Text.Builder -> Text.Builder
     colorize =
