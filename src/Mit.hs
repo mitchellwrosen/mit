@@ -672,7 +672,7 @@ syncStanza :: Sync -> Stanza
 syncStanza sync =
   Just $
     fold
-      [ colorize ("│ " <> Pretty.branch sync.source <> " → " <> Pretty.branch sync.target),
+      [ "│ " <> colorize (Pretty.branch sync.source <> " → " <> Pretty.branch sync.target),
         "\n",
         (Builder.vcat ((\commit -> "  │ " <> prettyGitCommitInfo commit) <$> commits')),
         if more then "  │ ..." else Builder.empty
