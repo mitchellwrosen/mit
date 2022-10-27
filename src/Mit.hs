@@ -255,17 +255,14 @@ mitCommit_ = do
             undos =
               case (pushPushed push, committed) of
                 (False, False) -> context.state.undos
-                (False, True) ->
-                  case context.snapshot of
-                    Nothing -> []
-                    Just snapshot -> undoToSnapshot snapshot
+                (False, True) -> undoToSnapshot context.snapshot
                 (True, False) -> undoPush
                 (True, True) ->
                   if null undoPush
                     then []
-                    else case context.snapshot of
+                    else case snapshotStash context.snapshot of
                       Nothing -> undoPush
-                      Just snapshot -> undoPush ++ [Apply (fromJust snapshot.stash)]
+                      Just stash -> undoPush ++ [Apply stash]
           }
 
   writeMitState context.branch state
@@ -351,12 +348,12 @@ mitCommitMerge = do
   --   2. We had a clean working directory before `mit merge`, so proceed to sync
 
   case undosStash context.state.undos of
-    Nothing -> mitSyncWith stanza0 (Just [Reset (fromJust context.snapshot).head])
+    Nothing -> mitSyncWith stanza0 (Just [Reset (unsafeSnapshotHead context.snapshot)])
     Just stash -> do
       conflicts <- gitApplyStash stash
       case List1.nonEmpty conflicts of
         -- FIXME we just unstashed, now we're about to stash again :/
-        Nothing -> mitSyncWith stanza0 (Just [Reset (fromJust context.snapshot).head, Apply stash])
+        Nothing -> mitSyncWith stanza0 (Just [Reset (unsafeSnapshotHead context.snapshot), Apply stash])
         Just conflicts1 ->
           io do
             putStanzas
@@ -407,14 +404,14 @@ mitMergeWith context target = do
         runSyncStanza "Run" context.branch upstream
       ]
 
-  whenJust (contextStash context) \_stash ->
+  whenJust (snapshotStash context.snapshot) \_stash ->
     gitDeleteChanges
 
   merge <- performMerge ("⅄ " <> target <> " → " <> context.branch) targetCommit
 
   stashConflicts <-
     if null merge.conflicts
-      then case contextStash context of
+      then case snapshotStash context.snapshot of
         Nothing -> pure []
         Just stash -> gitApplyStash stash
       else pure []
@@ -431,9 +428,7 @@ mitMergeWith context target = do
             undos =
               if pushPushed push || Seq.null merge.commits
                 then []
-                else case context.snapshot of
-                  Nothing -> []
-                  Just snapshot -> undoToSnapshot snapshot
+                else undoToSnapshot context.snapshot
           }
 
   writeMitState context.branch state
@@ -531,7 +526,7 @@ mitSyncWith stanza0 maybeUndos = do
   context <- getContext
   let upstream = contextUpstream context
 
-  whenJust (contextStash context) \_stash ->
+  whenJust (snapshotStash context.snapshot) \_stash ->
     gitDeleteChanges
 
   merge <-
@@ -542,7 +537,7 @@ mitSyncWith stanza0 maybeUndos = do
 
   stashConflicts <-
     if null merge.conflicts
-      then case contextStash context of
+      then case snapshotStash context.snapshot of
         Nothing -> pure []
         Just stash -> gitApplyStash stash
       else pure []
@@ -563,9 +558,7 @@ mitSyncWith stanza0 maybeUndos = do
                   Nothing ->
                     if Seq.null merge.commits
                       then []
-                      else case context.snapshot of
-                        Nothing -> []
-                        Just snapshot -> undoToSnapshot snapshot
+                      else undoToSnapshot context.snapshot
                   -- FIXME hm, could consider appending those undos instead, even if they obviate the recent stash/merge
                   -- undos
                   Just undos' -> undos'
@@ -701,7 +694,7 @@ synchronizedStanza branch other =
 
 data Context = Context
   { branch :: Text,
-    snapshot :: Maybe GitSnapshot, -- Nothing when no commits yet
+    snapshot :: GitSnapshot,
     state :: MitState (),
     upstreamHead :: Maybe Text
   }
@@ -720,23 +713,18 @@ contextExistLocalCommits context =
   case context.upstreamHead of
     Nothing -> pure True
     Just upstreamHead ->
-      case context.snapshot of
+      case snapshotHead context.snapshot of
         Nothing -> pure False
-        Just snapshot -> gitExistCommitsBetween upstreamHead snapshot.head
+        Just head -> gitExistCommitsBetween upstreamHead head
 
 contextExistRemoteCommits :: Context -> Mit Env Bool
 contextExistRemoteCommits context =
   case context.upstreamHead of
     Nothing -> pure False
     Just upstreamHead ->
-      case context.snapshot of
+      case snapshotHead context.snapshot of
         Nothing -> pure True
-        Just snapshot -> gitExistCommitsBetween snapshot.head upstreamHead
-
-contextStash :: Context -> Maybe Text
-contextStash context = do
-  snapshot <- context.snapshot
-  snapshot.stash
+        Just head -> gitExistCommitsBetween head upstreamHead
 
 contextUpstream :: Context -> Text
 contextUpstream context =
@@ -834,24 +822,42 @@ performPush branch = do
 ------------------------------------------------------------------------------------------------------------------------
 -- Git snapshot
 
-data GitSnapshot = GitSnapshot
-  { head :: Text,
-    stash :: Maybe Text
-  }
+data GitSnapshot
+  = SnapshotEmpty -- empty repo
+  | SnapshotClean Text -- head
+  | SnapshotDirty Text Text -- head, stash
 
-performSnapshot :: Mit Env (Maybe GitSnapshot)
+snapshotHead :: GitSnapshot -> Maybe Text
+snapshotHead = \case
+  SnapshotEmpty -> Nothing
+  SnapshotClean head -> Just head
+  SnapshotDirty head _stash -> Just head
+
+unsafeSnapshotHead :: GitSnapshot -> Text
+unsafeSnapshotHead snapshot =
+  case snapshotHead snapshot of
+    Nothing -> error "unsafeSnapshotHead: no head"
+    Just head -> head
+
+snapshotStash :: GitSnapshot -> Maybe Text
+snapshotStash = \case
+  SnapshotEmpty -> Nothing
+  SnapshotClean _head -> Nothing
+  SnapshotDirty _head stash -> Just stash
+
+performSnapshot :: Mit Env GitSnapshot
 performSnapshot = do
   gitMaybeHead >>= \case
-    Nothing -> pure Nothing
-    Just head -> do
-      stash <-
-        gitDiff >>= \case
-          Differences -> Just <$> gitCreateStash
-          NoDifferences -> pure Nothing
-      pure (Just GitSnapshot {head, stash})
+    Nothing -> pure SnapshotEmpty
+    Just head ->
+      gitDiff >>= \case
+        Differences -> do
+          stash <- gitCreateStash
+          pure (SnapshotDirty head stash)
+        NoDifferences -> pure (SnapshotClean head)
 
 undoToSnapshot :: GitSnapshot -> [Undo]
-undoToSnapshot snapshot =
-  Reset snapshot.head : case snapshot.stash of
-    Nothing -> []
-    Just stash -> [Apply stash]
+undoToSnapshot = \case
+  SnapshotEmpty -> []
+  SnapshotClean head -> [Reset head]
+  SnapshotDirty head stash -> [Reset head, Apply stash]
