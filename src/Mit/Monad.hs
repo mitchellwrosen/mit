@@ -6,6 +6,9 @@ module Mit.Monad
     withEnv,
     Goto,
     label,
+    Abort,
+    stick,
+    abort,
     with,
     with_,
   )
@@ -67,6 +70,20 @@ label f =
         | n == m -> k (unsafeCoerce y)
         | otherwise -> throwIO err
       Right x -> k x
+
+type Abort r a =
+  (?abort :: Abort_ r a)
+
+data Abort_ r a
+  = Abort_ (Goto r a)
+
+stick :: Goto r a -> (Abort r a => b) -> b
+stick f x = let ?abort = Abort_ f in x
+
+abort :: Abort r a => a -> Mit r void
+abort x =
+  case ?abort of
+    Abort_ f -> f x
 
 data X = forall a. X Unique a
 

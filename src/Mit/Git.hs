@@ -386,10 +386,10 @@ gitUnstageChanges = do
   when (not (null untrackedFiles)) do
     git_ ("add" : "--intent-to-add" : untrackedFiles)
 
-gitVersion :: Goto Env [Stanza] -> Mit Env GitVersion
-gitVersion return = do
+gitVersion :: Abort Env [Stanza] => Mit Env GitVersion
+gitVersion = do
   v0 <- git ["--version"]
-  fromMaybe (return [Just ("Could not parse git version from: " <> Text.Builder.fromText v0)]) do
+  fromMaybe (abort [Just ("Could not parse git version from: " <> Text.Builder.fromText v0)]) do
     "git" : "version" : v1 : _ <- Just (Text.words v0)
     [sx, sy, sz] <- Just (Text.split (== '.') v1)
     x <- readMaybe (Text.unpack sx)
