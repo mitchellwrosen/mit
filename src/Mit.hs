@@ -319,7 +319,7 @@ mitCommit_ = do
         if not (null state.undos) && committed then canUndoStanza else Nothing
       ]
 
-mitCommitMerge :: Mit Env ()
+mitCommitMerge :: Abort [Stanza] => Mit Env ()
 mitCommitMerge = do
   context <- getContext
   let upstream = contextUpstream context
@@ -521,7 +521,7 @@ mitSync = do
 --
 -- Instead, we want to undo to the point before running the 'mit merge' that caused the conflicts, which were later
 -- resolved by 'mit commit'.
-mitSyncWith :: Stanza -> Maybe [Undo] -> Mit Env ()
+mitSyncWith :: Abort [Stanza] => Stanza -> Maybe [Undo] -> Mit Env ()
 mitSyncWith stanza0 maybeUndos = do
   context <- getContext
   let upstream = contextUpstream context
@@ -695,10 +695,10 @@ data Context = Context
     upstreamHead :: Maybe Text
   }
 
-getContext :: Mit Env Context
+getContext :: Abort [Stanza] => Mit Env Context
 getContext = do
   gitFetch_ "origin"
-  branch <- git ["branch", "--show-current"]
+  branch <- git ["branch", "--show-current"] & onNothingM (abort [Just (Text.red "You are not on a branch.")])
   upstreamHead <- gitRemoteBranchHead "origin" branch
   state <- readMitState branch
   snapshot <- performSnapshot
