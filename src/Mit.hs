@@ -118,7 +118,7 @@ data MitCommand
   | MitCommand'Sync
   | MitCommand'Undo
 
-dieIfBuggyGit :: Abort Env [Stanza] => Mit Env ()
+dieIfBuggyGit :: Abort [Stanza] => Mit Env ()
 dieIfBuggyGit = do
   version <- gitVersion
   let validate (ver, err) = if version < ver then ((ver, err) :) else id
@@ -155,11 +155,11 @@ dieIfBuggyGit = do
         )
       ]
 
-dieIfMergeInProgress :: Abort Env [Stanza] => Mit Env ()
+dieIfMergeInProgress :: Abort [Stanza] => Mit Env ()
 dieIfMergeInProgress =
   whenM gitMergeInProgress (abort [Just (Text.red (Text.bold "git merge" <> " in progress."))])
 
-mitBranch :: Abort Env [Stanza] => Text -> Mit Env ()
+mitBranch :: Abort [Stanza] => Text -> Mit Env ()
 mitBranch branch = do
   worktreeDir <- do
     rootdir <- git ["rev-parse", "--show-toplevel"]
@@ -194,7 +194,7 @@ mitBranch branch = do
               )
           ]
 
-mitCommit :: Abort Env [Stanza] => Mit Env ()
+mitCommit :: Abort [Stanza] => Mit Env ()
 mitCommit = do
   whenM gitExistUntrackedFiles dieIfBuggyGit
 
@@ -205,7 +205,7 @@ mitCommit = do
         NoDifferences -> abort [Just (Text.red "There's nothing to commit.")]
     True -> mitCommitMerge
 
-mitCommit_ :: Abort Env [Stanza] => Mit Env ()
+mitCommit_ :: Abort [Stanza] => Mit Env ()
 mitCommit_ = do
   context <- getContext
   let upstream = contextUpstream context
@@ -361,7 +361,7 @@ mitCommitMerge = do
                 if null context.state.undos then Nothing else canUndoStanza
               ]
 
-mitMerge :: Abort Env [Stanza] => Text -> Mit Env ()
+mitMerge :: Abort [Stanza] => Text -> Mit Env ()
 mitMerge target = do
   dieIfMergeInProgress
   whenM gitExistUntrackedFiles dieIfBuggyGit
@@ -374,7 +374,7 @@ mitMerge target = do
       mitSyncWith Nothing Nothing
     else mitMergeWith context target
 
-mitMergeWith :: Abort Env [Stanza] => Context -> Text -> Mit Env ()
+mitMergeWith :: Abort [Stanza] => Context -> Text -> Mit Env ()
 mitMergeWith context target = do
   -- When given 'mit merge foo', prefer running 'git merge origin/foo' over 'git merge foo'
   targetCommit <-
@@ -491,7 +491,7 @@ mitMergeWith context target = do
       ]
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
-mitSync :: Abort Env [Stanza] => Mit Env ()
+mitSync :: Abort [Stanza] => Mit Env ()
 mitSync = do
   dieIfMergeInProgress
   whenM gitExistUntrackedFiles dieIfBuggyGit
@@ -607,7 +607,7 @@ mitSyncWith stanza0 maybeUndos = do
       ]
 
 -- FIXME output what we just undid
-mitUndo :: Abort Env [Stanza] => Mit Env ()
+mitUndo :: Abort [Stanza] => Mit Env ()
 mitUndo = do
   context <- getContext
   case List1.nonEmpty context.state.undos of

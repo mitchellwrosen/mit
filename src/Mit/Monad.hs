@@ -58,10 +58,10 @@ withEnv :: (r -> s) -> Mit s a -> Mit r a
 withEnv f m =
   Mit \r k -> unMit m (f r) k
 
-type Goto r a =
-  forall void. a -> Mit r void
+type Goto a =
+  forall r void. a -> Mit r void
 
-label :: (Goto r a -> Mit r a) -> Mit r a
+label :: (Goto a -> Mit r a) -> Mit r a
 label f =
   Mit \r k -> do
     n <- newUnique
@@ -71,16 +71,16 @@ label f =
         | otherwise -> throwIO err
       Right x -> k x
 
-type Abort r a =
-  (?abort :: Abort_ r a)
+type Abort a =
+  (?abort :: Abort_ a)
 
-data Abort_ r a
-  = Abort_ (Goto r a)
+data Abort_ a
+  = Abort_ (Goto a)
 
-stick :: Goto r a -> (Abort r a => b) -> b
+stick :: Goto a -> (Abort a => b) -> b
 stick f x = let ?abort = Abort_ f in x
 
-abort :: Abort r a => a -> Mit r void
+abort :: Abort a => a -> Mit r void
 abort x =
   case ?abort of
     Abort_ f -> f x

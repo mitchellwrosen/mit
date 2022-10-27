@@ -386,7 +386,7 @@ gitUnstageChanges = do
   when (not (null untrackedFiles)) do
     git_ ("add" : "--intent-to-add" : untrackedFiles)
 
-gitVersion :: Abort Env [Stanza] => Mit Env GitVersion
+gitVersion :: Abort [Stanza] => Mit Env GitVersion
 gitVersion = do
   v0 <- git ["--version"]
   fromMaybe (abort [Just ("Could not parse git version from: " <> Text.Builder.fromText v0)]) do
