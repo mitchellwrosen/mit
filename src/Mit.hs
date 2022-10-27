@@ -671,11 +671,14 @@ runSyncStanza prefix branch upstream =
 syncStanza :: Sync -> Stanza
 syncStanza sync =
   Just $
-    Text.italic
-      (colorize ("  " <> Text.Builder.fromText sync.source <> " → " <> Text.Builder.fromText sync.target))
-      <> "\n"
-      <> (Builder.vcat ((\commit -> "    " <> prettyGitCommitInfo commit) <$> commits'))
-      <> (if more then "    ..." else Builder.empty)
+    fold
+      [ " ┌",
+        "\n",
+        colorize ("   │" <> Pretty.branch sync.source <> " → " <> Pretty.branch sync.target),
+        "\n",
+        (Builder.vcat ((\commit -> "   │" <> prettyGitCommitInfo commit) <$> commits')),
+        if more then "    ..." else Builder.empty
+      ]
   where
     colorize :: Text.Builder -> Text.Builder
     colorize =
