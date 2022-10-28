@@ -5,19 +5,19 @@ module Mit.Pretty
   )
 where
 
-import Data.Text.Builder.ANSI qualified as Text
-import Data.Text.Lazy.Builder qualified as Text (Builder)
-import Data.Text.Lazy.Builder qualified as Text.Builder
 import Mit.Prelude
+import Text.Builder qualified
+import Text.Builder qualified as Text (Builder)
+import Text.Builder.ANSI qualified as Text.Builder
 
 branch :: Text -> Text.Builder
 branch =
-  Text.italic . Text.Builder.fromText
+  Text.Builder.italic . Text.Builder.text
 
 command :: Text.Builder -> Text.Builder
 command =
-  Text.bold . Text.blue
+  Text.Builder.bold . Text.Builder.blue
 
 directory :: Text -> Text.Builder
 directory =
-  Text.bold . Text.Builder.fromText
+  Text.Builder.bold . Text.Builder.text

@@ -85,7 +85,8 @@ library
     process == 1.6.15.0,
     stm == 2.5.1.0,
     text == 2.0.1,
-    text-ansi == 0.1.1,
+    text-ansi == 0.2.0,
+    text-builder == 0.6.7,
     unix == 2.7.3,
   exposed-modules:
     Mit

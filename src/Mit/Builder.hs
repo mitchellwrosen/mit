@@ -1,10 +1,7 @@
 module Mit.Builder
   ( empty,
-    build,
     hcat,
     newline,
-    put,
-    putln,
     space,
     squoted,
     vcat,
@@ -12,18 +9,12 @@ module Mit.Builder
 where
 
 import Data.List qualified as List
-import Data.Text.IO qualified as Text
-import Data.Text.Lazy qualified as Text.Lazy
-import Data.Text.Lazy.Builder
 import Mit.Prelude
+import Text.Builder
 
 empty :: Builder
 empty =
   mempty
-
-build :: Builder -> Text
-build =
-  Text.Lazy.toStrict . toLazyText
 
 hcat :: Foldable f => f Builder -> Builder
 hcat =
@@ -31,23 +22,15 @@ hcat =
 
 newline :: Builder
 newline =
-  singleton '\n'
-
-put :: Builder -> IO ()
-put =
-  Text.putStr . build
-
-putln :: Builder -> IO ()
-putln =
-  Text.putStrLn . build
+  char '\n'
 
 space :: Builder
 space =
-  singleton ' '
+  char ' '
 
 squote :: Builder
 squote =
-  singleton '\''
+  char '\''
 
 squoted :: Builder -> Builder
 squoted s =

@@ -8,9 +8,6 @@ import Data.List.NonEmpty qualified as List1
 import Data.Ord (clamp)
 import Data.Sequence qualified as Seq
 import Data.Text qualified as Text
-import Data.Text.Builder.ANSI qualified as Text
-import Data.Text.Lazy.Builder qualified as Text (Builder)
-import Data.Text.Lazy.Builder qualified as Text.Builder
 import Mit.Builder qualified as Builder
 import Mit.Directory
 import Mit.Env
@@ -25,6 +22,9 @@ import Mit.Undo
 import Options.Applicative qualified as Opt
 import Options.Applicative.Types qualified as Opt (Backtracking (Backtrack))
 import System.Exit (exitFailure)
+import Text.Builder qualified
+import Text.Builder qualified as Text (Builder)
+import Text.Builder.ANSI qualified as Text
 
 -- FIXME: nicer "git status" story. in particular the conflict markers in the commits after a merge are a bit
 -- ephemeral feeling
@@ -131,8 +131,10 @@ dieIfBuggyGit = do
           ( \(ver, err) ->
               Just
                 ( Text.red
-                    ( "Prior to " <> Text.bold "git" <> " version "
-                        <> Text.Builder.fromText (showGitVersion ver)
+                    ( "Prior to "
+                        <> Text.bold "git"
+                        <> " version "
+                        <> Text.Builder.text (showGitVersion ver)
                         <> ", "
                         <> err
                     )

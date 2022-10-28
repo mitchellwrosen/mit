@@ -6,10 +6,10 @@ module Mit.Stanza
 where
 
 import Data.List qualified as List
-import Data.Text.IO qualified as Text
-import Data.Text.Lazy.Builder qualified as Text (Builder)
 import Mit.Builder qualified as Builder
 import Mit.Prelude
+import Text.Builder qualified
+import Text.Builder qualified as Text (Builder)
 
 type Stanza =
   Maybe Text.Builder
@@ -28,4 +28,4 @@ renderStanzas stanzas0 =
 putStanzas :: [Stanza] -> IO ()
 putStanzas stanzas =
   whenJust (renderStanzas stanzas) \s ->
-    Text.putStr (Builder.build (Builder.newline <> s <> Builder.newline <> Builder.newline))
+    Text.Builder.putToStdOut (Builder.newline <> s <> Builder.newline <> Builder.newline)

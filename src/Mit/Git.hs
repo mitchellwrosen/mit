@@ -44,11 +44,7 @@ import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Sequence qualified as Seq
 import Data.Text qualified as Text
-import Data.Text.Builder.ANSI qualified as Text.Builder
 import Data.Text.IO qualified as Text
-import Data.Text.Lazy.Builder qualified as Text (Builder)
-import Data.Text.Lazy.Builder qualified as Text.Builder
-import Data.Text.Lazy.Builder.RealFloat qualified as Text.Builder
 import GHC.Clock (getMonotonicTime)
 import Ki qualified
 import Mit.Builder qualified as Builder
@@ -67,6 +63,9 @@ import System.Posix.Signals
 import System.Posix.Terminal (queryTerminal)
 import System.Process
 import System.Process.Internals
+import Text.Builder qualified
+import Text.Builder qualified as Text (Builder)
+import Text.Builder.ANSI qualified as Text.Builder
 import Text.Parsec qualified as Parsec
 
 data DiffResult
@@ -91,13 +90,13 @@ parseGitCommitInfo line =
 prettyGitCommitInfo :: GitCommitInfo -> Text.Builder
 prettyGitCommitInfo info =
   fold
-    [ Text.Builder.bold (Text.Builder.black (Text.Builder.fromText info.shorthash)),
+    [ Text.Builder.bold (Text.Builder.black (Text.Builder.text info.shorthash)),
       Builder.space,
-      Text.Builder.bold (Text.Builder.white (Text.Builder.fromText info.subject)),
+      Text.Builder.bold (Text.Builder.white (Text.Builder.text info.subject)),
       " - ",
-      Text.Builder.italic (Text.Builder.white (Text.Builder.fromText info.author)),
+      Text.Builder.italic (Text.Builder.white (Text.Builder.text info.author)),
       Builder.space,
-      Text.Builder.italic (Text.Builder.yellow (Text.Builder.fromText info.date))
+      Text.Builder.italic (Text.Builder.yellow (Text.Builder.text info.date))
     ]
 
 -- FIXME some other color, magenta?
@@ -134,7 +133,7 @@ parseGitConflict line = do
 
 showGitConflict :: GitConflict -> Text.Builder
 showGitConflict (GitConflict xy name) =
-  Text.Builder.fromText name <> " (" <> showGitConflictXY xy <> ")"
+  Text.Builder.text name <> " (" <> showGitConflictXY xy <> ")"
 
 data GitConflictXY
   = AA -- both added
@@ -389,7 +388,7 @@ gitUnstageChanges = do
 gitVersion :: Abort [Stanza] => Mit Env GitVersion
 gitVersion = do
   v0 <- git ["--version"]
-  fromMaybe (abort [Just ("Could not parse git version from: " <> Text.Builder.fromText v0)]) do
+  fromMaybe (abort [Just ("Could not parse git version from: " <> Text.Builder.text v0)]) do
     "git" : "version" : v1 : _ <- Just (Text.words v0)
     [sx, sy, sz] <- Just (Text.split (== '.') v1)
     x <- readMaybe (Text.unpack sx)
@@ -543,31 +542,31 @@ debugPrintGit :: [Text] -> Seq Text -> Seq Text -> ExitCode -> Double -> Mit Env
 debugPrintGit args stdoutLines stderrLines exitCode sec = do
   env <- getEnv
   io case env.verbosity of
-    1 -> Builder.putln (Text.Builder.brightBlack v1)
-    2 -> Builder.putln (Text.Builder.brightBlack (v1 <> v2))
+    1 -> Text.Builder.putLnToStdOut (Text.Builder.brightBlack v1)
+    2 -> Text.Builder.putLnToStdOut (Text.Builder.brightBlack (v1 <> v2))
     _ -> pure ()
   where
     v1 =
       Text.Builder.bold
         ( marker
             <> " ["
-            <> Text.Builder.formatRealFloat Text.Builder.Fixed (Just 0) (sec * 1000)
+            <> Text.Builder.fixedDouble 0 (sec * 1000)
             <> "ms] git "
             <> Builder.hcat (map quote args)
         )
-    v2 = foldMap (\line -> "\n    " <> Text.Builder.fromText line) (stdoutLines <> stderrLines)
+    v2 = foldMap (\line -> "\n    " <> Text.Builder.text line) (stdoutLines <> stderrLines)
 
     quote :: Text -> Text.Builder
     quote s =
       if Text.any isSpace s
-        then Builder.squoted (Text.Builder.fromText (Text.replace "'" "\\'" s))
-        else Text.Builder.fromText s
+        then Builder.squoted (Text.Builder.text (Text.replace "'" "\\'" s))
+        else Text.Builder.text s
 
     marker :: Text.Builder
     marker =
       case exitCode of
-        ExitFailure _ -> Text.Builder.singleton '✗'
-        ExitSuccess -> Text.Builder.singleton '✓'
+        ExitFailure _ -> Text.Builder.char '✗'
+        ExitSuccess -> Text.Builder.char '✓'
 
 drainTextHandle :: Handle -> IO (Seq Text)
 drainTextHandle handle = do
