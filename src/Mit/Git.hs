@@ -194,7 +194,7 @@ gitBranchHead branch =
 -- | Get the directory a branch's worktree is checked out in, if it exists.
 gitBranchWorktreeDir :: Text -> Mit Env (Maybe Text)
 gitBranchWorktreeDir branch = do
-  worktrees <- gitWorktreeList
+  worktrees <- gitListWorktrees
   pure case List.find (\worktree -> worktree.branch == Just branch) worktrees of
     Nothing -> Nothing
     Just worktree -> Just worktree.directory
@@ -403,10 +403,9 @@ data GitWorktree = GitWorktree
     prunable :: Bool
   }
 
--- /dir/one 0efd393c35 [oingo]         -> ("/dir/one", "0efd393c35", Just "oingo")
--- /dir/two dc0c114266 (detached HEAD) -> ("/dir/two", "dc0c114266", Nothing)
-gitWorktreeList :: Mit Env [GitWorktree]
-gitWorktreeList = do
+-- | List worktrees.
+gitListWorktrees :: Mit Env [GitWorktree]
+gitListWorktrees = do
   git ["worktree", "list"] <&> map \line ->
     case Parsec.parse parser "" line of
       Left err -> error (show err)

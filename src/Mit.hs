@@ -337,10 +337,12 @@ mitCommitMerge = do
 
   writeMitState context.branch context.state {merging = Nothing}
 
-  let stanza0 = do
-        merging <- context.state.merging
-        guard (merging /= context.branch)
-        synchronizedStanza context.branch merging
+  let stanzas0 = do
+        fromMaybe [] do
+          merging <- context.state.merging
+          -- FIXME remember why this guard is here and document it
+          guard (merging /= context.branch)
+          pure (mergeStanzas context.branch merging (Right Nothing))
 
   -- Three possible cases:
   --   1. We had a dirty working directory before `mit merge` (evidence: our undo has a `git stash apply` in it)
@@ -350,17 +352,16 @@ mitCommitMerge = do
   --   2. We had a clean working directory before `mit merge`, so proceed to sync
 
   case undosStash context.state.undos of
-    Nothing -> mitSyncWith stanza0 (Just [Reset (unsafeSnapshotHead context.snapshot)])
+    Nothing -> mitSyncWith stanzas0 (Just [Reset (unsafeSnapshotHead context.snapshot)])
     Just stash -> do
       conflicts <- gitApplyStash stash
       case List1.nonEmpty conflicts of
         -- FIXME we just unstashed, now we're about to stash again :/
-        Nothing -> mitSyncWith stanza0 (Just [Reset (unsafeSnapshotHead context.snapshot), Apply stash])
+        Nothing -> mitSyncWith stanzas0 (Just [Reset (unsafeSnapshotHead context.snapshot), Apply stash])
         Just conflicts1 ->
           io do
-            putStanzas
-              [ stanza0,
-                conflictsStanza "These files are in conflict:" conflicts1,
+            (putStanzas . (stanzas0 ++))
+              [ conflictsStanza "These files are in conflict:" conflicts1,
                 Just $
                   "Resolve the conflicts, then run "
                     <> Pretty.command "mit commit"
@@ -382,7 +383,7 @@ mitMerge target = do
 
   if target == context.branch || target == upstream
     then -- If on branch `foo`, treat `mit merge foo` and `mit merge origin/foo` as `mit sync`
-      mitSyncWith Nothing Nothing
+      mitSyncWith [] Nothing
     else mitMergeWith context target
 
 mitMergeWith :: Abort [Stanza] => Context -> Text -> Mit Env ()
@@ -445,21 +446,19 @@ mitMergeWith context target = do
       then pure []
       else gitConflictsWith (fromJust context.upstreamHead)
 
+  let stanzas0 =
+        case mergeCommits merge of
+          Nothing -> []
+          Just commits ->
+            mergeStanzas
+              context.branch
+              target
+              if isNothing (mergeConflicts merge)
+                then Left commits
+                else Right (Just commits)
   io do
-    putStanzas
-      [ if isNothing (mergeConflicts merge)
-          then synchronizedStanza context.branch target
-          else notSynchronizedStanza context.branch target ".",
-        do
-          commits <- mergeCommits merge
-          syncStanza
-            Sync
-              { commits,
-                success = isNothing (mergeConflicts merge),
-                source = target,
-                target = context.branch
-              },
-        isSynchronizedStanza context.branch push,
+    (putStanzas . (stanzas0 ++))
+      [ isSynchronizedStanza context.branch push,
         do
           commits <- Seq1.fromSeq remoteCommits
           syncStanza Sync {commits, success = False, source = upstream, target = context.branch},
@@ -501,7 +500,7 @@ mitSync :: Abort [Stanza] => Mit Env ()
 mitSync = do
   dieIfMergeInProgress
   whenM gitExistUntrackedFiles dieIfBuggyGit
-  mitSyncWith Nothing Nothing
+  mitSyncWith [] Nothing
 
 -- | @mitSyncWith _ maybeUndos@
 --
@@ -523,8 +522,8 @@ mitSync = do
 --
 -- Instead, we want to undo to the point before running the 'mit merge' that caused the conflicts, which were later
 -- resolved by 'mit commit'.
-mitSyncWith :: Abort [Stanza] => Stanza -> Maybe [Undo] -> Mit Env ()
-mitSyncWith stanza0 maybeUndos = do
+mitSyncWith :: Abort [Stanza] => [Stanza] -> Maybe [Undo] -> Mit Env ()
+mitSyncWith stanzas0 maybeUndos = do
   context <- getContext
   let upstream = contextUpstream context
 
@@ -569,9 +568,8 @@ mitSyncWith stanza0 maybeUndos = do
   writeMitState context.branch state
 
   io do
-    putStanzas
-      [ stanza0,
-        isSynchronizedStanza context.branch push,
+    (putStanzas . (stanzas0 ++))
+      [ isSynchronizedStanza context.branch push,
         do
           commits <- mergeCommits merge
           syncStanza
@@ -748,6 +746,36 @@ mergeConflicts = \case
   NothingToMerge -> Nothing
   TriedToMerge _commits conflicts -> Just conflicts
   Merged _commits -> Nothing
+
+-- Nothing = merge failed, here are commits
+-- Just Nothing = merge succeeded, but we don't remember commits
+-- Just Just = merge succeeded, here are commits
+-- FIXME persist the commits that we're merging so we can report them (no more Just Nothing case)
+mergeStanzas :: Text -> Text -> Either (Seq1 GitCommitInfo) (Maybe (Seq1 GitCommitInfo)) -> [Stanza]
+mergeStanzas branch other = \case
+  Left commits ->
+    [ Just (Text.red (Pretty.branch other <> " was not merged into " <> Pretty.branch branch <> ".")),
+      syncStanza
+        Sync
+          { commits,
+            success = False,
+            source = other,
+            target = branch
+          }
+    ]
+  Right Nothing ->
+    [ Just (Text.green (Pretty.branch other <> " was merged into " <> Pretty.branch branch <> "."))
+    ]
+  Right (Just commits) ->
+    [ Just (Text.green (Pretty.branch other <> " was merged into " <> Pretty.branch branch <> ".")),
+      syncStanza
+        Sync
+          { commits,
+            success = True,
+            source = other,
+            target = branch
+          }
+    ]
 
 -- Perform a fast-forward-if-possible git merge.
 performMerge :: Text -> Text -> Mit Env GitMerge
