@@ -63,7 +63,7 @@ main = do
 
   runMit Env {verbosity} action >>= \case
     Left err -> do
-      Pretty.put err
+      output err
       exitFailure
     Right () -> pure ()
   where
@@ -194,7 +194,7 @@ mitBranch branch = do
                 <> ", tracking "
                 <> Pretty.branch upstream
                 <> "."
-      io (Pretty.put (Pretty.line line))
+      output (Pretty.line line)
     Just directory ->
       when (directory /= worktreeDir) do
         abort $
@@ -274,46 +274,45 @@ mitCommit_ = do
       then pure []
       else gitConflictsWith (fromJust context.upstreamHead)
 
-  io do
-    Pretty.put $
-      Pretty.paragraphs
-        [ isSynchronizedStanza context.branch push,
-          Pretty.whenJust (Seq1.fromSeq remoteCommits) \commits ->
-            syncStanza Sync {commits, success = False, source = upstream, target = context.branch},
-          Pretty.whenJust (pushCommits push) \commits ->
-            syncStanza Sync {commits, success = pushPushed push, source = context.branch, target = upstream},
-          case push of
-            DidntPush NothingToPush -> Pretty.empty
-            DidntPush (PushWouldntReachRemote _) -> runSyncStanza "When you come online, run" context.branch upstream
-            DidntPush (PushWouldBeRejected _) ->
-              case List1.nonEmpty conflictsOnSync of
-                Nothing -> runSyncStanza "Run" context.branch upstream
-                Just conflictsOnSync1 ->
-                  Pretty.paragraphs
-                    [ conflictsStanza
-                        ("These files will be in conflict when you run " <> Pretty.command "mit sync" <> ":")
-                        conflictsOnSync1,
-                      Pretty.line $
-                        "Run "
-                          <> Pretty.command "mit sync"
-                          <> ", resolve the conflicts, then run "
-                          <> Pretty.command "mit commit"
-                          <> " to synchronize "
-                          <> Pretty.branch context.branch
-                          <> " with "
-                          <> Pretty.branch upstream
-                          <> "."
-                    ]
-            DidntPush (TriedToPush _) -> runSyncStanza "Run" context.branch upstream
-            Pushed _ -> Pretty.empty,
-          -- Whether we say we can undo from here is not exactly if the state says we can undo, because of one corner
-          -- case: we ran 'mit commit', then aborted the commit, and ultimately didn't push any other local changes.
-          --
-          -- In this case, the underlying state hasn't changed, so 'mit undo' will still work as if the 'mit commit' was
-          -- never run, we merely don't want to *say* "run 'mit undo' to undo" as feedback, because that sounds as if it
-          -- would undo the last command run, namely the 'mit commit' that was aborted.
-          Pretty.when (not (null state.undos) && committed) canUndoStanza
-        ]
+  output $
+    Pretty.paragraphs
+      [ isSynchronizedStanza context.branch push,
+        Pretty.whenJust (Seq1.fromSeq remoteCommits) \commits ->
+          syncStanza Sync {commits, success = False, source = upstream, target = context.branch},
+        Pretty.whenJust (pushCommits push) \commits ->
+          syncStanza Sync {commits, success = pushPushed push, source = context.branch, target = upstream},
+        case push of
+          DidntPush NothingToPush -> Pretty.empty
+          DidntPush (PushWouldntReachRemote _) -> runSyncStanza "When you come online, run" context.branch upstream
+          DidntPush (PushWouldBeRejected _) ->
+            case List1.nonEmpty conflictsOnSync of
+              Nothing -> runSyncStanza "Run" context.branch upstream
+              Just conflictsOnSync1 ->
+                Pretty.paragraphs
+                  [ conflictsStanza
+                      ("These files will be in conflict when you run " <> Pretty.command "mit sync" <> ":")
+                      conflictsOnSync1,
+                    Pretty.line $
+                      "Run "
+                        <> Pretty.command "mit sync"
+                        <> ", resolve the conflicts, then run "
+                        <> Pretty.command "mit commit"
+                        <> " to synchronize "
+                        <> Pretty.branch context.branch
+                        <> " with "
+                        <> Pretty.branch upstream
+                        <> "."
+                  ]
+          DidntPush (TriedToPush _) -> runSyncStanza "Run" context.branch upstream
+          Pushed _ -> Pretty.empty,
+        -- Whether we say we can undo from here is not exactly if the state says we can undo, because of one corner
+        -- case: we ran 'mit commit', then aborted the commit, and ultimately didn't push any other local changes.
+        --
+        -- In this case, the underlying state hasn't changed, so 'mit undo' will still work as if the 'mit commit' was
+        -- never run, we merely don't want to *say* "run 'mit undo' to undo" as feedback, because that sounds as if it
+        -- would undo the last command run, namely the 'mit commit' that was aborted.
+        Pretty.when (not (null state.undos) && committed) canUndoStanza
+      ]
 
 mitCommitMerge :: Abort Pretty => Mit Env ()
 mitCommitMerge = do
@@ -353,21 +352,20 @@ mitCommitMerge = do
         -- FIXME we just unstashed, now we're about to stash again :/
         Nothing -> mitSyncWith pretty0 (Just [Reset (unsafeSnapshotHead context.snapshot), Apply stash])
         Just conflicts1 ->
-          io do
-            Pretty.put $
-              Pretty.paragraphs
-                [ pretty0,
-                  conflictsStanza "These files are in conflict:" conflicts1,
-                  Pretty.line $
-                    "Resolve the conflicts, then run "
-                      <> Pretty.command "mit commit"
-                      <> " to synchronize "
-                      <> Pretty.branch context.branch
-                      <> " with "
-                      <> Pretty.branch upstream
-                      <> ".",
-                  Pretty.when (not (null context.state.undos)) canUndoStanza
-                ]
+          output $
+            Pretty.paragraphs
+              [ pretty0,
+                conflictsStanza "These files are in conflict:" conflicts1,
+                Pretty.line $
+                  "Resolve the conflicts, then run "
+                    <> Pretty.command "mit commit"
+                    <> " to synchronize "
+                    <> Pretty.branch context.branch
+                    <> " with "
+                    <> Pretty.branch upstream
+                    <> ".",
+                Pretty.when (not (null context.state.undos)) canUndoStanza
+              ]
 
 mitMerge :: Abort Pretty => Text -> Mit Env ()
 mitMerge target = do
@@ -451,45 +449,44 @@ mitMergeWith context target = do
             if isNothing (mergeConflicts merge)
               then Left commits
               else Right (Just commits)
-  io do
-    Pretty.put $
-      Pretty.paragraphs
-        [ pretty0,
-          isSynchronizedStanza context.branch push,
-          Pretty.whenJust (Seq1.fromSeq remoteCommits) \commits ->
-            syncStanza Sync {commits, success = False, source = upstream, target = context.branch},
-          -- TODO show commits to remote
-          case (Seq1.toList1 <$> mergeConflicts merge) <|> List1.nonEmpty stashConflicts of
-            Nothing -> Pretty.empty
-            Just conflicts1 -> conflictsStanza "These files are in conflict:" conflicts1,
-          -- TODO audit this
-          case push of
-            DidntPush NothingToPush -> Pretty.empty
-            DidntPush (PushWouldntReachRemote _) -> runSyncStanza "When you come online, run" context.branch upstream
-            -- FIXME hrm, but we might have merge conflicts and/or stash conflicts!
-            DidntPush (PushWouldBeRejected _) ->
-              case List1.nonEmpty conflictsOnSync of
-                Nothing -> runSyncStanza "Run" context.branch upstream
-                Just conflictsOnSync1 ->
-                  Pretty.paragraphs
-                    [ conflictsStanza
-                        ("These files will be in conflict when you run " <> Pretty.command "mit sync" <> ":")
-                        conflictsOnSync1,
-                      Pretty.line $
-                        "Run "
-                          <> Pretty.command "mit sync"
-                          <> ", resolve the conflicts, then run "
-                          <> Pretty.command "mit commit"
-                          <> " to synchronize "
-                          <> Pretty.branch context.branch
-                          <> " with "
-                          <> Pretty.branch upstream
-                          <> "."
-                    ]
-            DidntPush (TriedToPush _) -> runSyncStanza "Run" context.branch upstream
-            Pushed _ -> Pretty.empty,
-          Pretty.when (not (null state.undos)) canUndoStanza
-        ]
+  output $
+    Pretty.paragraphs
+      [ pretty0,
+        isSynchronizedStanza context.branch push,
+        Pretty.whenJust (Seq1.fromSeq remoteCommits) \commits ->
+          syncStanza Sync {commits, success = False, source = upstream, target = context.branch},
+        -- TODO show commits to remote
+        case (Seq1.toList1 <$> mergeConflicts merge) <|> List1.nonEmpty stashConflicts of
+          Nothing -> Pretty.empty
+          Just conflicts1 -> conflictsStanza "These files are in conflict:" conflicts1,
+        -- TODO audit this
+        case push of
+          DidntPush NothingToPush -> Pretty.empty
+          DidntPush (PushWouldntReachRemote _) -> runSyncStanza "When you come online, run" context.branch upstream
+          -- FIXME hrm, but we might have merge conflicts and/or stash conflicts!
+          DidntPush (PushWouldBeRejected _) ->
+            case List1.nonEmpty conflictsOnSync of
+              Nothing -> runSyncStanza "Run" context.branch upstream
+              Just conflictsOnSync1 ->
+                Pretty.paragraphs
+                  [ conflictsStanza
+                      ("These files will be in conflict when you run " <> Pretty.command "mit sync" <> ":")
+                      conflictsOnSync1,
+                    Pretty.line $
+                      "Run "
+                        <> Pretty.command "mit sync"
+                        <> ", resolve the conflicts, then run "
+                        <> Pretty.command "mit commit"
+                        <> " to synchronize "
+                        <> Pretty.branch context.branch
+                        <> " with "
+                        <> Pretty.branch upstream
+                        <> "."
+                  ]
+          DidntPush (TriedToPush _) -> runSyncStanza "Run" context.branch upstream
+          Pushed _ -> Pretty.empty,
+        Pretty.when (not (null state.undos)) canUndoStanza
+      ]
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
 mitSync :: Abort Pretty => Mit Env ()
@@ -563,45 +560,44 @@ mitSyncWith pretty0 maybeUndos = do
 
   writeMitState context.branch state
 
-  io do
-    Pretty.put $
-      Pretty.paragraphs
-        [ pretty0,
-          isSynchronizedStanza context.branch push,
-          Pretty.whenJust (mergeCommits merge) \commits ->
-            syncStanza
-              Sync
-                { commits,
-                  success = isNothing (mergeConflicts merge),
-                  source = upstream,
-                  target = context.branch
-                },
-          Pretty.whenJust (pushCommits push) \commits ->
-            syncStanza
-              Sync
-                { commits,
-                  success = pushPushed push,
-                  source = context.branch,
-                  target = upstream
-                },
-          Pretty.whenJust ((Seq1.toList1 <$> mergeConflicts merge) <|> List1.nonEmpty stashConflicts) \conflicts1 ->
-            conflictsStanza "These files are in conflict:" conflicts1,
-          case push of
-            DidntPush NothingToPush -> Pretty.empty
-            DidntPush (PushWouldntReachRemote _) -> runSyncStanza "When you come online, run" context.branch upstream
-            DidntPush (PushWouldBeRejected _) ->
-              Pretty.line $
-                "Resolve the conflicts, then run "
-                  <> Pretty.command "mit commit"
-                  <> " to synchronize "
-                  <> Pretty.branch context.branch
-                  <> " with "
-                  <> Pretty.branch upstream
-                  <> "."
-            DidntPush (TriedToPush _) -> runSyncStanza "Run" context.branch upstream
-            Pushed _ -> Pretty.empty,
-          Pretty.when (not (null state.undos)) canUndoStanza
-        ]
+  output $
+    Pretty.paragraphs
+      [ pretty0,
+        isSynchronizedStanza context.branch push,
+        Pretty.whenJust (mergeCommits merge) \commits ->
+          syncStanza
+            Sync
+              { commits,
+                success = isNothing (mergeConflicts merge),
+                source = upstream,
+                target = context.branch
+              },
+        Pretty.whenJust (pushCommits push) \commits ->
+          syncStanza
+            Sync
+              { commits,
+                success = pushPushed push,
+                source = context.branch,
+                target = upstream
+              },
+        Pretty.whenJust ((Seq1.toList1 <$> mergeConflicts merge) <|> List1.nonEmpty stashConflicts) \conflicts1 ->
+          conflictsStanza "These files are in conflict:" conflicts1,
+        case push of
+          DidntPush NothingToPush -> Pretty.empty
+          DidntPush (PushWouldntReachRemote _) -> runSyncStanza "When you come online, run" context.branch upstream
+          DidntPush (PushWouldBeRejected _) ->
+            Pretty.line $
+              "Resolve the conflicts, then run "
+                <> Pretty.command "mit commit"
+                <> " to synchronize "
+                <> Pretty.branch context.branch
+                <> " with "
+                <> Pretty.branch upstream
+                <> "."
+          DidntPush (TriedToPush _) -> runSyncStanza "Run" context.branch upstream
+          Pushed _ -> Pretty.empty,
+        Pretty.when (not (null state.undos)) canUndoStanza
+      ]
 
 -- FIXME output what we just undid
 mitUndo :: Abort Pretty => Mit Env ()
@@ -614,6 +610,10 @@ mitUndo = do
   head <- gitHead
   -- It's impossible for the snapshot to have a Nothing head (empty repo) if we got this far, since we had undos
   when (head /= unsafeSnapshotHead context.snapshot) mitSync
+
+output :: MonadIO m => Pretty -> m ()
+output p =
+  liftIO (Pretty.put (Pretty.indent 2 p))
 
 -- FIXME this type kinda sux now, replace with GitMerge probably?
 data Sync = Sync
@@ -667,12 +667,13 @@ runSyncStanza prefix branch upstream =
 
 syncStanza :: Sync -> Pretty
 syncStanza sync =
-  Pretty.lines $
-    fold
-      [ ["│ " <> Pretty.style colorize (Pretty.branch sync.source <> " → " <> Pretty.branch sync.target)],
-        map (\commit -> "  │ " <> prettyGitCommitInfo commit) (Foldable.toList commits'),
-        if more then ["  │ ..."] else []
-      ]
+  Pretty.indent 2 $
+    Pretty.lines $
+      fold
+        [ ["│ " <> Pretty.style colorize (Pretty.branch sync.source <> " → " <> Pretty.branch sync.target)],
+          map (\commit -> "│ " <> prettyGitCommitInfo commit) (Foldable.toList commits'),
+          if more then ["│ ..."] else []
+        ]
   where
     colorize :: Text.Builder -> Text.Builder
     colorize =
