@@ -4,7 +4,7 @@ module Mit.Git
     GitCommitInfo (..),
     prettyGitCommitInfo,
     GitConflict,
-    showGitConflict,
+    prettyGitConflict,
     GitVersion (..),
     showGitVersion,
     git,
@@ -40,19 +40,21 @@ module Mit.Git
   )
 where
 
+import Data.Foldable qualified as Foldable
 import Data.List qualified as List
+import Data.List.NonEmpty qualified as List1
 import Data.Map.Strict qualified as Map
 import Data.Sequence qualified as Seq
 import Data.Text qualified as Text
 import Data.Text.IO qualified as Text
 import GHC.Clock (getMonotonicTime)
 import Ki qualified
-import Mit.Builder qualified as Builder
 import Mit.Env (Env (..))
 import Mit.Monad
 import Mit.Prelude
+import Mit.Pretty (Pretty)
+import Mit.Pretty qualified as Pretty
 import Mit.Process
-import Mit.Stanza
 import System.Directory (doesFileExist)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
@@ -64,7 +66,6 @@ import System.Posix.Terminal (queryTerminal)
 import System.Process
 import System.Process.Internals
 import Text.Builder qualified
-import Text.Builder qualified as Text (Builder)
 import Text.Builder.ANSI qualified as Text.Builder
 import Text.Parsec qualified as Parsec
 
@@ -87,17 +88,15 @@ parseGitCommitInfo line =
     [author, date, hash, shorthash, subject] -> GitCommitInfo {author, date, hash, shorthash, subject}
     _ -> error (Text.unpack line)
 
-prettyGitCommitInfo :: GitCommitInfo -> Text.Builder
+prettyGitCommitInfo :: GitCommitInfo -> Pretty.Line
 prettyGitCommitInfo info =
-  fold
-    [ Text.Builder.bold (Text.Builder.black (Text.Builder.text info.shorthash)),
-      Builder.space,
-      Text.Builder.bold (Text.Builder.white (Text.Builder.text info.subject)),
-      " - ",
-      Text.Builder.italic (Text.Builder.white (Text.Builder.text info.author)),
-      Builder.space,
-      Text.Builder.italic (Text.Builder.yellow (Text.Builder.text info.date))
-    ]
+  Pretty.style (Text.Builder.bold . Text.Builder.black) (Pretty.text info.shorthash)
+    <> Pretty.char ' '
+    <> Pretty.style (Text.Builder.bold . Text.Builder.white) (Pretty.text info.subject)
+    <> " - "
+    <> Pretty.style (Text.Builder.italic . Text.Builder.white) (Pretty.text info.author)
+    <> Pretty.char ' '
+    <> Pretty.style (Text.Builder.italic . Text.Builder.yellow) (Pretty.text info.date)
 
 -- FIXME some other color, magenta?
 
@@ -131,9 +130,9 @@ parseGitConflict line = do
   [xy, name] <- Just (Text.words line)
   GitConflict <$> parseGitConflictXY xy <*> Just name
 
-showGitConflict :: GitConflict -> Text.Builder
-showGitConflict (GitConflict xy name) =
-  Text.Builder.text name <> " (" <> showGitConflictXY xy <> ")"
+prettyGitConflict :: GitConflict -> Pretty.Line
+prettyGitConflict (GitConflict xy name) =
+  Pretty.text name <> " (" <> prettyGitConflictXY xy <> ")"
 
 data GitConflictXY
   = AA -- both added
@@ -156,8 +155,8 @@ parseGitConflictXY = \case
   "UU" -> Just UU
   _ -> Nothing
 
-showGitConflictXY :: GitConflictXY -> Text.Builder
-showGitConflictXY = \case
+prettyGitConflictXY :: GitConflictXY -> Pretty.Line
+prettyGitConflictXY = \case
   AA -> "both added"
   AU -> "added by us"
   DD -> "both deleted"
@@ -385,10 +384,10 @@ gitUnstageChanges = do
   when (not (null untrackedFiles)) do
     git_ ("add" : "--intent-to-add" : untrackedFiles)
 
-gitVersion :: Abort [Stanza] => Mit Env GitVersion
+gitVersion :: Abort Pretty => Mit Env GitVersion
 gitVersion = do
   v0 <- git ["--version"]
-  fromMaybe (abort [Just ("Could not parse git version from: " <> Text.Builder.text v0)]) do
+  fromMaybe (abort (Pretty.line ("Could not parse git version from: " <> Pretty.text v0))) do
     "git" : "version" : v1 : _ <- Just (Text.words v0)
     [sx, sy, sz] <- Just (Text.split (== '.') v1)
     x <- readMaybe (Text.unpack sx)
@@ -541,31 +540,40 @@ debugPrintGit :: [Text] -> Seq Text -> Seq Text -> ExitCode -> Double -> Mit Env
 debugPrintGit args stdoutLines stderrLines exitCode sec = do
   env <- getEnv
   io case env.verbosity of
-    1 -> Text.Builder.putLnToStdOut (Text.Builder.brightBlack v1)
-    2 -> Text.Builder.putLnToStdOut (Text.Builder.brightBlack (v1 <> v2))
+    1 -> Pretty.put v1
+    2 -> Pretty.put (v1 <> v2)
     _ -> pure ()
   where
     v1 =
-      Text.Builder.bold
-        ( marker
-            <> " ["
-            <> Text.Builder.fixedDouble 0 (sec * 1000)
-            <> "ms] git "
-            <> Builder.hcat (map quote args)
-        )
-    v2 = foldMap (\line -> "\n    " <> Text.Builder.text line) (stdoutLines <> stderrLines)
+      Pretty.line $
+        Pretty.style (Text.Builder.bold . Text.Builder.brightBlack) $
+          let prefix =
+                marker
+                  <> " ["
+                  <> Pretty.builder (Text.Builder.fixedDouble 0 (sec * 1000))
+                  <> "ms] git "
+           in case List1.nonEmpty args of
+                -- fold (List.intersperse (Pretty.char ' ') (map quote args)) of
+                Nothing -> prefix
+                Just args1 -> prefix <> sconcat (List1.intersperse (Pretty.char ' ') (quote <$> args1))
+    v2 =
+      (stdoutLines <> stderrLines)
+        & Foldable.toList
+        & map (Pretty.style Text.Builder.brightBlack . Pretty.text)
+        & Pretty.lines
+        & Pretty.indent 4
 
-    quote :: Text -> Text.Builder
+    quote :: Text -> Pretty.Line
     quote s =
       if Text.any isSpace s
-        then Builder.squoted (Text.Builder.text (Text.replace "'" "\\'" s))
-        else Text.Builder.text s
+        then Pretty.char '\'' <> Pretty.text (Text.replace "'" "\\'" s) <> Pretty.char '\''
+        else Pretty.text s
 
-    marker :: Text.Builder
+    marker :: Pretty.Line
     marker =
       case exitCode of
-        ExitFailure _ -> Text.Builder.char '✗'
-        ExitSuccess -> Text.Builder.char '✓'
+        ExitFailure _ -> Pretty.char '✗'
+        ExitSuccess -> Pretty.char '✓'
 
 drainTextHandle :: Handle -> IO (Seq Text)
 drainTextHandle handle = do

@@ -90,7 +90,6 @@ library
     unix == 2.7.3,
   exposed-modules:
     Mit
-    Mit.Builder
     Mit.Directory
     Mit.Env
     Mit.Git
@@ -100,7 +99,6 @@ library
     Mit.Process
     Mit.Seq
     Mit.Seq1
-    Mit.Stanza
     Mit.State
     Mit.Undo
   hs-source-dirs: src

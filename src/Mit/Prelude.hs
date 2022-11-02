@@ -11,6 +11,7 @@ import Control.Exception as X hiding (handle, throw)
 import Control.Monad as X hiding (return)
 import Control.Monad.IO.Class as X (MonadIO (..))
 import Data.Char as X
+import Data.Coerce as X (coerce)
 import Data.Foldable as X
 import Data.Function as X
 import Data.Functor as X (($>))
@@ -18,6 +19,7 @@ import Data.IORef as X
 import Data.List.NonEmpty qualified as List1
 import Data.Map as X (Map)
 import Data.Maybe as X
+import Data.Semigroup as X (sconcat)
 import Data.Sequence as X (Seq)
 import Data.Set as X (Set)
 import Data.Text as X (Text)
@@ -29,7 +31,7 @@ import Data.Word as X (Word64)
 import GHC.Stack as X (HasCallStack)
 import Mit.Seq1 as X (Seq1)
 import Text.Read as X (readMaybe)
-import Prelude as X hiding (head, id, return)
+import Prelude as X hiding (head, id, lines, return)
 
 type List1 =
   List1.NonEmpty

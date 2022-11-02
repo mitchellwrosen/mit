@@ -4,25 +4,24 @@ module Mit
 where
 
 import Control.Applicative (many)
+import Data.Foldable qualified as Foldable (toList)
 import Data.List.NonEmpty qualified as List1
 import Data.Ord (clamp)
 import Data.Sequence qualified as Seq
 import Data.Text qualified as Text
-import Mit.Builder qualified as Builder
 import Mit.Directory
 import Mit.Env
 import Mit.Git
 import Mit.Monad
 import Mit.Prelude
+import Mit.Pretty (Pretty)
 import Mit.Pretty qualified as Pretty
 import Mit.Seq1 qualified as Seq1
-import Mit.Stanza
 import Mit.State
 import Mit.Undo
 import Options.Applicative qualified as Opt
 import Options.Applicative.Types qualified as Opt (Backtracking (Backtrack))
 import System.Exit (exitFailure)
-import Text.Builder qualified
 import Text.Builder qualified as Text (Builder)
 import Text.Builder.ANSI qualified as Text
 
@@ -46,25 +45,27 @@ main :: IO ()
 main = do
   (verbosity, command) <- Opt.customExecParser parserPrefs parserInfo
 
-  let action :: Mit Env [Stanza]
+  let action :: Mit Env (Either Pretty ())
       action = do
         gitRevParseAbsoluteGitDir >>= \case
-          False -> pure [Just (Text.red "The current directory doesn't contain a git repository.")]
+          False ->
+            pure (Left (Pretty.line (Pretty.style Text.red "The current directory doesn't contain a git repository.")))
           True -> do
             label \return ->
-              stick return do
-                case command of
-                  MitCommand'Branch branch -> mitBranch branch $> []
-                  MitCommand'Commit -> mitCommit $> []
-                  MitCommand'Merge branch -> mitMerge branch $> []
-                  MitCommand'Sync -> mitSync $> []
-                  MitCommand'Undo -> mitUndo $> []
+              stick (return . Left) do
+                fmap Right do
+                  case command of
+                    MitCommand'Branch branch -> mitBranch branch
+                    MitCommand'Commit -> mitCommit
+                    MitCommand'Merge branch -> mitMerge branch
+                    MitCommand'Sync -> mitSync
+                    MitCommand'Undo -> mitUndo
 
   runMit Env {verbosity} action >>= \case
-    [] -> pure ()
-    errs -> do
-      putStanzas errs
+    Left err -> do
+      Pretty.put err
       exitFailure
+    Right () -> pure ()
   where
     parserPrefs :: Opt.ParserPrefs
     parserPrefs =
@@ -119,28 +120,26 @@ data MitCommand
   | MitCommand'Sync
   | MitCommand'Undo
 
-dieIfBuggyGit :: Abort [Stanza] => Mit Env ()
+dieIfBuggyGit :: Abort Pretty => Mit Env ()
 dieIfBuggyGit = do
   version <- gitVersion
   let validate (ver, err) = if version < ver then ((ver, err) :) else id
   case foldr validate [] validations of
     [] -> pure ()
     errors ->
-      abort $
-        map
+      errors
+        & map
           ( \(ver, err) ->
-              Just
-                ( Text.red
-                    ( "Prior to "
-                        <> Text.bold "git"
-                        <> " version "
-                        <> Text.Builder.text (showGitVersion ver)
-                        <> ", "
-                        <> err
-                    )
-                )
+              Pretty.style Text.red $
+                "Prior to "
+                  <> Pretty.style Text.bold "git"
+                  <> " version "
+                  <> Pretty.text (showGitVersion ver)
+                  <> ", "
+                  <> Pretty.builder err
           )
-          errors
+        & Pretty.lines
+        & abort
   where
     validations :: [(GitVersion, Text.Builder)]
     validations =
@@ -158,11 +157,12 @@ dieIfBuggyGit = do
         )
       ]
 
-dieIfMergeInProgress :: Abort [Stanza] => Mit Env ()
+dieIfMergeInProgress :: Abort Pretty => Mit Env ()
 dieIfMergeInProgress =
-  whenM gitMergeInProgress (abort [Just (Text.red (Text.bold "git merge" <> " in progress."))])
+  whenM gitMergeInProgress do
+    abort (Pretty.line (Pretty.style Text.red (Pretty.style Text.bold "git merge" <> " in progress.")))
 
-mitBranch :: Abort [Stanza] => Text -> Mit Env ()
+mitBranch :: Abort Pretty => Text -> Mit Env ()
 mitBranch branch = do
   worktreeDir <- do
     rootdir <- git ["rev-parse", "--show-toplevel"]
@@ -171,47 +171,41 @@ mitBranch branch = do
   gitBranchWorktreeDir branch >>= \case
     Nothing -> do
       whenM (doesDirectoryExist worktreeDir) do
-        abort [Just (Text.red ("Directory " <> Pretty.directory worktreeDir <> " already exists."))]
+        abort (Pretty.line (Pretty.style Text.red ("Directory " <> Pretty.directory worktreeDir <> " already exists.")))
       git_ ["worktree", "add", "--detach", worktreeDir]
-      stanzas <-
+      line <-
         label \done ->
           cd worktreeDir do
             whenM (git ["switch", branch]) do
-              done [Just ("Checked out " <> Pretty.branch branch <> " in " <> Pretty.directory worktreeDir <> ".")]
+              done ("Checked out " <> Pretty.branch branch <> " in " <> Pretty.directory worktreeDir <> ".")
             git_ ["branch", "--no-track", branch]
             git_ ["switch", branch]
             gitFetch_ "origin"
             whenNotM (gitRemoteBranchExists "origin" branch) do
-              done [Just ("Created " <> Pretty.branch branch <> " in " <> Pretty.directory worktreeDir <> ".")]
+              done ("Created " <> Pretty.branch branch <> " in " <> Pretty.directory worktreeDir <> ".")
             let upstream = "origin/" <> branch
             git_ ["reset", "--hard", "--quiet", upstream]
             git_ ["branch", "--set-upstream-to", upstream]
-            pure
-              [ Just
-                  ( "Created "
-                      <> Pretty.branch branch
-                      <> " in "
-                      <> Pretty.directory worktreeDir
-                      <> ", tracking "
-                      <> Pretty.branch upstream
-                      <> "."
-                  )
-              ]
-      io (putStanzas stanzas)
+            pure $
+              "Created "
+                <> Pretty.branch branch
+                <> " in "
+                <> Pretty.directory worktreeDir
+                <> ", tracking "
+                <> Pretty.branch upstream
+                <> "."
+      io (Pretty.put (Pretty.line line))
     Just directory ->
       when (directory /= worktreeDir) do
-        abort
-          [ Just
-              ( Text.red
-                  ( Pretty.branch branch
-                      <> " is already checked out in "
-                      <> Pretty.directory directory
-                      <> "."
-                  )
-              )
-          ]
+        abort $
+          Pretty.line $
+            Pretty.style Text.red $
+              Pretty.branch branch
+                <> " is already checked out in "
+                <> Pretty.directory directory
+                <> "."
 
-mitCommit :: Abort [Stanza] => Mit Env ()
+mitCommit :: Abort Pretty => Mit Env ()
 mitCommit = do
   whenM gitExistUntrackedFiles dieIfBuggyGit
 
@@ -219,10 +213,10 @@ mitCommit = do
     False ->
       gitDiff >>= \case
         Differences -> mitCommit_
-        NoDifferences -> abort [Just (Text.red "There's nothing to commit.")]
+        NoDifferences -> abort (Pretty.line (Pretty.style Text.red "There's nothing to commit."))
     True -> mitCommitMerge
 
-mitCommit_ :: Abort [Stanza] => Mit Env ()
+mitCommit_ :: Abort Pretty => Mit Env ()
 mitCommit_ = do
   context <- getContext
   let upstream = contextUpstream context
@@ -231,10 +225,11 @@ mitCommit_ = do
   existLocalCommits <- contextExistLocalCommits context
 
   when (existRemoteCommits && not existLocalCommits) do
-    abort
-      [ notSynchronizedStanza context.branch upstream ".",
-        runSyncStanza "Run" context.branch upstream
-      ]
+    abort $
+      Pretty.paragraphs
+        [ notSynchronizedStanza context.branch upstream ".",
+          runSyncStanza "Run" context.branch upstream
+        ]
 
   committed <- gitCommit
 
@@ -280,48 +275,47 @@ mitCommit_ = do
       else gitConflictsWith (fromJust context.upstreamHead)
 
   io do
-    putStanzas
-      [ isSynchronizedStanza context.branch push,
-        do
-          commits <- Seq1.fromSeq remoteCommits
-          syncStanza Sync {commits, success = False, source = upstream, target = context.branch},
-        do
-          commits <- pushCommits push
-          syncStanza Sync {commits, success = pushPushed push, source = context.branch, target = upstream},
-        case push of
-          DidntPush NothingToPush -> Nothing
-          DidntPush (PushWouldntReachRemote _) -> runSyncStanza "When you come online, run" context.branch upstream
-          DidntPush (PushWouldBeRejected _) ->
-            case List1.nonEmpty conflictsOnSync of
-              Nothing -> runSyncStanza "Run" context.branch upstream
-              Just conflictsOnSync1 ->
-                renderStanzas
-                  [ conflictsStanza
-                      ("These files will be in conflict when you run " <> Pretty.command "mit sync" <> ":")
-                      conflictsOnSync1,
-                    Just $
-                      "Run "
-                        <> Pretty.command "mit sync"
-                        <> ", resolve the conflicts, then run "
-                        <> Pretty.command "mit commit"
-                        <> " to synchronize "
-                        <> Pretty.branch context.branch
-                        <> " with "
-                        <> Pretty.branch upstream
-                        <> "."
-                  ]
-          DidntPush (TriedToPush _) -> runSyncStanza "Run" context.branch upstream
-          Pushed _ -> Nothing,
-        -- Whether we say we can undo from here is not exactly if the state says we can undo, because of one corner
-        -- case: we ran 'mit commit', then aborted the commit, and ultimately didn't push any other local changes.
-        --
-        -- In this case, the underlying state hasn't changed, so 'mit undo' will still work as if the 'mit commit' was
-        -- never run, we merely don't want to *say* "run 'mit undo' to undo" as feedback, because that sounds as if it
-        -- would undo the last command run, namely the 'mit commit' that was aborted.
-        if not (null state.undos) && committed then canUndoStanza else Nothing
-      ]
+    Pretty.put $
+      Pretty.paragraphs
+        [ isSynchronizedStanza context.branch push,
+          Pretty.whenJust (Seq1.fromSeq remoteCommits) \commits ->
+            syncStanza Sync {commits, success = False, source = upstream, target = context.branch},
+          Pretty.whenJust (pushCommits push) \commits ->
+            syncStanza Sync {commits, success = pushPushed push, source = context.branch, target = upstream},
+          case push of
+            DidntPush NothingToPush -> Pretty.empty
+            DidntPush (PushWouldntReachRemote _) -> runSyncStanza "When you come online, run" context.branch upstream
+            DidntPush (PushWouldBeRejected _) ->
+              case List1.nonEmpty conflictsOnSync of
+                Nothing -> runSyncStanza "Run" context.branch upstream
+                Just conflictsOnSync1 ->
+                  Pretty.paragraphs
+                    [ conflictsStanza
+                        ("These files will be in conflict when you run " <> Pretty.command "mit sync" <> ":")
+                        conflictsOnSync1,
+                      Pretty.line $
+                        "Run "
+                          <> Pretty.command "mit sync"
+                          <> ", resolve the conflicts, then run "
+                          <> Pretty.command "mit commit"
+                          <> " to synchronize "
+                          <> Pretty.branch context.branch
+                          <> " with "
+                          <> Pretty.branch upstream
+                          <> "."
+                    ]
+            DidntPush (TriedToPush _) -> runSyncStanza "Run" context.branch upstream
+            Pushed _ -> Pretty.empty,
+          -- Whether we say we can undo from here is not exactly if the state says we can undo, because of one corner
+          -- case: we ran 'mit commit', then aborted the commit, and ultimately didn't push any other local changes.
+          --
+          -- In this case, the underlying state hasn't changed, so 'mit undo' will still work as if the 'mit commit' was
+          -- never run, we merely don't want to *say* "run 'mit undo' to undo" as feedback, because that sounds as if it
+          -- would undo the last command run, namely the 'mit commit' that was aborted.
+          Pretty.when (not (null state.undos) && committed) canUndoStanza
+        ]
 
-mitCommitMerge :: Abort [Stanza] => Mit Env ()
+mitCommitMerge :: Abort Pretty => Mit Env ()
 mitCommitMerge = do
   context <- getContext
   let upstream = contextUpstream context
@@ -337,7 +331,7 @@ mitCommitMerge = do
 
   writeMitState context.branch context.state {merging = Nothing}
 
-  let stanzas0 = do
+  let pretty0 = do
         fromMaybe [] do
           merging <- context.state.merging
           -- FIXME remember why this guard is here and document it
@@ -352,28 +346,30 @@ mitCommitMerge = do
   --   2. We had a clean working directory before `mit merge`, so proceed to sync
 
   case undosStash context.state.undos of
-    Nothing -> mitSyncWith stanzas0 (Just [Reset (unsafeSnapshotHead context.snapshot)])
+    Nothing -> mitSyncWith pretty0 (Just [Reset (unsafeSnapshotHead context.snapshot)])
     Just stash -> do
       conflicts <- gitApplyStash stash
       case List1.nonEmpty conflicts of
         -- FIXME we just unstashed, now we're about to stash again :/
-        Nothing -> mitSyncWith stanzas0 (Just [Reset (unsafeSnapshotHead context.snapshot), Apply stash])
+        Nothing -> mitSyncWith pretty0 (Just [Reset (unsafeSnapshotHead context.snapshot), Apply stash])
         Just conflicts1 ->
           io do
-            (putStanzas . (stanzas0 ++))
-              [ conflictsStanza "These files are in conflict:" conflicts1,
-                Just $
-                  "Resolve the conflicts, then run "
-                    <> Pretty.command "mit commit"
-                    <> " to synchronize "
-                    <> Pretty.branch context.branch
-                    <> " with "
-                    <> Pretty.branch upstream
-                    <> ".",
-                if null context.state.undos then Nothing else canUndoStanza
-              ]
+            Pretty.put $
+              Pretty.paragraphs
+                [ pretty0,
+                  conflictsStanza "These files are in conflict:" conflicts1,
+                  Pretty.line $
+                    "Resolve the conflicts, then run "
+                      <> Pretty.command "mit commit"
+                      <> " to synchronize "
+                      <> Pretty.branch context.branch
+                      <> " with "
+                      <> Pretty.branch upstream
+                      <> ".",
+                  Pretty.when (not (null context.state.undos)) canUndoStanza
+                ]
 
-mitMerge :: Abort [Stanza] => Text -> Mit Env ()
+mitMerge :: Abort Pretty => Text -> Mit Env ()
 mitMerge target = do
   dieIfMergeInProgress
   whenM gitExistUntrackedFiles dieIfBuggyGit
@@ -386,14 +382,14 @@ mitMerge target = do
       mitSyncWith [] Nothing
     else mitMergeWith context target
 
-mitMergeWith :: Abort [Stanza] => Context -> Text -> Mit Env ()
+mitMergeWith :: Abort Pretty => Context -> Text -> Mit Env ()
 mitMergeWith context target = do
   -- When given 'mit merge foo', prefer running 'git merge origin/foo' over 'git merge foo'
   targetCommit <-
     gitRemoteBranchHead "origin" target
       & onNothingM
         ( gitBranchHead target
-            & onNothingM (abort [Just (Text.red "No such branch.")])
+            & onNothingM (abort (Pretty.line (Pretty.style Text.red "No such branch.")))
         )
 
   let upstream = contextUpstream context
@@ -402,10 +398,11 @@ mitMergeWith context target = do
   existLocalCommits <- contextExistLocalCommits context
 
   when (existRemoteCommits && not existLocalCommits) do
-    abort
-      [ notSynchronizedStanza context.branch upstream ".",
-        runSyncStanza "Run" context.branch upstream
-      ]
+    abort $
+      Pretty.paragraphs
+        [ notSynchronizedStanza context.branch upstream ".",
+          runSyncStanza "Run" context.branch upstream
+        ]
 
   whenJust (snapshotStash context.snapshot) \_stash ->
     gitDeleteChanges
@@ -446,57 +443,56 @@ mitMergeWith context target = do
       then pure []
       else gitConflictsWith (fromJust context.upstreamHead)
 
-  let stanzas0 =
-        case mergeCommits merge of
-          Nothing -> []
-          Just commits ->
-            mergeStanzas
-              context.branch
-              target
-              if isNothing (mergeConflicts merge)
-                then Left commits
-                else Right (Just commits)
+  let pretty0 =
+        Pretty.whenJust (mergeCommits merge) \commits ->
+          mergeStanzas
+            context.branch
+            target
+            if isNothing (mergeConflicts merge)
+              then Left commits
+              else Right (Just commits)
   io do
-    (putStanzas . (stanzas0 ++))
-      [ isSynchronizedStanza context.branch push,
-        do
-          commits <- Seq1.fromSeq remoteCommits
-          syncStanza Sync {commits, success = False, source = upstream, target = context.branch},
-        -- TODO show commits to remote
-        do
-          conflicts1 <- (Seq1.toList1 <$> mergeConflicts merge) <|> List1.nonEmpty stashConflicts
-          conflictsStanza "These files are in conflict:" conflicts1,
-        -- TODO audit this
-        case push of
-          DidntPush NothingToPush -> Nothing
-          DidntPush (PushWouldntReachRemote _) -> runSyncStanza "When you come online, run" context.branch upstream
-          -- FIXME hrm, but we might have merge conflicts and/or stash conflicts!
-          DidntPush (PushWouldBeRejected _) ->
-            case List1.nonEmpty conflictsOnSync of
-              Nothing -> runSyncStanza "Run" context.branch upstream
-              Just conflictsOnSync1 ->
-                renderStanzas
-                  [ conflictsStanza
-                      ("These files will be in conflict when you run " <> Pretty.command "mit sync" <> ":")
-                      conflictsOnSync1,
-                    Just $
-                      "Run "
-                        <> Pretty.command "mit sync"
-                        <> ", resolve the conflicts, then run "
-                        <> Pretty.command "mit commit"
-                        <> " to synchronize "
-                        <> Pretty.branch context.branch
-                        <> " with "
-                        <> Pretty.branch upstream
-                        <> "."
-                  ]
-          DidntPush (TriedToPush _) -> runSyncStanza "Run" context.branch upstream
-          Pushed _ -> Nothing,
-        if not (null state.undos) then canUndoStanza else Nothing
-      ]
+    Pretty.put $
+      Pretty.paragraphs
+        [ pretty0,
+          isSynchronizedStanza context.branch push,
+          Pretty.whenJust (Seq1.fromSeq remoteCommits) \commits ->
+            syncStanza Sync {commits, success = False, source = upstream, target = context.branch},
+          -- TODO show commits to remote
+          case (Seq1.toList1 <$> mergeConflicts merge) <|> List1.nonEmpty stashConflicts of
+            Nothing -> Pretty.empty
+            Just conflicts1 -> conflictsStanza "These files are in conflict:" conflicts1,
+          -- TODO audit this
+          case push of
+            DidntPush NothingToPush -> Pretty.empty
+            DidntPush (PushWouldntReachRemote _) -> runSyncStanza "When you come online, run" context.branch upstream
+            -- FIXME hrm, but we might have merge conflicts and/or stash conflicts!
+            DidntPush (PushWouldBeRejected _) ->
+              case List1.nonEmpty conflictsOnSync of
+                Nothing -> runSyncStanza "Run" context.branch upstream
+                Just conflictsOnSync1 ->
+                  Pretty.paragraphs
+                    [ conflictsStanza
+                        ("These files will be in conflict when you run " <> Pretty.command "mit sync" <> ":")
+                        conflictsOnSync1,
+                      Pretty.line $
+                        "Run "
+                          <> Pretty.command "mit sync"
+                          <> ", resolve the conflicts, then run "
+                          <> Pretty.command "mit commit"
+                          <> " to synchronize "
+                          <> Pretty.branch context.branch
+                          <> " with "
+                          <> Pretty.branch upstream
+                          <> "."
+                    ]
+            DidntPush (TriedToPush _) -> runSyncStanza "Run" context.branch upstream
+            Pushed _ -> Pretty.empty,
+          Pretty.when (not (null state.undos)) canUndoStanza
+        ]
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
-mitSync :: Abort [Stanza] => Mit Env ()
+mitSync :: Abort Pretty => Mit Env ()
 mitSync = do
   dieIfMergeInProgress
   whenM gitExistUntrackedFiles dieIfBuggyGit
@@ -522,8 +518,8 @@ mitSync = do
 --
 -- Instead, we want to undo to the point before running the 'mit merge' that caused the conflicts, which were later
 -- resolved by 'mit commit'.
-mitSyncWith :: Abort [Stanza] => [Stanza] -> Maybe [Undo] -> Mit Env ()
-mitSyncWith stanzas0 maybeUndos = do
+mitSyncWith :: Abort Pretty => Pretty -> Maybe [Undo] -> Mit Env ()
+mitSyncWith pretty0 maybeUndos = do
   context <- getContext
   let upstream = contextUpstream context
 
@@ -568,51 +564,52 @@ mitSyncWith stanzas0 maybeUndos = do
   writeMitState context.branch state
 
   io do
-    (putStanzas . (stanzas0 ++))
-      [ isSynchronizedStanza context.branch push,
-        do
-          commits <- mergeCommits merge
-          syncStanza
-            Sync
-              { commits,
-                success = isNothing (mergeConflicts merge),
-                source = upstream,
-                target = context.branch
-              },
-        do
-          commits <- pushCommits push
-          syncStanza
-            Sync
-              { commits,
-                success = pushPushed push,
-                source = context.branch,
-                target = upstream
-              },
-        do
-          conflicts1 <- (Seq1.toList1 <$> mergeConflicts merge) <|> List1.nonEmpty stashConflicts
-          conflictsStanza "These files are in conflict:" conflicts1,
-        case push of
-          DidntPush NothingToPush -> Nothing
-          DidntPush (PushWouldntReachRemote _) -> runSyncStanza "When you come online, run" context.branch upstream
-          DidntPush (PushWouldBeRejected _) ->
-            Just $
-              "Resolve the conflicts, then run "
-                <> Pretty.command "mit commit"
-                <> " to synchronize "
-                <> Pretty.branch context.branch
-                <> " with "
-                <> Pretty.branch upstream
-                <> "."
-          DidntPush (TriedToPush _) -> runSyncStanza "Run" context.branch upstream
-          Pushed _ -> Nothing,
-        if not (null state.undos) then canUndoStanza else Nothing
-      ]
+    Pretty.put $
+      Pretty.paragraphs
+        [ pretty0,
+          isSynchronizedStanza context.branch push,
+          Pretty.whenJust (mergeCommits merge) \commits ->
+            syncStanza
+              Sync
+                { commits,
+                  success = isNothing (mergeConflicts merge),
+                  source = upstream,
+                  target = context.branch
+                },
+          Pretty.whenJust (pushCommits push) \commits ->
+            syncStanza
+              Sync
+                { commits,
+                  success = pushPushed push,
+                  source = context.branch,
+                  target = upstream
+                },
+          Pretty.whenJust ((Seq1.toList1 <$> mergeConflicts merge) <|> List1.nonEmpty stashConflicts) \conflicts1 ->
+            conflictsStanza "These files are in conflict:" conflicts1,
+          case push of
+            DidntPush NothingToPush -> Pretty.empty
+            DidntPush (PushWouldntReachRemote _) -> runSyncStanza "When you come online, run" context.branch upstream
+            DidntPush (PushWouldBeRejected _) ->
+              Pretty.line $
+                "Resolve the conflicts, then run "
+                  <> Pretty.command "mit commit"
+                  <> " to synchronize "
+                  <> Pretty.branch context.branch
+                  <> " with "
+                  <> Pretty.branch upstream
+                  <> "."
+            DidntPush (TriedToPush _) -> runSyncStanza "Run" context.branch upstream
+            Pushed _ -> Pretty.empty,
+          Pretty.when (not (null state.undos)) canUndoStanza
+        ]
 
 -- FIXME output what we just undid
-mitUndo :: Abort [Stanza] => Mit Env ()
+mitUndo :: Abort Pretty => Mit Env ()
 mitUndo = do
   context <- getContext
-  undos <- List1.nonEmpty context.state.undos & onNothing (abort [Just (Text.red "Nothing to undo.")])
+  undos <-
+    List1.nonEmpty context.state.undos
+      & onNothing (abort (Pretty.line (Pretty.style Text.red "Nothing to undo.")))
   for_ undos applyUndo
   head <- gitHead
   -- It's impossible for the snapshot to have a Nothing head (empty repo) if we got this far, since we had undos
@@ -626,34 +623,39 @@ data Sync = Sync
     target :: Text
   }
 
-canUndoStanza :: Stanza
+canUndoStanza :: Pretty
 canUndoStanza =
-  Just ("Run " <> Pretty.command "mit undo" <> " to undo this change.")
+  Pretty.line ("Run " <> Pretty.command "mit undo" <> " to undo this change.")
 
-conflictsStanza :: Text.Builder -> List1 GitConflict -> Stanza
+conflictsStanza :: Pretty.Line -> List1 GitConflict -> Pretty
 conflictsStanza prefix conflicts =
-  Just $
-    prefix
-      <> Builder.newline
-      <> Builder.vcat ((\conflict -> "  " <> Text.red (showGitConflict conflict)) <$> conflicts)
+  Pretty.lines $
+    prefix :
+    map f (List1.toList conflicts)
+  where
+    f conflict =
+      "  " <> Pretty.style Text.red (prettyGitConflict conflict)
 
-isSynchronizedStanza :: Text -> GitPush -> Stanza
+isSynchronizedStanza :: Text -> GitPush -> Pretty
 isSynchronizedStanza branch = \case
   DidntPush NothingToPush -> synchronizedStanza branch upstream
   DidntPush (PushWouldntReachRemote _) -> notSynchronizedStanza branch upstream " because you appear to be offline."
   DidntPush (PushWouldBeRejected _) -> notSynchronizedStanza branch upstream "; their histories have diverged."
-  DidntPush (TriedToPush _) -> notSynchronizedStanza branch upstream (" because " <> Text.bold "git push" <> " failed.")
+  DidntPush (TriedToPush _) ->
+    notSynchronizedStanza branch upstream (" because " <> Pretty.style Text.bold "git push" <> " failed.")
   Pushed _ -> synchronizedStanza branch upstream
   where
     upstream = "origin/" <> branch
 
-notSynchronizedStanza :: Text -> Text -> Text.Builder -> Stanza
+notSynchronizedStanza :: Text -> Text -> Pretty.Line -> Pretty
 notSynchronizedStanza branch other suffix =
-  Just (Text.red (Pretty.branch branch <> " is not synchronized with " <> Pretty.branch other <> suffix))
+  (Pretty.branch branch <> " is not synchronized with " <> Pretty.branch other <> suffix)
+    & Pretty.style Text.red
+    & Pretty.line
 
-runSyncStanza :: Text.Builder -> Text -> Text -> Stanza
+runSyncStanza :: Pretty.Line -> Text -> Text -> Pretty
 runSyncStanza prefix branch upstream =
-  Just $
+  Pretty.line $
     prefix
       <> " "
       <> Pretty.command "mit sync"
@@ -663,14 +665,13 @@ runSyncStanza prefix branch upstream =
       <> Pretty.branch upstream
       <> "."
 
-syncStanza :: Sync -> Stanza
+syncStanza :: Sync -> Pretty
 syncStanza sync =
-  Just $
+  Pretty.lines $
     fold
-      [ "│ " <> colorize (Pretty.branch sync.source <> " → " <> Pretty.branch sync.target),
-        "\n",
-        (Builder.vcat ((\commit -> "  │ " <> prettyGitCommitInfo commit) <$> commits')),
-        if more then "  │ ..." else Builder.empty
+      [ ["│ " <> Pretty.style colorize (Pretty.branch sync.source <> " → " <> Pretty.branch sync.target)],
+        map (\commit -> "  │ " <> prettyGitCommitInfo commit) (Foldable.toList commits'),
+        if more then ["  │ ..."] else []
       ]
   where
     colorize :: Text.Builder -> Text.Builder
@@ -681,9 +682,11 @@ syncStanza sync =
         False -> (Seq1.toSeq sync.commits, False)
         True -> (Seq1.dropEnd 1 sync.commits, True)
 
-synchronizedStanza :: Text -> Text -> Stanza
+synchronizedStanza :: Text -> Text -> Pretty
 synchronizedStanza branch other =
-  Just (Text.green (Pretty.branch branch <> " is synchronized with " <> Pretty.branch other <> "."))
+  (Pretty.branch branch <> " is synchronized with " <> Pretty.branch other <> ".")
+    & Pretty.style Text.green
+    & Pretty.line
 
 ------------------------------------------------------------------------------------------------------------------------
 -- Context
@@ -695,10 +698,12 @@ data Context = Context
     upstreamHead :: Maybe Text
   }
 
-getContext :: Abort [Stanza] => Mit Env Context
+getContext :: Abort Pretty => Mit Env Context
 getContext = do
   gitFetch_ "origin"
-  branch <- git ["branch", "--show-current"] & onNothingM (abort [Just (Text.red "You are not on a branch.")])
+  branch <-
+    git ["branch", "--show-current"] & onNothingM do
+      abort (Pretty.line (Pretty.style Text.red "You are not on a branch."))
   upstreamHead <- gitRemoteBranchHead "origin" branch
   state <- readMitState branch
   snapshot <- performSnapshot
@@ -751,31 +756,38 @@ mergeConflicts = \case
 -- Just Nothing = merge succeeded, but we don't remember commits
 -- Just Just = merge succeeded, here are commits
 -- FIXME persist the commits that we're merging so we can report them (no more Just Nothing case)
-mergeStanzas :: Text -> Text -> Either (Seq1 GitCommitInfo) (Maybe (Seq1 GitCommitInfo)) -> [Stanza]
+mergeStanzas :: Text -> Text -> Either (Seq1 GitCommitInfo) (Maybe (Seq1 GitCommitInfo)) -> Pretty
 mergeStanzas branch other = \case
   Left commits ->
-    [ Just (Text.red (Pretty.branch other <> " was not merged into " <> Pretty.branch branch <> ".")),
-      syncStanza
-        Sync
-          { commits,
-            success = False,
-            source = other,
-            target = branch
-          }
-    ]
+    Pretty.paragraphs
+      [ (Pretty.branch other <> " was not merged into " <> Pretty.branch branch <> ".")
+          & Pretty.style Text.red
+          & Pretty.line,
+        syncStanza
+          Sync
+            { commits,
+              success = False,
+              source = other,
+              target = branch
+            }
+      ]
   Right Nothing ->
-    [ Just (Text.green (Pretty.branch other <> " was merged into " <> Pretty.branch branch <> "."))
-    ]
+    (Pretty.branch other <> " was merged into " <> Pretty.branch branch <> ".")
+      & Pretty.style Text.green
+      & Pretty.line
   Right (Just commits) ->
-    [ Just (Text.green (Pretty.branch other <> " was merged into " <> Pretty.branch branch <> ".")),
-      syncStanza
-        Sync
-          { commits,
-            success = True,
-            source = other,
-            target = branch
-          }
-    ]
+    Pretty.paragraphs
+      [ (Pretty.branch other <> " was merged into " <> Pretty.branch branch <> ".")
+          & Pretty.style Text.green
+          & Pretty.line,
+        syncStanza
+          Sync
+            { commits,
+              success = True,
+              source = other,
+              target = branch
+            }
+      ]
 
 -- Perform a fast-forward-if-possible git merge.
 performMerge :: Text -> Text -> Mit Env GitMerge
