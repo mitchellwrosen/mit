@@ -613,7 +613,9 @@ mitUndo = do
 
 output :: MonadIO m => Pretty -> m ()
 output p =
-  liftIO (Pretty.put (Pretty.indent 2 p))
+  liftIO (Pretty.put (emptyLine <> Pretty.indent 2 p <> emptyLine))
+  where
+    emptyLine = Pretty.line (Pretty.char ' ')
 
 -- FIXME this type kinda sux now, replace with GitMerge probably?
 data Sync = Sync
