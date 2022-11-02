@@ -478,14 +478,14 @@ git args = do
   where
     cleanup :: (Maybe Handle, Maybe Handle, Maybe Handle, ProcessHandle) -> IO ()
     cleanup (maybeStdin, maybeStdout, maybeStderr, process) =
-      void @_ @ExitCode terminate `finally` closeHandles
+      ignoreSyncExceptions (terminate `finally` closeHandles)
       where
         closeHandles :: IO ()
         closeHandles =
           whenJust maybeStdin hClose
             `finally` whenJust maybeStdout hClose
             `finally` whenJust maybeStderr hClose
-        terminate :: IO ExitCode
+        terminate :: IO ()
         terminate = do
           withProcessHandle process \case
             ClosedHandle _ -> pure ()
@@ -493,7 +493,17 @@ git args = do
             OpenHandle pid -> do
               pgid <- getProcessGroupIDOf pid
               signalProcessGroup sigTERM pgid
-          waitForProcess process
+          _exitCode <- waitForProcess process
+          pure ()
+
+ignoreSyncExceptions :: IO () -> IO ()
+ignoreSyncExceptions action =
+  try action >>= \case
+    Left ex ->
+      case fromException ex of
+        Nothing -> pure ()
+        Just (_ :: SomeAsyncException) -> throwIO ex
+    Right () -> pure ()
 
 git_ :: [Text] -> Mit Env ()
 git_ =
