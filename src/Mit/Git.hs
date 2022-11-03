@@ -27,7 +27,6 @@ module Mit.Git
     gitIsMergeCommit,
     gitMaybeHead,
     gitMergeInProgress,
-    gitPush,
     gitRemoteBranchExists,
     gitRemoteBranchHead,
     gitRevParseAbsoluteGitDir,
@@ -334,10 +333,6 @@ gitMergeInProgress :: Mit Env Bool
 gitMergeInProgress = do
   gitdir <- gitRevParseAbsoluteGitDir
   io (doesFileExist (Text.unpack (gitdir <> "/MERGE_HEAD")))
-
-gitPush :: Text -> Mit Env Bool
-gitPush branch =
-  git ["push", "--set-upstream", "origin", "--quiet", branch <> ":" <> branch]
 
 -- | Does the given remote branch (refs/remotes/...) exist?
 gitRemoteBranchExists :: Text -> Text -> Mit Env Bool
