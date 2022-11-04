@@ -43,7 +43,7 @@ import Text.Builder.ANSI qualified as Text
 
 main :: IO ()
 main = do
-  (verbosity, command) <- Opt.customExecParser parserPrefs parserInfo
+  (env, command) <- Opt.customExecParser parserPrefs parserInfo
 
   let action :: Mit Env (Either Pretty ())
       action = do
@@ -61,7 +61,7 @@ main = do
                     MitCommand'Sync -> mitSync
                     MitCommand'Undo -> mitUndo
 
-  runMit Env {verbosity} action >>= \case
+  runMit env action >>= \case
     Left err -> do
       output err
       exitFailure
@@ -81,15 +81,16 @@ main = do
           prefTabulateFill = 24 -- grabbed this from optparse-applicative
         }
 
-    parserInfo :: Opt.ParserInfo (Int, MitCommand)
+    parserInfo :: Opt.ParserInfo (Env, MitCommand)
     parserInfo =
       Opt.info parser $
         Opt.progDesc "mit: a git wrapper with a streamlined UX"
 
-    parser :: Opt.Parser (Int, MitCommand)
+    parser :: Opt.Parser (Env, MitCommand)
     parser =
-      (,)
-        <$> (clamp (0, 2) . length <$> many (Opt.flag' () (Opt.help "Verbose (-v or -vv)" <> Opt.short 'v')))
+      (\offline verbosity command -> (Env {offline, verbosity}, command))
+        <$> Opt.switch (Opt.help "Offline mode" <> Opt.long "offline")
+        <*> (clamp (0, 2) . length <$> many (Opt.flag' () (Opt.help "Verbose (-v or -vv)" <> Opt.short 'v')))
         <*> (Opt.hsubparser . fold)
           [ Opt.command "branch" $
               Opt.info

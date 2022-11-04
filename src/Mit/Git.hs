@@ -288,13 +288,17 @@ gitExistUntrackedFiles =
 
 gitFetch :: Text -> Mit Env Bool
 gitFetch remote = do
-  fetched <- io (readIORef fetchedRef)
-  case Map.lookup remote fetched of
-    Nothing -> do
-      success <- git ["fetch", remote]
-      io (writeIORef fetchedRef (Map.insert remote success fetched))
-      pure success
-    Just success -> pure success
+  env <- getEnv
+  if env.offline
+    then pure False
+    else do
+      fetched <- io (readIORef fetchedRef)
+      case Map.lookup remote fetched of
+        Nothing -> do
+          success <- git ["fetch", remote]
+          io (writeIORef fetchedRef (Map.insert remote success fetched))
+          pure success
+        Just success -> pure success
 
 -- Only fetch each remote at most once per run of `mit`
 fetchedRef :: IORef (Map Text Bool)

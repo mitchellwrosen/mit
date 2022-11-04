@@ -6,5 +6,6 @@ where
 import Mit.Prelude
 
 data Env = Env
-  { verbosity :: Int
+  { offline :: Bool,
+    verbosity :: Int
   }
