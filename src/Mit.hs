@@ -45,23 +45,25 @@ main :: IO ()
 main = do
   (env, command) <- Opt.customExecParser parserPrefs parserInfo
 
-  let action :: Mit Env (Either Pretty ())
-      action = do
-        gitRevParseAbsoluteGitDir >>= \case
-          False ->
-            pure (Left (Pretty.line (Pretty.style Text.red "The current directory doesn't contain a git repository.")))
-          True -> do
-            label \return ->
-              stick (return . Left) do
-                fmap Right do
-                  case command of
-                    MitCommand'Branch branch -> mitBranch branch
-                    MitCommand'Commit -> mitCommit
-                    MitCommand'Merge branch -> mitMerge branch
-                    MitCommand'Sync -> mitSync
-                    MitCommand'Undo -> mitUndo
+  let theMain :: Mit Env (Either Pretty ())
+      theMain = do
+        label \return ->
+          stick (return . Left) do
+            fmap Right do
+              version <- gitVersion
+              when (version < GitVersion 2 30 1) do
+                -- 'git stash create' broken before 2.30.1
+                abort (Pretty.line (Pretty.style Text.red "Minimum required git version: 2.30.1"))
+              whenNotM gitRevParseAbsoluteGitDir do
+                abort (Pretty.line (Pretty.style Text.red "The current directory doesn't contain a git repository."))
+              case command of
+                MitCommand'Branch branch -> mitBranch branch
+                MitCommand'Commit -> mitCommit
+                MitCommand'Merge branch -> mitMerge branch
+                MitCommand'Sync -> mitSync
+                MitCommand'Undo -> mitUndo
 
-  runMit env action >>= \case
+  runMit env theMain >>= \case
     Left err -> do
       output err
       exitFailure
@@ -121,43 +123,6 @@ data MitCommand
   | MitCommand'Sync
   | MitCommand'Undo
 
-dieIfBuggyGit :: Abort Pretty => Mit Env ()
-dieIfBuggyGit = do
-  version <- gitVersion
-  let validate (ver, err) = if version < ver then ((ver, err) :) else id
-  case foldr validate [] validations of
-    [] -> pure ()
-    errors ->
-      errors
-        & map
-          ( \(ver, err) ->
-              Pretty.style Text.red $
-                "Prior to "
-                  <> Pretty.style Text.bold "git"
-                  <> " version "
-                  <> Pretty.text (showGitVersion ver)
-                  <> ", "
-                  <> Pretty.builder err
-          )
-        & Pretty.lines
-        & abort
-  where
-    validations :: [(GitVersion, Text.Builder)]
-    validations =
-      [ ( GitVersion 2 29 0,
-          Text.bold "git commit --patch"
-            <> " was broken for new files added with "
-            <> Text.bold "git add --intent-to-add"
-            <> "."
-        ),
-        ( GitVersion 2 30 1,
-          Text.bold "git stash create"
-            <> " was broken for new files added with "
-            <> Text.bold "git add --intent-to-add"
-            <> "."
-        )
-      ]
-
 dieIfMergeInProgress :: Abort Pretty => Mit Env ()
 dieIfMergeInProgress =
   whenM gitMergeInProgress do
@@ -208,8 +173,6 @@ mitBranch branch = do
 
 mitCommit :: Abort Pretty => Mit Env ()
 mitCommit = do
-  whenM gitExistUntrackedFiles dieIfBuggyGit
-
   gitMergeInProgress >>= \case
     False -> do
       gitDiff >>= \case
@@ -358,7 +321,6 @@ mitCommit = do
 mitMerge :: Abort Pretty => Text -> Mit Env ()
 mitMerge target = do
   dieIfMergeInProgress
-  whenM gitExistUntrackedFiles dieIfBuggyGit
 
   context <- getContext
   let upstream = contextUpstream context
@@ -463,7 +425,6 @@ mitMerge target = do
 mitSync :: Abort Pretty => Mit Env ()
 mitSync = do
   dieIfMergeInProgress
-  whenM gitExistUntrackedFiles dieIfBuggyGit
   mitSyncWith [] Nothing
 
 -- | @mitSyncWith _ maybeUndos@
