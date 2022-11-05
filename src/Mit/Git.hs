@@ -295,7 +295,7 @@ gitFetch remote = do
       fetched <- io (readIORef fetchedRef)
       case Map.lookup remote fetched of
         Nothing -> do
-          success <- git ["fetch", remote]
+          success <- git ["fetch", "--atomic", remote]
           io (writeIORef fetchedRef (Map.insert remote success fetched))
           pure success
         Just success -> pure success
