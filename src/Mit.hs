@@ -812,7 +812,7 @@ performPush branch = do
         else
           if fetched
             then do
-              git ["push", "--set-upstream", "origin", "--quiet", "--tags", branch <> ":" <> branch] <&> \case
+              git ["push", "--follow-tags", "--set-upstream", "origin", "--quiet", branch <> ":" <> branch] <&> \case
                 False -> DidntPush (TriedToPush commits1)
                 True -> Pushed commits1
             else pure (DidntPush (PushWouldntReachRemote commits1))
