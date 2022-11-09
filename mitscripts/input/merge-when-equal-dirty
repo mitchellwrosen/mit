@@ -1,0 +1,6 @@
+local/main > echo 'Hello, world!' > foo.txt
+local/main > mit commit --all --message 'initial commit'
+local/main > mit branch topic
+local/topic > echo 'Hey, world!' > foo.txt
+local/topic > mit merge main
+local/topic > git diff

@@ -38,20 +38,6 @@ echo "========="
 echo " | branch   | merge        | working tree |"
 echo " | -------------------------------------- |"
 
-echo " | equal    | none         | clean        |"
-head0=$(git rev-parse feature)
-mit merge feature >/dev/null || exit 1
-[ $(git rev-parse feature) = $head0 ] || exit 1
-mit undo >/dev/null && exit 1
-
-echo " | equal    | none         | dirty        |"
-head0=$(git rev-parse feature)
-echo four >> three.txt
-mit merge feature >/dev/null || exit 1
-[ $(git rev-parse feature) = $head0 ] || exit 1
-[ "$(git diff --shortstat)" = " 1 file changed, 1 insertion(+)" ] || exit 1
-mit undo >/dev/null && exit 1
-
 echo " | behind   | fast-forward | clean        |"
 git reset --hard origin/feature^ >/dev/null || exit 1
 head0=$(git rev-parse feature)
