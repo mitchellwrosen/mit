@@ -60,7 +60,7 @@ main = do
                 abort (Pretty.line (Pretty.style Text.red "The current directory doesn't contain a git repository."))
               case command of
                 MitCommand'Branch branch -> mitBranch branch
-                MitCommand'Commit allFlag -> mitCommit allFlag
+                MitCommand'Commit allFlag maybeMessage -> mitCommit allFlag maybeMessage
                 MitCommand'Merge branch -> mitMerge branch
                 MitCommand'Sync -> mitSync
                 MitCommand'Undo -> mitUndo
@@ -102,7 +102,15 @@ main = do
                 (Opt.progDesc "Create a new branch in a new worktree."),
             Opt.command "commit" $
               Opt.info
-                (MitCommand'Commit <$> Opt.switch (Opt.help "All changes" <> Opt.long "all"))
+                ( MitCommand'Commit
+                    <$> Opt.switch (Opt.help "All changes" <> Opt.long "all")
+                    <*> Opt.optional
+                      ( Opt.strOption $
+                          Opt.help "Commit message"
+                            <> Opt.long "message"
+                            <> Opt.metavar "≪message≫"
+                      )
+                )
                 (Opt.progDesc "Create a commit."),
             Opt.command "merge" $
               Opt.info
@@ -120,7 +128,7 @@ main = do
 
 data MitCommand
   = MitCommand'Branch Text
-  | MitCommand'Commit Bool {- --all? -}
+  | MitCommand'Commit Bool {- --all? -} (Maybe Text {- message -})
   | MitCommand'Merge Text
   | MitCommand'Sync
   | MitCommand'Undo
@@ -173,8 +181,8 @@ mitBranch branch = do
                 <> Pretty.directory directory
                 <> "."
 
-mitCommit :: Abort Pretty => Bool -> Mit Env ()
-mitCommit allFlag = do
+mitCommit :: Abort Pretty => Bool -> Maybe Text -> Mit Env ()
+mitCommit allFlag maybeMessage = do
   gitMergeInProgress >>= \case
     False -> do
       gitDiff >>= \case
@@ -191,7 +199,6 @@ mitCommit allFlag = do
           if allFlag
             then pure True
             else not <$> io (queryTerminal 0)
-        let maybeMessage = Nothing :: Maybe Text
         case (doCommitAll, maybeMessage) of
           (True, Nothing) -> git2 ["commit", "--all"]
           (True, Just message) -> git ["commit", "--all", "--message", message]
