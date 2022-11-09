@@ -1,5 +1,6 @@
 #!/bin/bash
 
 for script in ./mitscripts/input/*; do
-  cabal run mitscript < $script > ${script/input/output}
+  basename ${script}
+  ./bin/mitscript < ${script} > ${script/input/output}
 done

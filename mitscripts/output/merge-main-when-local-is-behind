@@ -1,4 +1,3 @@
-Up to date
 This test demonstrates what happens when we try to merge the main branch into the current topic branch, when the local
 main ref is behind remote. We should prefer merge origin/main, then push that.
 
@@ -17,7 +16,7 @@ First, the setup. We end up with local/topic at commit 1, local/main at commit 1
 
 ✓ local/main > mit branch topic
  
-  Created topic in /private/var/folders/0m/cpz59dyj3ts58crh9m1gbcyr0000gn/T/mitscript-794674cf5c313a4a/local/topic.
+  Created topic in /Users/mitchell/projects/mit/.mitscript/local/topic.
  
 
 ✓ local/main > echo 'Hey, world!' > foo.txt
@@ -39,27 +38,11 @@ Now, the test. We should merge commit 2 into local/topic, even though local/main
 
 ✓ local/topic > mit merge main
  
-  main was not merged into topic.
+  main was merged into topic.
    
     │ main → topic
     │ a89a265 second commit - Bob Ross Jan 1 1970
    
   topic is synchronized with origin/topic.
  
-
-
-We can see that the output was incorrect (it said "didn't merge"), however a "git log" shows the true story.
-
-✓ local/topic > git log
-commit a89a2650e05f7ac270487c38aaea36444e7d2ef8
-Author: Bob Ross <bob@bobross.com>
-Date:   Thu Jan 1 00:00:00 1970 +0000
-
-    second commit
-
-commit 62612b154234ed5a0b119c1f84c6c72eeff072db
-Author: Bob Ross <bob@bobross.com>
-Date:   Thu Jan 1 00:00:00 1970 +0000
-
-    initial commit
 

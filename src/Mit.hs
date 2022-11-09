@@ -21,8 +21,7 @@ import Mit.State
 import Mit.Undo
 import Options.Applicative qualified as Opt
 import Options.Applicative.Types qualified as Opt (Backtracking (Backtrack))
-import System.Environment (lookupEnv)
-import System.Exit (ExitCode (..), exitFailure)
+import System.Exit (exitFailure)
 import System.Posix.Terminal (queryTerminal)
 import Text.Builder qualified as Text (Builder)
 import Text.Builder.ANSI qualified as Text
@@ -301,7 +300,7 @@ mitCommit allFlag maybeMessage = do
       writeMitState context.branch context.state {merging = Nothing}
 
       let pretty0 = do
-            fromMaybe [] do
+            fromMaybe Pretty.empty do
               merging <- context.state.merging
               -- FIXME remember why this guard is here and document it
               guard (merging /= context.branch)
@@ -346,7 +345,7 @@ mitMerge target = do
 
   if target == context.branch || target == upstream
     then -- If on branch `foo`, treat `mit merge foo` and `mit merge origin/foo` as `mit sync`
-      mitSyncWith [] Nothing
+      mitSyncWith Pretty.empty Nothing
     else do
       -- When given 'mit merge foo', prefer running 'git merge origin/foo' over 'git merge foo'
       targetCommit <-
@@ -393,17 +392,15 @@ mitMerge target = do
           then pure []
           else gitConflictsWith (fromJust context.upstreamHead)
 
-      let pretty0 =
-            Pretty.whenJust (mergeCommits merge) \commits ->
+      output $
+        Pretty.paragraphs
+          [ Pretty.whenJust (mergeCommits merge) \commits ->
               mergeStanzas
                 context.branch
                 target
                 if mergeDidntFail merge
-                  then Left commits
-                  else Right (Just commits)
-      output $
-        Pretty.paragraphs
-          [ pretty0,
+                  then Right (Just commits)
+                  else Left commits,
             isSynchronizedStanza context.branch push,
             Pretty.whenJust (Seq1.fromSeq remoteCommits) \commits ->
               syncStanza Sync {commits, success = False, source = upstream, target = context.branch},
@@ -444,7 +441,7 @@ mitMerge target = do
 mitSync :: Abort Pretty => Mit Env ()
 mitSync = do
   dieIfMergeInProgress
-  mitSyncWith [] Nothing
+  mitSyncWith Pretty.empty Nothing
 
 -- | @mitSyncWith _ maybeUndos@
 --
@@ -727,9 +724,9 @@ mergeDidntFail :: GitMerge -> Bool
 mergeDidntFail =
   isNothing . mergeConflicts
 
--- Nothing = merge failed, here are commits
--- Just Nothing = merge succeeded, but we don't remember commits
--- Just Just = merge succeeded, here are commits
+-- Left = merge failed, here are commits
+-- Right Nothing = merge succeeded, but we don't remember commits
+-- Right Just = merge succeeded, here are commits
 -- FIXME persist the commits that we're merging so we can report them (no more Just Nothing case)
 mergeStanzas :: Text -> Text -> Either (Seq1 GitCommitInfo) (Maybe (Seq1 GitCommitInfo)) -> Pretty
 mergeStanzas branch other = \case

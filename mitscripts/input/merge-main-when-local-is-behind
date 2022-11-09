@@ -13,7 +13,3 @@ local/main > git reset --hard HEAD^
 Now, the test. We should merge commit 2 into local/topic, even though local/main is at commit 1.
 
 local/topic > mit merge main
-
-We can see that the output was incorrect (it said "didn't merge"), however a "git log" shows the true story.
-
-local/topic > git log

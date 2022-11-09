@@ -1,4 +1,3 @@
-Up to date
 ✓ local/main > echo 'Hello, world!' > foo.txt
 ✓ local/main > mit commit --all --message 'initial commit'
  
