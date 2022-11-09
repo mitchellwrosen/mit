@@ -1,0 +1,5 @@
+#!/bin/bash
+
+for script in ./mitscripts/input/*; do
+  cabal run mitscript < $script > ${script/input/output}
+done

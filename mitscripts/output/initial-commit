@@ -1,0 +1,12 @@
+Up to date
+✓ local/main > echo 'Hello, world!' > foo.txt
+✓ local/main > mit commit --all --message 'initial commit'
+ 
+  main is synchronized with origin/main.
+   
+    │ main → origin/main
+    │ 62612b1 initial commit - Bob Ross Jan 1 1970
+   
+  Run mit undo to undo this change.
+ 
+
