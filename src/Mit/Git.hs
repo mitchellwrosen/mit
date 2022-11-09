@@ -9,10 +9,10 @@ module Mit.Git
     showGitVersion,
     git,
     git_,
+    git2,
     gitApplyStash,
     gitBranchHead,
     gitBranchWorktreeDir,
-    gitCommit,
     gitCommitsBetween,
     gitConflicts,
     gitConflictsWith,
@@ -55,13 +55,11 @@ import Mit.Pretty (Pretty)
 import Mit.Pretty qualified as Pretty
 import Mit.Process
 import System.Directory (doesFileExist)
-import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.IO (Handle, hClose, hIsEOF)
 import System.IO.Unsafe (unsafePerformIO)
 import System.Posix.Process (getProcessGroupIDOf)
 import System.Posix.Signals
-import System.Posix.Terminal (queryTerminal)
 import System.Process
 import System.Process.Internals
 import Text.Builder qualified
@@ -196,17 +194,6 @@ gitBranchWorktreeDir branch = do
   pure case List.find (\worktree -> worktree.branch == Just branch) worktrees of
     Nothing -> Nothing
     Just worktree -> Just worktree.directory
-
-gitCommit :: Mit Env Bool
-gitCommit =
-  io (queryTerminal 0) >>= \case
-    False -> do
-      message <- io (lookupEnv "MIT_COMMIT_MESSAGE")
-      git ["commit", "--all", "--message", maybe "" Text.pack message]
-    True ->
-      git2 ["commit", "--patch", "--quiet"] <&> \case
-        ExitFailure _ -> False
-        ExitSuccess -> True
 
 gitCommitsBetween :: Maybe Text -> Text -> Mit Env (Seq GitCommitInfo)
 gitCommitsBetween commit1 commit2 =
@@ -511,7 +498,7 @@ git_ =
 -- Yucky interactive/inherity variant (so 'git commit' can open an editor).
 --
 -- FIXME bracket
-git2 :: [Text] -> Mit Env ExitCode
+git2 :: [Text] -> Mit Env Bool
 git2 args = do
   t0 <- io getMonotonicTime
   (_, _, stderrHandle, processHandle) <-
@@ -543,7 +530,9 @@ git2 args = do
   t1 <- io getMonotonicTime
   stderrLines <- io (drainTextHandle (fromJust stderrHandle))
   debugPrintGit args Seq.empty stderrLines exitCode (t1 - t0)
-  pure exitCode
+  pure case exitCode of
+    ExitFailure _ -> False
+    ExitSuccess -> True
 
 debugPrintGit :: [Text] -> Seq Text -> Seq Text -> ExitCode -> Double -> Mit Env ()
 debugPrintGit args stdoutLines stderrLines exitCode sec = do

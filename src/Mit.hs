@@ -21,7 +21,9 @@ import Mit.State
 import Mit.Undo
 import Options.Applicative qualified as Opt
 import Options.Applicative.Types qualified as Opt (Backtracking (Backtrack))
-import System.Exit (exitFailure)
+import System.Environment (lookupEnv)
+import System.Exit (ExitCode (..), exitFailure)
+import System.Posix.Terminal (queryTerminal)
 import Text.Builder qualified as Text (Builder)
 import Text.Builder.ANSI qualified as Text
 
@@ -58,7 +60,7 @@ main = do
                 abort (Pretty.line (Pretty.style Text.red "The current directory doesn't contain a git repository."))
               case command of
                 MitCommand'Branch branch -> mitBranch branch
-                MitCommand'Commit -> mitCommit
+                MitCommand'Commit allFlag -> mitCommit allFlag
                 MitCommand'Merge branch -> mitMerge branch
                 MitCommand'Sync -> mitSync
                 MitCommand'Undo -> mitUndo
@@ -100,8 +102,8 @@ main = do
                 (Opt.progDesc "Create a new branch in a new worktree."),
             Opt.command "commit" $
               Opt.info
-                (pure MitCommand'Commit)
-                (Opt.progDesc "Create a commit interactively."),
+                (MitCommand'Commit <$> Opt.switch (Opt.help "All changes" <> Opt.long "all"))
+                (Opt.progDesc "Create a commit."),
             Opt.command "merge" $
               Opt.info
                 (MitCommand'Merge <$> Opt.strArgument (Opt.metavar "≪branch≫"))
@@ -118,7 +120,7 @@ main = do
 
 data MitCommand
   = MitCommand'Branch Text
-  | MitCommand'Commit
+  | MitCommand'Commit Bool {- --all? -}
   | MitCommand'Merge Text
   | MitCommand'Sync
   | MitCommand'Undo
@@ -171,8 +173,8 @@ mitBranch branch = do
                 <> Pretty.directory directory
                 <> "."
 
-mitCommit :: Abort Pretty => Mit Env ()
-mitCommit = do
+mitCommit :: Abort Pretty => Bool -> Mit Env ()
+mitCommit allFlag = do
   gitMergeInProgress >>= \case
     False -> do
       gitDiff >>= \case
@@ -184,7 +186,17 @@ mitCommit = do
 
       abortIfRemoteIsAhead context
 
-      committed <- gitCommit
+      committed <- do
+        doCommitAll <-
+          if allFlag
+            then pure True
+            else not <$> io (queryTerminal 0)
+        let maybeMessage = Nothing :: Maybe Text
+        case (doCommitAll, maybeMessage) of
+          (True, Nothing) -> git2 ["commit", "--all"]
+          (True, Just message) -> git ["commit", "--all", "--message", message]
+          (False, Nothing) -> git2 ["commit", "--patch", "--quiet"]
+          (False, Just message) -> git2 ["commit", "--patch", "--message", message, "--quiet"]
 
       push <- performPush context.branch
       undoPush <-
