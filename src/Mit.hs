@@ -652,7 +652,7 @@ syncStanza sync =
 
 synchronizedStanza :: Text -> Text -> Pretty
 synchronizedStanza branch other =
-  (Pretty.branch branch <> " is synchronized with " <> Pretty.branch other <> ".")
+  ("✓ " <> Pretty.branch branch <> " ≡ " <> Pretty.branch other)
     & Pretty.style Text.green
     & Pretty.line
 
