@@ -1,0 +1,22 @@
+cabal-version: 2.4
+
+name: mitscript
+version: 0
+
+executable mitscript
+  build-depends:
+    base,
+    directory,
+    filepath,
+    process,
+    temporary,
+    text,
+  default-extensions:
+    BlockArguments
+    DerivingStrategies
+    LambdaCase
+    OverloadedStrings
+  default-language: GHC2021
+  ghc-options: -O -threaded -Wall
+  hs-source-dirs: .
+  main-is: Main.hs

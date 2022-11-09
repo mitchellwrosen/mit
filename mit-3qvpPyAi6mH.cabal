@@ -108,6 +108,6 @@ executable mit
   build-depends:
     base,
     mit-3qvpPyAi6mH,
-  ghc-options: -threaded -with-rtsopts=-N2
+  ghc-options: -O -threaded -with-rtsopts=-N2
   hs-source-dirs: app
   main-is: Main.hs
