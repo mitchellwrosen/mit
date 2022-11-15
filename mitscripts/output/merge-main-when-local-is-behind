@@ -9,14 +9,14 @@ First, the setup. We end up with local/topic at commit 1, local/main at commit 1
   ✓ main ≡ origin/main
    
     │ main → origin/main
-    │ 62612b1 initial commit - Bob Ross Jan 1 1970
+    │ cdc6973 initial commit - Bob Ross Jan 1 1970
    
   Run mit undo to undo this change.
  
 
 ✓ local/main > mit branch topic
  
-  Created topic in /Users/mitchell/projects/mit/.mitscript/local/topic.
+  Created topic in /home/mitchell/projects/mit/.mitscript/local/topic
  
 
 ✓ local/main > echo 'Hey, world!' > foo.txt
@@ -25,13 +25,13 @@ First, the setup. We end up with local/topic at commit 1, local/main at commit 1
   ✓ main ≡ origin/main
    
     │ main → origin/main
-    │ a89a265 second commit - Bob Ross Jan 1 1970
+    │ b344055 second commit - Bob Ross Jan 1 1970
    
   Run mit undo to undo this change.
  
 
 ✓ local/main > git reset --hard HEAD^
-HEAD is now at 62612b1 initial commit
+HEAD is now at cdc6973 initial commit
 
 
 Now, the test. We should merge commit 2 into local/topic, even though local/main is at commit 1.
@@ -41,7 +41,7 @@ Now, the test. We should merge commit 2 into local/topic, even though local/main
   main was merged into topic.
    
     │ main → topic
-    │ a89a265 second commit - Bob Ross Jan 1 1970
+    │ b344055 second commit - Bob Ross Jan 1 1970
    
   ✓ topic ≡ origin/topic
  

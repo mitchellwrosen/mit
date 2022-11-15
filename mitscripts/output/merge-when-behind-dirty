@@ -4,14 +4,14 @@
   ✓ main ≡ origin/main
    
     │ main → origin/main
-    │ 62612b1 initial commit - Bob Ross Jan 1 1970
+    │ cdc6973 initial commit - Bob Ross Jan 1 1970
    
   Run mit undo to undo this change.
  
 
 ✓ local/main > mit branch topic
  
-  Created topic in /Users/mitchell/projects/mit/.mitscript/local/topic.
+  Created topic in /home/mitchell/projects/mit/.mitscript/local/topic
  
 
 ✓ local/main > echo 'Hey, world!' > foo.txt
@@ -20,7 +20,7 @@
   ✓ main ≡ origin/main
    
     │ main → origin/main
-    │ a89a265 second commit - Bob Ross Jan 1 1970
+    │ b344055 second commit - Bob Ross Jan 1 1970
    
   Run mit undo to undo this change.
  
@@ -32,17 +32,17 @@
   main was merged into topic.
    
     │ main → topic
-    │ a89a265 second commit - Bob Ross Jan 1 1970
+    │ b344055 second commit - Bob Ross Jan 1 1970
    
   ✓ topic ≡ origin/topic
  
 
-✓ local/topic > git diff
-diff --git a/bar.txt b/bar.txt
+✓ local/topic > git diff --no-ext-diff
+diff --git i/bar.txt w/bar.txt
 new file mode 100644
 index 0000000..af5626b
 --- /dev/null
-+++ b/bar.txt
++++ w/bar.txt
 @@ -0,0 +1 @@
 +Hello, world!
 

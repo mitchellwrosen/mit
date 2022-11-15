@@ -4,14 +4,14 @@
   ✓ main ≡ origin/main
    
     │ main → origin/main
-    │ 62612b1 initial commit - Bob Ross Jan 1 1970
+    │ cdc6973 initial commit - Bob Ross Jan 1 1970
    
   Run mit undo to undo this change.
  
 
 ✓ local/main > mit branch topic
  
-  Created topic in /Users/mitchell/projects/mit/.mitscript/local/topic.
+  Created topic in /home/mitchell/projects/mit/.mitscript/local/topic
  
 
 ✓ local/topic > echo 'Hey, world!' > foo.txt
@@ -20,11 +20,11 @@
   ✓ topic ≡ origin/topic
  
 
-✓ local/topic > git diff
-diff --git a/foo.txt b/foo.txt
+✓ local/topic > git diff --no-ext-diff
+diff --git i/foo.txt w/foo.txt
 index af5626b..7253f95 100644
---- a/foo.txt
-+++ b/foo.txt
+--- i/foo.txt
++++ w/foo.txt
 @@ -1 +1 @@
 -Hello, world!
 +Hey, world!

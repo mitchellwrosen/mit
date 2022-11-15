@@ -152,12 +152,12 @@ mitBranch branch = do
         label \done ->
           cd worktreeDir do
             whenM (git ["switch", branch]) do
-              done ("Checked out " <> Pretty.branch branch <> " in " <> Pretty.directory worktreeDir <> ".")
+              done ("Checked out " <> Pretty.branch branch <> " in " <> Pretty.directory worktreeDir)
             git_ ["branch", "--no-track", branch]
             git_ ["switch", branch]
             gitFetch_ "origin"
             whenNotM (gitRemoteBranchExists "origin" branch) do
-              done ("Created " <> Pretty.branch branch <> " in " <> Pretty.directory worktreeDir <> ".")
+              done ("Created " <> Pretty.branch branch <> " in " <> Pretty.directory worktreeDir)
             let upstream = "origin/" <> branch
             git_ ["reset", "--hard", "--quiet", upstream]
             git_ ["branch", "--set-upstream-to", upstream]
@@ -166,9 +166,8 @@ mitBranch branch = do
                 <> Pretty.branch branch
                 <> " in "
                 <> Pretty.directory worktreeDir
-                <> ", tracking "
+                <> " tracking "
                 <> Pretty.branch upstream
-                <> "."
       output (Pretty.line line)
     Just directory ->
       when (directory /= worktreeDir) do
