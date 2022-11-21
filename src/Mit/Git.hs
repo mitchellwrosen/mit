@@ -236,11 +236,13 @@ gitConflictsWith commit = do
   whenJust maybeStash \stash -> git ["stash", "apply", "--quiet", stash]
   pure conflicts
 
--- | Precondition: there are changes to stash
-gitCreateStash :: Mit Env Text
+gitCreateStash :: Mit Env (Maybe Text)
 gitCreateStash = do
   git_ ["add", "--all"] -- it seems certain things (like renames), unless staged, cannot be stashed
   stash <- git ["stash", "create"]
+  -- Even if the stash is Nothing, this still might be relevant/necessary.
+  -- In particular, if there are only changes to submodule commits, we'll have staged them with 'git add' --all, then
+  -- we'll have gotten no stash back from 'git stash create'.
   gitUnstageChanges
   pure stash
 
@@ -355,13 +357,12 @@ gitShow commit =
 -- | Stash uncommitted changes (if any).
 gitStash :: Mit Env (Maybe Text)
 gitStash = do
-  gitDiff >>= \case
-    Differences -> do
-      stash <- gitCreateStash
+  gitCreateStash >>= \case
+    Nothing -> pure Nothing
+    Just stash -> do
       git_ ["clean", "-d", "--force"]
       gitDeleteChanges
       pure (Just stash)
-    NoDifferences -> pure Nothing
 
 gitUnstageChanges :: Mit Env ()
 gitUnstageChanges = do

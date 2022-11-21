@@ -862,11 +862,9 @@ performSnapshot = do
   gitMaybeHead >>= \case
     Nothing -> pure SnapshotEmpty
     Just head ->
-      gitDiff >>= \case
-        Differences -> do
-          stash <- gitCreateStash
-          pure (SnapshotDirty head stash)
-        NoDifferences -> pure (SnapshotClean head)
+      gitCreateStash <&> \case
+        Nothing -> SnapshotClean head
+        Just stash -> SnapshotDirty head stash
 
 undoToSnapshot :: GitSnapshot -> [Undo]
 undoToSnapshot = \case
