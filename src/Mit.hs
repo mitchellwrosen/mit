@@ -605,10 +605,10 @@ conflictsStanza prefix conflicts =
 isSynchronizedStanza :: Text -> GitPush -> Pretty
 isSynchronizedStanza branch = \case
   DidntPush NothingToPush -> synchronized
-  DidntPush (PushWouldntReachRemote _) -> notSynchronizedStanza branch upstream " because you appear to be offline."
-  DidntPush (PushWouldBeRejected _) -> notSynchronizedStanza branch upstream "; their histories have diverged."
+  DidntPush (PushWouldntReachRemote _) -> notSynchronizedStanza branch upstream " (you appear to be offline)"
+  DidntPush (PushWouldBeRejected _) -> notSynchronizedStanza branch upstream " (their histories have diverged)"
   DidntPush (TriedToPush _) ->
-    notSynchronizedStanza branch upstream (" because " <> Pretty.style Text.bold "git push" <> " failed.")
+    notSynchronizedStanza branch upstream (" (" <> Pretty.style Text.bold "git push" <> " failed)")
   Pushed _ -> synchronized
   where
     upstream = "origin/" <> branch
