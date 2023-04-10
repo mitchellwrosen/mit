@@ -84,6 +84,12 @@ whenJust :: Applicative m => Maybe a -> (a -> m ()) -> m ()
 whenJust =
   for_
 
+whenJustM :: Monad m => m (Maybe a) -> (a -> m ()) -> m ()
+whenJustM mx action =
+  mx >>= \case
+    Nothing -> pure ()
+    Just x -> action x
+
 whenM :: Monad m => m Bool -> m () -> m ()
 whenM mx action =
   mx >>= \case

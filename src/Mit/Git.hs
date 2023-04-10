@@ -25,6 +25,7 @@ module Mit.Git
     gitFetch_,
     gitHead,
     gitIsMergeCommit,
+    gitLsFiles,
     gitMaybeHead,
     gitMergeInProgress,
     gitRemoteBranchExists,
@@ -246,10 +247,10 @@ gitCreateStash = do
   gitUnstageChanges
   pure stash
 
-gitDefaultBranch :: Text -> Mit Env Text
+gitDefaultBranch :: Text -> Mit Env (Maybe Text)
 gitDefaultBranch remote = do
-  ref <- git ["symbolic-ref", "refs/remotes/" <> remote <> "/HEAD"]
-  pure (Text.drop (14 + Text.length remote) ref)
+  fmap (Text.drop (14 + Text.length remote))
+    <$> git ["symbolic-ref", "refs/remotes/" <> remote <> "/HEAD"]
 
 -- | Delete all changes in the index and working tree.
 gitDeleteChanges :: Mit Env ()
@@ -308,6 +309,10 @@ gitHead =
 gitIsMergeCommit :: Text -> Mit Env Bool
 gitIsMergeCommit commit =
   git ["rev-parse", "--quiet", "--verify", commit <> "^2"]
+
+gitLsFiles :: Mit Env [Text]
+gitLsFiles =
+  git ["ls-files"]
 
 -- | List all untracked files.
 gitListUntrackedFiles :: Mit Env [Text]
