@@ -60,6 +60,7 @@ main = do
               case command of
                 MitCommand'Branch branch -> mitBranch branch
                 MitCommand'Commit allFlag maybeMessage -> mitCommit allFlag maybeMessage
+                MitCommand'Gc -> mitGc
                 MitCommand'Merge branch -> mitMerge branch
                 MitCommand'Sync -> mitSync
                 MitCommand'Undo -> mitUndo
@@ -111,6 +112,10 @@ main = do
                       )
                 )
                 (Opt.progDesc "Create a commit."),
+            Opt.command "gc" $
+              Opt.info
+                (pure MitCommand'Gc)
+                (Opt.progDesc "Delete stale, merged branches."),
             Opt.command "merge" $
               Opt.info
                 (MitCommand'Merge <$> Opt.strArgument (Opt.metavar "≪branch≫"))
@@ -128,6 +133,7 @@ main = do
 data MitCommand
   = MitCommand'Branch Text
   | MitCommand'Commit Bool {- --all? -} (Maybe Text {- message -})
+  | MitCommand'Gc
   | MitCommand'Merge Text
   | MitCommand'Sync
   | MitCommand'Undo
@@ -346,6 +352,12 @@ mitCommit allFlag maybeMessage = do
                         <> ".",
                     Pretty.when (not (null context.state.undos)) canUndoStanza
                   ]
+
+mitGc :: Abort Pretty => Mit Env ()
+mitGc = do
+  context <- getContext
+  let upstream = contextUpstream context
+  pure ()
 
 mitMerge :: Abort Pretty => Text -> Mit Env ()
 mitMerge target = do
