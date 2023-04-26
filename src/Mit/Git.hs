@@ -257,10 +257,9 @@ gitDeleteChanges :: Mit Env ()
 gitDeleteChanges =
   git_ ["reset", "--hard", "--quiet", "HEAD"]
 
--- FIXME document this
+-- | Report whether there are any tracked, unstaged changes.
 gitDiff :: Mit Env DiffResult
 gitDiff = do
-  gitUnstageChanges
   git ["diff", "--quiet"] <&> \case
     False -> Differences
     True -> NoDifferences
