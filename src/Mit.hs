@@ -9,6 +9,7 @@ import Data.List.NonEmpty qualified as List1
 import Data.Ord (clamp)
 import Data.Sequence qualified as Seq
 import Data.Text qualified as Text
+import Mit.Command.Status (mitStatus)
 import Mit.Directory
 import Mit.Env
 import Mit.Git
@@ -473,12 +474,6 @@ mitMerge target = do
               Pushed _ -> Pretty.empty,
             Pretty.when (not (null state.undos)) canUndoStanza
           ]
-
-mitStatus :: Mit Env ()
-mitStatus = do
-  gitUnstageChanges
-  lines <- git ["status", "--porcelain=v1"]
-  io (Pretty.put (Pretty.lines (map Pretty.text lines)))
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
 mitSync :: Abort Pretty => Mit Env ()

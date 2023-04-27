@@ -90,6 +90,7 @@ library
     unix == 2.8.1.1,
   exposed-modules:
     Mit
+    Mit.Command.Status
     Mit.Directory
     Mit.Env
     Mit.Git
