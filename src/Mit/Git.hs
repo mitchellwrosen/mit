@@ -53,6 +53,7 @@ import Mit.Env (Env (..))
 import Mit.Monad
 import Mit.Prelude
 import Mit.Pretty (Pretty)
+import Text.Printf (printf)
 import Mit.Pretty qualified as Pretty
 import Mit.Process
 import System.Directory (doesFileExist)
@@ -63,7 +64,7 @@ import System.Posix.Process (getProcessGroupIDOf)
 import System.Posix.Signals
 import System.Process
 import System.Process.Internals
-import Text.Builder qualified
+import Data.Text.Builder.Linear qualified as Text.Builder
 import Text.Builder.ANSI qualified as Text.Builder
 import Text.Parsec qualified as Parsec
 
@@ -553,7 +554,7 @@ debugPrintGit args stdoutLines stderrLines exitCode sec = do
           let prefix =
                 marker
                   <> " ["
-                  <> Pretty.builder (Text.Builder.fixedDouble 0 (sec * 1000))
+                  <> Pretty.builder (foldMap Text.Builder.fromChar (printf "%.0f" (sec * 1000) :: [Char]))
                   <> "ms] git "
            in case List1.nonEmpty args of
                 -- fold (List.intersperse (Pretty.char ' ') (map quote args)) of

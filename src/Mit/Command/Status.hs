@@ -1,3 +1,4 @@
+{-# LANGUAGE QuasiQuotes #-}
 module Mit.Command.Status (mitStatus) where
 
 import Mit.Env (Env)

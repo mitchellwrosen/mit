@@ -24,7 +24,7 @@ import Options.Applicative qualified as Opt
 import Options.Applicative.Types qualified as Opt (Backtracking (Backtrack))
 import System.Exit (exitFailure)
 import System.Posix.Terminal (queryTerminal)
-import Text.Builder qualified as Text (Builder)
+import Data.Text.Builder.Linear qualified as Text (Builder)
 import Text.Builder.ANSI qualified as Text
 
 -- FIXME: nicer "git status" story. in particular the conflict markers in the commits after a merge are a bit
