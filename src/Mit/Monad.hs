@@ -15,7 +15,7 @@ module Mit.Monad
 where
 
 import Control.Monad qualified
-import Data.Unique
+import Data.Unique (Unique, newUnique)
 import Mit.Prelude
 import Unsafe.Coerce (unsafeCoerce)
 
@@ -77,10 +77,10 @@ type Abort a =
 data Abort_ a
   = Abort_ (Goto a)
 
-stick :: Goto a -> (Abort a => b) -> b
+stick :: Goto a -> ((Abort a) => b) -> b
 stick f x = let ?abort = Abort_ f in x
 
-abort :: Abort a => a -> Mit r void
+abort :: (Abort a) => a -> Mit r void
 abort x =
   case ?abort of
     Abort_ f -> f x
@@ -88,7 +88,10 @@ abort x =
 data X = forall a. X Unique a
 
 instance Exception X where
+  toException :: X -> SomeException
   toException = asyncExceptionToException
+
+  fromException :: SomeException -> Maybe X
   fromException = asyncExceptionFromException
 
 instance Show X where

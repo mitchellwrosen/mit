@@ -14,6 +14,6 @@ cd dir =
   with_ (Directory.withCurrentDirectory (Text.unpack dir))
 
 -- | Change directories (delimited by 'block').
-doesDirectoryExist :: MonadIO m => Text -> m Bool
+doesDirectoryExist :: (MonadIO m) => Text -> m Bool
 doesDirectoryExist =
   liftIO . Directory.doesDirectoryExist . Text.unpack

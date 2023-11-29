@@ -46,6 +46,7 @@ common component
     LambdaCase
     ImplicitParams
     ImportQualifiedPost
+    InstanceSigs
     MultiParamTypeClasses
     MultiWayIf
     NamedFieldPuns

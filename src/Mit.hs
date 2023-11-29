@@ -9,6 +9,7 @@ import Data.List.NonEmpty qualified as List1
 import Data.Ord (clamp)
 import Data.Sequence qualified as Seq
 import Data.Text qualified as Text
+import Data.Text.Builder.Linear qualified as Text (Builder)
 import Mit.Command.Status (mitStatus)
 import Mit.Directory
 import Mit.Env
@@ -24,7 +25,6 @@ import Options.Applicative qualified as Opt
 import Options.Applicative.Types qualified as Opt (Backtracking (Backtrack))
 import System.Exit (exitFailure)
 import System.Posix.Terminal (queryTerminal)
-import Data.Text.Builder.Linear qualified as Text (Builder)
 import Text.Builder.ANSI qualified as Text
 
 -- FIXME: nicer "git status" story. in particular the conflict markers in the commits after a merge are a bit
@@ -47,28 +47,7 @@ import Text.Builder.ANSI qualified as Text
 main :: IO ()
 main = do
   (env, command) <- Opt.customExecParser parserPrefs parserInfo
-
-  let theMain :: Mit Env (Either Pretty ())
-      theMain = do
-        label \return ->
-          stick (return . Left) do
-            fmap Right do
-              version <- gitVersion
-              when (version < GitVersion 2 30 1) do
-                -- 'git stash create' broken before 2.30.1
-                abort (Pretty.line (Pretty.style Text.red "Minimum required git version: 2.30.1"))
-              whenNotM gitRevParseAbsoluteGitDir do
-                abort (Pretty.line (Pretty.style Text.red "The current directory doesn't contain a git repository."))
-              case command of
-                MitCommand'Branch branch -> mitBranch branch
-                MitCommand'Commit allFlag maybeMessage -> mitCommit allFlag maybeMessage
-                MitCommand'Gc -> mitGc
-                MitCommand'Merge branch -> mitMerge branch
-                MitCommand'Status -> mitStatus
-                MitCommand'Sync -> mitSync
-                MitCommand'Undo -> mitUndo
-
-  runMit env theMain & onLeftM \err -> do
+  runMit env (main1 command) & onLeftM \err -> do
     output err
     exitFailure
   where
@@ -135,6 +114,28 @@ main = do
                 (Opt.progDesc "Undo the last `mit` command (if possible).")
           ]
 
+main1 :: MitCommand -> Mit Env (Either Pretty ())
+main1 command =
+  label \return ->
+    stick (return . Left) (Right <$> main2 command)
+
+main2 :: (Abort Pretty) => MitCommand -> Mit Env ()
+main2 command = do
+  version <- gitVersion
+  when (version < GitVersion 2 30 1) do
+    -- 'git stash create' broken before 2.30.1
+    abort (Pretty.line (Pretty.style Text.red "Minimum required git version: 2.30.1"))
+  whenNotM gitRevParseAbsoluteGitDir do
+    abort (Pretty.line (Pretty.style Text.red "The current directory doesn't contain a git repository."))
+  case command of
+    MitCommand'Branch branch -> mitBranch branch
+    MitCommand'Commit allFlag maybeMessage -> mitCommit allFlag maybeMessage
+    MitCommand'Gc -> mitGc
+    MitCommand'Merge branch -> mitMerge branch
+    MitCommand'Status -> mitStatus
+    MitCommand'Sync -> mitSync
+    MitCommand'Undo -> mitUndo
+
 data MitCommand
   = MitCommand'Branch Text
   | MitCommand'Commit Bool {- --all? -} (Maybe Text {- message -})
@@ -144,12 +145,12 @@ data MitCommand
   | MitCommand'Sync
   | MitCommand'Undo
 
-dieIfMergeInProgress :: Abort Pretty => Mit Env ()
+dieIfMergeInProgress :: (Abort Pretty) => Mit Env ()
 dieIfMergeInProgress =
   whenM gitMergeInProgress do
     abort (Pretty.line (Pretty.style Text.red (Pretty.style Text.bold "git merge" <> " in progress.")))
 
-mitBranch :: Abort Pretty => Text -> Mit Env ()
+mitBranch :: (Abort Pretty) => Text -> Mit Env ()
 mitBranch branch = do
   worktreeDir <- do
     rootdir <- git ["rev-parse", "--show-toplevel"]
@@ -205,13 +206,13 @@ mitBranch branch = do
                 pure ("Created " <> Pretty.branch branch <> " in " <> Pretty.directory worktreeDir)
       output (Pretty.line line)
 
-mitCommit :: Abort Pretty => Bool -> Maybe Text -> Mit Env ()
+mitCommit :: (Abort Pretty) => Bool -> Maybe Text -> Mit Env ()
 mitCommit allFlag maybeMessage = do
   gitMergeInProgress >>= \case
     False -> mitCommitNotMerge allFlag maybeMessage
     True -> mitCommitMerge
 
-mitCommitNotMerge :: Abort Pretty => Bool -> Maybe Text -> Mit Env ()
+mitCommitNotMerge :: (Abort Pretty) => Bool -> Maybe Text -> Mit Env ()
 mitCommitNotMerge allFlag maybeMessage = do
   gitUnstageChanges
   gitDiff >>= \case
@@ -315,7 +316,7 @@ mitCommitNotMerge allFlag maybeMessage = do
         Pretty.when (not (null state.undos) && committed) canUndoStanza
       ]
 
-mitCommitMerge :: Abort Pretty => Mit Env ()
+mitCommitMerge :: (Abort Pretty) => Mit Env ()
 mitCommitMerge = do
   context <- getContext
   let upstream = contextUpstream context
@@ -368,13 +369,13 @@ mitCommitMerge = do
                 Pretty.when (not (null context.state.undos)) canUndoStanza
               ]
 
-mitGc :: Abort Pretty => Mit Env ()
+mitGc :: (Abort Pretty) => Mit Env ()
 mitGc = do
   context <- getContext
   let _upstream = contextUpstream context
   pure ()
 
-mitMerge :: Abort Pretty => Text -> Mit Env ()
+mitMerge :: (Abort Pretty) => Text -> Mit Env ()
 mitMerge target = do
   dieIfMergeInProgress
 
@@ -476,7 +477,7 @@ mitMerge target = do
           ]
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
-mitSync :: Abort Pretty => Mit Env ()
+mitSync :: (Abort Pretty) => Mit Env ()
 mitSync = do
   dieIfMergeInProgress
   mitSyncWith Pretty.empty Nothing
@@ -501,7 +502,7 @@ mitSync = do
 --
 -- Instead, we want to undo to the point before running the 'mit merge' that caused the conflicts, which were later
 -- resolved by 'mit commit'.
-mitSyncWith :: Abort Pretty => Pretty -> Maybe [Undo] -> Mit Env ()
+mitSyncWith :: (Abort Pretty) => Pretty -> Maybe [Undo] -> Mit Env ()
 mitSyncWith pretty0 maybeUndos = do
   context <- getContext
   let upstream = contextUpstream context
@@ -583,7 +584,7 @@ mitSyncWith pretty0 maybeUndos = do
       ]
 
 -- FIXME output what we just undid
-mitUndo :: Abort Pretty => Mit Env ()
+mitUndo :: (Abort Pretty) => Mit Env ()
 mitUndo = do
   context <- getContext
   undos <-
@@ -595,7 +596,7 @@ mitUndo = do
   when (head /= unsafeSnapshotHead context.snapshot) mitSync
 
 -- If origin/branch is ahead of branch, abort.
-abortIfRemoteIsAhead :: Abort Pretty => Context -> Mit Env ()
+abortIfRemoteIsAhead :: (Abort Pretty) => Context -> Mit Env ()
 abortIfRemoteIsAhead context = do
   existRemoteCommits <- contextExistRemoteCommits context
   existLocalCommits <- contextExistLocalCommits context
@@ -614,7 +615,7 @@ cleanWorkingTree context =
   whenJust (snapshotStash context.snapshot) \_stash ->
     gitDeleteChanges
 
-output :: MonadIO m => Pretty -> m ()
+output :: (MonadIO m) => Pretty -> m ()
 output p =
   liftIO (Pretty.put (emptyLine <> Pretty.indent 2 p <> emptyLine))
   where
@@ -703,7 +704,7 @@ data Context = Context
     upstreamHead :: Maybe Text
   }
 
-getContext :: Abort Pretty => Mit Env Context
+getContext :: (Abort Pretty) => Mit Env Context
 getContext = do
   gitFetch_ "origin"
   branch <-
