@@ -46,10 +46,11 @@ parseMitState contents = do
   pure MitState {head, merging, undos}
 
 readMitState :: Text -> Mit Env (MitState ())
-readMitState branch =
+readMitState branch = do
+  env <- getEnv
   label \return -> do
     head <-
-      gitMaybeHead >>= \case
+      io (gitMaybeHead env.verbosity) >>= \case
         Nothing -> return emptyMitState
         Just head -> pure head
     mitfile <- getMitfile branch64
@@ -73,7 +74,8 @@ readMitState branch =
 
 writeMitState :: Text -> MitState () -> Mit Env ()
 writeMitState branch state = do
-  head <- gitHead
+  env <- getEnv
+  head <- io (gitHead env.verbosity)
   let contents :: Text
       contents =
         Text.unlines
@@ -86,5 +88,6 @@ writeMitState branch state = do
 
 getMitfile :: Text -> Mit Env FilePath
 getMitfile branch64 = do
-  gitdir <- gitRevParseAbsoluteGitDir
+  env <- getEnv
+  gitdir <- io (gitRevParseAbsoluteGitDir env.verbosity)
   pure (Text.unpack (gitdir <> "/.mit-" <> branch64))
