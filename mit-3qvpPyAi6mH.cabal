@@ -97,10 +97,12 @@ library
     Mit.Directory
     Mit.Git
     Mit.Label
+    Mit.Logger
     Mit.Output
     Mit.Prelude
     Mit.Pretty
     Mit.Process
+    Mit.ProcessInfo
     Mit.Seq
     Mit.Seq1
     Mit.Snapshot

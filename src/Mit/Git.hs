@@ -11,7 +11,6 @@ module Mit.Git
     git_,
     git2,
     gitApplyStash,
-    gitBranchHead,
     gitBranchWorktreeDir,
     gitCommitsBetween,
     gitConflicts,
@@ -23,7 +22,6 @@ module Mit.Git
     gitFetch,
     gitFetch_,
     gitIsMergeCommit,
-    gitLsFiles,
     gitMaybeHead,
     gitMergeInProgress,
     gitRemoteBranchExists,
@@ -38,6 +36,7 @@ module Mit.Git
   )
 where
 
+import Data.Char qualified as Char
 import Data.Foldable qualified as Foldable
 import Data.List qualified as List
 import Data.List.NonEmpty qualified as List1
@@ -178,13 +177,6 @@ gitApplyStash verbosity stash = do
   gitUnstageChanges verbosity
   pure conflicts
 
--- | Get the head of a local branch (refs/heads/...).
-gitBranchHead :: Verbosity -> Text -> IO (Maybe Text)
-gitBranchHead verbosity branch =
-  git verbosity ["rev-parse", "refs/heads/" <> branch] <&> \case
-    Left _ -> Nothing
-    Right head -> Just head
-
 -- | Get the directory a branch's worktree is checked out in, if it exists.
 gitBranchWorktreeDir :: Verbosity -> Text -> IO (Maybe Text)
 gitBranchWorktreeDir verbosity branch = do
@@ -296,10 +288,6 @@ gitFetch_ verbosity =
 gitIsMergeCommit :: Verbosity -> Text -> IO Bool
 gitIsMergeCommit verbosity commit =
   git verbosity ["rev-parse", "--quiet", "--verify", commit <> "^2"]
-
-gitLsFiles :: Verbosity -> IO [Text]
-gitLsFiles verbosity =
-  git verbosity ["ls-files"]
 
 -- | List all untracked files.
 gitListUntrackedFiles :: Verbosity -> IO [Text]
@@ -418,7 +406,7 @@ gitListWorktrees verbosity = do
       where
         segmentP :: Parsec.Parsec Text () Text
         segmentP =
-          Text.pack <$> Parsec.many1 (Parsec.satisfy (not . isSpace))
+          Text.pack <$> Parsec.many1 (Parsec.satisfy (not . Char.isSpace))
 
 -- git@github.com:mitchellwrosen/mit.git -> Just ("git@github.com:mitchellwrosen/mit.git", "mit")
 parseGitRepo :: Text -> Maybe (Text, Text)
@@ -546,7 +534,6 @@ debugPrintGit verbosity args stdoutLines stderrLines exitCode sec = do
                   <> Pretty.builder (foldMap Text.Builder.fromChar (printf "%.0f" (sec * 1000) :: [Char]))
                   <> "ms] git "
            in case List1.nonEmpty args of
-                -- fold (List.intersperse (Pretty.char ' ') (map quote args)) of
                 Nothing -> prefix
                 Just args1 -> prefix <> sconcat (List1.intersperse (Pretty.char ' ') (quote <$> args1))
     v2 =
@@ -558,7 +545,7 @@ debugPrintGit verbosity args stdoutLines stderrLines exitCode sec = do
 
     quote :: Text -> Pretty.Line
     quote s =
-      if Text.any isSpace s
+      if Text.any Char.isSpace s
         then Pretty.char '\'' <> Pretty.text (Text.replace "'" "\\'" s) <> Pretty.char '\''
         else Pretty.text s
 

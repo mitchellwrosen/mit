@@ -5,7 +5,6 @@ where
 
 import Control.Applicative (many)
 import Data.Foldable qualified as Foldable (toList)
-import Data.Functor.Contravariant ((>$<))
 import Data.List.NonEmpty qualified as List1
 import Data.Sequence qualified as Seq
 import Data.Text.Builder.Linear qualified as Text (Builder)
@@ -19,7 +18,6 @@ import Mit.Git
     git,
     git2,
     gitApplyStash,
-    gitBranchHead,
     gitCommitsBetween,
     gitConflicts,
     gitConflictsWith,
@@ -355,10 +353,9 @@ mitMerge verbosity target = do
     else do
       -- When given 'mit merge foo', prefer running 'git merge origin/foo' over 'git merge foo'
       targetCommit <-
-        gitRemoteBranchHead verbosity "origin" target
-          & onNothingM do
-            gitBranchHead verbosity target
-              & onNothingM (abort Output.NoSuchBranch)
+        gitRemoteBranchHead verbosity "origin" target & onNothingM do
+          git verbosity ["rev-parse", "refs/heads/" <> target] & onLeftM \_ ->
+            abort Output.NoSuchBranch
 
       abortIfRemoteIsAhead verbosity context
 
