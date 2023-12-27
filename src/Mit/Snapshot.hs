@@ -3,17 +3,17 @@ module Mit.Snapshot
     snapshotHead,
     unsafeSnapshotHead,
     snapshotStash,
-    performSnapshot,
     undoToSnapshot,
+    performSnapshot,
   )
 where
 
-import Mit.Env (Env (verbosity))
 import Mit.Git (gitCreateStash, gitMaybeHead)
-import Mit.Monad (Mit, getEnv, io)
 import Mit.Prelude
 import Mit.Undo (Undo (Apply, Reset))
+import Mit.Verbosity (Verbosity)
 
+-- | The snapshot of a git repository.
 data Snapshot
   = Empty -- empty repo
   | Clean !Text -- head
@@ -37,18 +37,17 @@ snapshotStash = \case
   Clean _head -> Nothing
   Dirty _head stash -> Just stash
 
-performSnapshot :: Mit Env Snapshot
-performSnapshot = do
-  env <- getEnv
-  io (gitMaybeHead env.verbosity) >>= \case
-    Nothing -> pure Empty
-    Just head ->
-      io (gitCreateStash env.verbosity) <&> \case
-        Nothing -> Clean head
-        Just stash -> Dirty head stash
-
 undoToSnapshot :: Snapshot -> [Undo]
 undoToSnapshot = \case
   Empty -> []
   Clean head -> [Reset head]
   Dirty head stash -> [Reset head, Apply stash]
+
+performSnapshot :: Verbosity -> IO Snapshot
+performSnapshot verbosity =
+  gitMaybeHead verbosity >>= \case
+    Nothing -> pure Empty
+    Just head ->
+      gitCreateStash verbosity <&> \case
+        Nothing -> Clean head
+        Just stash -> Dirty head stash

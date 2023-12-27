@@ -95,7 +95,6 @@ library
     Mit.Command.Branch
     Mit.Command.Status
     Mit.Directory
-    Mit.Env
     Mit.Git
     Mit.Label
     Mit.Monad
@@ -107,6 +106,7 @@ library
     Mit.Snapshot
     Mit.State
     Mit.Undo
+    Mit.Verbosity
   hs-source-dirs: src
 
 executable mit

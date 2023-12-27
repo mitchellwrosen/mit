@@ -10,11 +10,11 @@ where
 import Data.Text qualified as Text
 import Data.Text.Encoding.Base64 qualified as Text
 import Data.Text.IO qualified as Text
-import Mit.Env (Env (..))
-import Mit.Git
-import Mit.Monad
+import Mit.Git (git, gitMaybeHead, gitRevParseAbsoluteGitDir)
+import Mit.Label (goto, label)
 import Mit.Prelude
-import Mit.Undo
+import Mit.Undo (Undo, parseUndos, showUndos)
+import Mit.Verbosity (Verbosity)
 import System.Directory (removeFile)
 
 data MitState a = MitState
@@ -28,10 +28,10 @@ emptyMitState :: MitState ()
 emptyMitState =
   MitState {head = (), merging = Nothing, undos = []}
 
-deleteMitState :: Text -> Mit Env ()
-deleteMitState branch64 = do
-  mitfile <- getMitfile branch64
-  io (removeFile mitfile `catch` \(_ :: IOException) -> pure ())
+deleteMitState :: Verbosity -> Text -> IO ()
+deleteMitState verbosity branch64 = do
+  mitfile <- getMitfile verbosity branch64
+  removeFile mitfile `catch` \(_ :: IOException) -> pure ()
 
 parseMitState :: Text -> Maybe (MitState Text)
 parseMitState contents = do
@@ -45,18 +45,17 @@ parseMitState contents = do
   undos <- Text.stripPrefix "undos " undosLine >>= parseUndos
   pure MitState {head, merging, undos}
 
-readMitState :: Text -> Mit Env (MitState ())
-readMitState branch = do
-  env <- getEnv
+readMitState :: Verbosity -> Text -> IO (MitState ())
+readMitState verbosity branch = do
   label \return -> do
     head <-
-      io (gitMaybeHead env.verbosity) >>= \case
-        Nothing -> return emptyMitState
+      gitMaybeHead verbosity >>= \case
+        Nothing -> goto return emptyMitState
         Just head -> pure head
-    mitfile <- getMitfile branch64
+    mitfile <- getMitfile verbosity branch64
     contents <-
-      io (try (Text.readFile mitfile)) >>= \case
-        Left (_ :: IOException) -> return emptyMitState
+      try (Text.readFile mitfile) >>= \case
+        Left (_ :: IOException) -> goto return emptyMitState
         Right contents -> pure contents
     let maybeState = do
           state <- parseMitState contents
@@ -65,17 +64,16 @@ readMitState branch = do
     state <-
       case maybeState of
         Nothing -> do
-          deleteMitState branch64
-          return emptyMitState
+          deleteMitState verbosity branch64
+          goto return emptyMitState
         Just state -> pure state
     pure (state {head = ()} :: MitState ())
   where
     branch64 = Text.encodeBase64 branch
 
-writeMitState :: Text -> MitState () -> Mit Env ()
-writeMitState branch state = do
-  env <- getEnv
-  head <- io (gitHead env.verbosity)
+writeMitState :: Verbosity -> Text -> MitState () -> IO ()
+writeMitState verbosity branch state = do
+  head <- git verbosity ["rev-parse", "HEAD"]
   let contents :: Text
       contents =
         Text.unlines
@@ -83,11 +81,10 @@ writeMitState branch state = do
             "merging " <> fromMaybe Text.empty state.merging,
             "undos " <> showUndos state.undos
           ]
-  mitfile <- getMitfile (Text.encodeBase64 branch)
-  io (Text.writeFile mitfile contents `catch` \(_ :: IOException) -> pure ())
+  mitfile <- getMitfile verbosity (Text.encodeBase64 branch)
+  Text.writeFile mitfile contents `catch` \(_ :: IOException) -> pure ()
 
-getMitfile :: Text -> Mit Env FilePath
-getMitfile branch64 = do
-  env <- getEnv
-  gitdir <- io (gitRevParseAbsoluteGitDir env.verbosity)
+getMitfile :: Verbosity -> Text -> IO FilePath
+getMitfile verbosity branch64 = do
+  gitdir <- gitRevParseAbsoluteGitDir verbosity
   pure (Text.unpack (gitdir <> "/.mit-" <> branch64))

@@ -6,21 +6,45 @@ where
 import Control.Applicative (many)
 import Data.Foldable qualified as Foldable (toList)
 import Data.List.NonEmpty qualified as List1
-import Data.Ord (clamp)
 import Data.Sequence qualified as Seq
 import Data.Text.Builder.Linear qualified as Text (Builder)
 import Mit.Command.Branch (mitBranch)
 import Mit.Command.Status (mitStatus)
-import Mit.Env
 import Mit.Git
-import Mit.Monad
+  ( DiffResult (Differences, NoDifferences),
+    GitCommitInfo (hash),
+    GitConflict,
+    GitVersion (GitVersion),
+    git,
+    git2,
+    gitApplyStash,
+    gitBranchHead,
+    gitCommitsBetween,
+    gitConflicts,
+    gitConflictsWith,
+    gitDiff,
+    gitExistCommitsBetween,
+    gitFetch,
+    gitFetch_,
+    gitIsMergeCommit,
+    gitMergeInProgress,
+    gitRemoteBranchHead,
+    gitRevParseAbsoluteGitDir,
+    gitUnstageChanges,
+    gitVersion,
+    git_,
+    prettyGitCommitInfo,
+    prettyGitConflict,
+  )
+import Mit.Monad (Abort, Mit, abort, io, label, runMit, stick)
 import Mit.Prelude
 import Mit.Pretty (Pretty)
 import Mit.Pretty qualified as Pretty
 import Mit.Seq1 qualified as Seq1
-import Mit.Snapshot
-import Mit.State
-import Mit.Undo
+import Mit.Snapshot (Snapshot, performSnapshot, snapshotHead, snapshotStash, undoToSnapshot, unsafeSnapshotHead)
+import Mit.State (MitState (..), readMitState, writeMitState)
+import Mit.Undo (Undo (..), applyUndo, undosStash)
+import Mit.Verbosity (Verbosity, intToVerbosity)
 import Options.Applicative qualified as Opt
 import Options.Applicative.Types qualified as Opt (Backtracking (Backtrack))
 import System.Exit (exitFailure)
@@ -46,8 +70,8 @@ import Text.Builder.ANSI qualified as Text
 
 main :: IO ()
 main = do
-  (env, command) <- Opt.customExecParser parserPrefs parserInfo
-  runMit env (main1 command) & onLeftM \err -> do
+  (verbosity, command) <- Opt.customExecParser parserPrefs parserInfo
+  runMit () (main1 verbosity command) & onLeftM \err -> do
     output err
     exitFailure
   where
@@ -65,16 +89,15 @@ main = do
           prefTabulateFill = 24 -- grabbed this from optparse-applicative
         }
 
-    parserInfo :: Opt.ParserInfo (Env, MitCommand)
+    parserInfo :: Opt.ParserInfo (Verbosity, MitCommand)
     parserInfo =
       Opt.info parser $
         Opt.progDesc "mit: a git wrapper with a streamlined UX"
 
-    parser :: Opt.Parser (Env, MitCommand)
+    parser :: Opt.Parser (Verbosity, MitCommand)
     parser =
-      (\offline verbosity command -> (Env {offline, verbosity}, command))
-        <$> Opt.switch (Opt.help "Offline mode" <> Opt.long "offline")
-        <*> (clamp (0, 2) . length <$> many (Opt.flag' () (Opt.help "Verbose (-v or -vv)" <> Opt.short 'v')))
+      (\verbosity command -> (verbosity, command))
+        <$> (intToVerbosity . length <$> many (Opt.flag' () (Opt.help "Verbose (-v or -vv)" <> Opt.short 'v')))
         <*> (Opt.hsubparser . fold)
           [ Opt.command "branch" $
               Opt.info
@@ -114,28 +137,30 @@ main = do
                 (Opt.progDesc "Undo the last `mit` command (if possible).")
           ]
 
-main1 :: MitCommand -> Mit Env (Either Pretty ())
-main1 command =
+main1 :: Verbosity -> MitCommand -> Mit r (Either Pretty ())
+main1 verbosity command =
   label \return ->
-    stick (return . Left) (Right <$> main2 command)
+    stick (return . Left) (Right <$> main2 verbosity command)
 
-main2 :: (Abort Pretty) => MitCommand -> Mit Env ()
-main2 command = do
-  env <- getEnv
-  version <- io (gitVersion env.verbosity)
+main2 :: (Abort Pretty) => Verbosity -> MitCommand -> Mit r ()
+main2 verbosity command = do
+  version <- io (gitVersion verbosity)
+
   when (version < GitVersion 2 30 1) do
     -- 'git stash create' broken before 2.30.1
     abort (Pretty.line (Pretty.style Text.red "Minimum required git version: 2.30.1"))
-  whenNotM (io (gitRevParseAbsoluteGitDir env.verbosity)) do
+
+  whenNotM (io (gitRevParseAbsoluteGitDir verbosity)) do
     abort (Pretty.line (Pretty.style Text.red "The current directory doesn't contain a git repository."))
+
   case command of
-    MitCommand'Branch branch -> mitBranch output branch
-    MitCommand'Commit allFlag maybeMessage -> mitCommit allFlag maybeMessage
-    MitCommand'Gc -> mitGc
-    MitCommand'Merge branch -> mitMerge branch
-    MitCommand'Status -> mitStatus
-    MitCommand'Sync -> mitSync
-    MitCommand'Undo -> mitUndo
+    MitCommand'Branch branch -> mitBranch (io . output) verbosity branch
+    MitCommand'Commit allFlag maybeMessage -> mitCommit verbosity allFlag maybeMessage
+    MitCommand'Gc -> mitGc verbosity
+    MitCommand'Merge branch -> mitMerge verbosity branch
+    MitCommand'Status -> io (mitStatus verbosity)
+    MitCommand'Sync -> mitSync verbosity
+    MitCommand'Undo -> mitUndo verbosity
 
 data MitCommand
   = MitCommand'Branch Text
@@ -146,31 +171,28 @@ data MitCommand
   | MitCommand'Sync
   | MitCommand'Undo
 
-dieIfMergeInProgress :: (Abort Pretty) => Mit Env ()
-dieIfMergeInProgress = do
-  env <- getEnv
-  whenM (io (gitMergeInProgress env.verbosity)) do
+dieIfMergeInProgress :: (Abort Pretty) => Verbosity -> Mit r ()
+dieIfMergeInProgress verbosity = do
+  whenM (io (gitMergeInProgress verbosity)) do
     abort (Pretty.line (Pretty.style Text.red (Pretty.style Text.bold "git merge" <> " in progress.")))
 
-mitCommit :: (Abort Pretty) => Bool -> Maybe Text -> Mit Env ()
-mitCommit allFlag maybeMessage = do
-  env <- getEnv
-  io (gitMergeInProgress env.verbosity) >>= \case
-    False -> mitCommitNotMerge allFlag maybeMessage
-    True -> mitCommitMerge
+mitCommit :: (Abort Pretty) => Verbosity -> Bool -> Maybe Text -> Mit r ()
+mitCommit verbosity allFlag maybeMessage = do
+  io (gitMergeInProgress verbosity) >>= \case
+    False -> mitCommitNotMerge verbosity allFlag maybeMessage
+    True -> mitCommitMerge verbosity
 
-mitCommitNotMerge :: (Abort Pretty) => Bool -> Maybe Text -> Mit Env ()
-mitCommitNotMerge allFlag maybeMessage = do
-  env <- getEnv
-  io (gitUnstageChanges env.verbosity)
-  io (gitDiff env.verbosity) >>= \case
+mitCommitNotMerge :: (Abort Pretty) => Verbosity -> Bool -> Maybe Text -> Mit r ()
+mitCommitNotMerge verbosity allFlag maybeMessage = do
+  io (gitUnstageChanges verbosity)
+  io (gitDiff verbosity) >>= \case
     Differences -> pure ()
     NoDifferences -> abort (Pretty.line (Pretty.style Text.red "There's nothing to commit."))
 
-  context <- getContext
+  context <- getContext verbosity
   let upstream = contextUpstream context
 
-  abortIfRemoteIsAhead context
+  abortIfRemoteIsAhead verbosity context
 
   committed <- do
     doCommitAll <-
@@ -178,18 +200,18 @@ mitCommitNotMerge allFlag maybeMessage = do
         then pure True
         else not <$> io (queryTerminal 0)
     case (doCommitAll, maybeMessage) of
-      (True, Nothing) -> io (git2 env.verbosity ["commit", "--all"])
-      (True, Just message) -> io (git env.verbosity ["commit", "--all", "--message", message])
-      (False, Nothing) -> io (git2 env.verbosity ["commit", "--patch", "--quiet"])
-      (False, Just message) -> io (git2 env.verbosity ["commit", "--patch", "--message", message, "--quiet"])
+      (True, Nothing) -> io (git2 verbosity ["commit", "--all"])
+      (True, Just message) -> io (git verbosity ["commit", "--all", "--message", message])
+      (False, Nothing) -> io (git2 verbosity ["commit", "--patch", "--quiet"])
+      (False, Just message) -> io (git2 verbosity ["commit", "--patch", "--message", message, "--quiet"])
 
-  push <- performPush context.branch
+  push <- io (performPush verbosity context.branch)
   undoPush <-
     case push of
       Pushed commits ->
         case Seq1.toList commits of
           [commit] ->
-            io (gitIsMergeCommit env.verbosity commit.hash) <&> \case
+            io (gitIsMergeCommit verbosity commit.hash) <&> \case
               False -> [Revert commit.hash]
               True -> []
           _ -> pure []
@@ -212,19 +234,19 @@ mitCommitNotMerge allFlag maybeMessage = do
                       Just stash -> undoPush ++ [Apply stash]
           }
 
-  writeMitState context.branch state
+  io (writeMitState verbosity context.branch state)
 
   remoteCommits <-
     case context.upstreamHead of
       Nothing -> pure Seq.empty
-      Just upstreamHead -> io (gitCommitsBetween env.verbosity (Just "HEAD") upstreamHead)
+      Just upstreamHead -> io (gitCommitsBetween verbosity (Just "HEAD") upstreamHead)
 
   conflictsOnSync <-
     if Seq.null remoteCommits
       then pure []
-      else io (gitConflictsWith env.verbosity (fromJust context.upstreamHead))
+      else io (gitConflictsWith verbosity (fromJust context.upstreamHead))
 
-  output $
+  io . output $
     Pretty.paragraphs
       [ isSynchronizedStanza context.branch push,
         Pretty.whenJust (Seq1.fromSeq remoteCommits) \commits ->
@@ -264,22 +286,21 @@ mitCommitNotMerge allFlag maybeMessage = do
         Pretty.when (not (null state.undos) && committed) canUndoStanza
       ]
 
-mitCommitMerge :: (Abort Pretty) => Mit Env ()
-mitCommitMerge = do
-  env <- getEnv
-  context <- getContext
+mitCommitMerge :: (Abort Pretty) => Verbosity -> Mit r ()
+mitCommitMerge verbosity = do
+  context <- getContext verbosity
   let upstream = contextUpstream context
 
   -- Make the merge commit. Commonly we'll have gotten here by `mit merge <branch>`, so we'll have a `state0.merging`
   -- that tells us we're merging in <branch>. But we also handle the case that we went `git merge` -> `mit commit`,
   -- because why not.
   case context.state.merging of
-    Nothing -> io (git_ env.verbosity ["commit", "--all", "--no-edit"])
+    Nothing -> io (git_ verbosity ["commit", "--all", "--no-edit"])
     Just merging ->
       let message = fold ["⅄ ", if merging == context.branch then "" else merging <> " → ", context.branch]
-       in io (git_ env.verbosity ["commit", "--all", "--message", message])
+       in io (git_ verbosity ["commit", "--all", "--message", message])
 
-  writeMitState context.branch context.state {merging = Nothing}
+  io (writeMitState verbosity context.branch context.state {merging = Nothing})
 
   let pretty0 = do
         fromMaybe Pretty.empty do
@@ -296,14 +317,14 @@ mitCommitMerge = do
   --   2. We had a clean working directory before `mit merge`, so proceed to sync
 
   case undosStash context.state.undos of
-    Nothing -> mitSyncWith pretty0 (Just [Reset (unsafeSnapshotHead context.snapshot)])
+    Nothing -> mitSyncWith verbosity pretty0 (Just [Reset (unsafeSnapshotHead context.snapshot)])
     Just stash -> do
-      conflicts <- io (gitApplyStash env.verbosity stash)
+      conflicts <- io (gitApplyStash verbosity stash)
       case List1.nonEmpty conflicts of
         -- FIXME we just unstashed, now we're about to stash again :/
-        Nothing -> mitSyncWith pretty0 (Just [Reset (unsafeSnapshotHead context.snapshot), Apply stash])
+        Nothing -> mitSyncWith verbosity pretty0 (Just [Reset (unsafeSnapshotHead context.snapshot), Apply stash])
         Just conflicts1 ->
-          output $
+          io . output $
             Pretty.paragraphs
               [ pretty0,
                 conflictsStanza "These files are in conflict:" conflicts1,
@@ -318,43 +339,42 @@ mitCommitMerge = do
                 Pretty.when (not (null context.state.undos)) canUndoStanza
               ]
 
-mitGc :: (Abort Pretty) => Mit Env ()
-mitGc = do
-  context <- getContext
+mitGc :: (Abort Pretty) => Verbosity -> Mit r ()
+mitGc verbosity = do
+  context <- getContext verbosity
   let _upstream = contextUpstream context
   pure ()
 
-mitMerge :: (Abort Pretty) => Text -> Mit Env ()
-mitMerge target = do
-  env <- getEnv
-  dieIfMergeInProgress
+mitMerge :: (Abort Pretty) => Verbosity -> Text -> Mit r ()
+mitMerge verbosity target = do
+  dieIfMergeInProgress verbosity
 
-  context <- getContext
+  context <- getContext verbosity
   let upstream = contextUpstream context
 
   if target == context.branch || target == upstream
     then -- If on branch `foo`, treat `mit merge foo` and `mit merge origin/foo` as `mit sync`
-      mitSyncWith Pretty.empty Nothing
+      mitSyncWith verbosity Pretty.empty Nothing
     else do
       -- When given 'mit merge foo', prefer running 'git merge origin/foo' over 'git merge foo'
       targetCommit <-
-        io (gitRemoteBranchHead env.verbosity "origin" target)
+        io (gitRemoteBranchHead verbosity "origin" target)
           & onNothingM do
-            io (gitBranchHead env.verbosity target)
+            io (gitBranchHead verbosity target)
               & onNothingM (abort (Pretty.line (Pretty.style Text.red "No such branch.")))
 
-      abortIfRemoteIsAhead context
+      abortIfRemoteIsAhead verbosity context
 
-      cleanWorkingTree context
+      io (cleanWorkingTree verbosity context)
 
-      merge <- performMerge ("⅄ " <> target <> " → " <> context.branch) targetCommit
+      merge <- io (performMerge verbosity ("⅄ " <> target <> " → " <> context.branch) targetCommit)
 
       stashConflicts <-
         case (mergeDidntFail merge, snapshotStash context.snapshot) of
-          (True, Just stash) -> io (gitApplyStash env.verbosity stash)
+          (True, Just stash) -> io (gitApplyStash verbosity stash)
           _ -> pure []
 
-      push <- performPush context.branch
+      push <- io (performPush verbosity context.branch)
 
       let state =
             MitState
@@ -369,19 +389,19 @@ mitMerge target = do
                     else undoToSnapshot context.snapshot
               }
 
-      writeMitState context.branch state
+      io (writeMitState verbosity context.branch state)
 
       remoteCommits <-
         case context.upstreamHead of
           Nothing -> pure Seq.empty
-          Just upstreamHead -> io (gitCommitsBetween env.verbosity (Just "HEAD") upstreamHead)
+          Just upstreamHead -> io (gitCommitsBetween verbosity (Just "HEAD") upstreamHead)
 
       conflictsOnSync <-
         if Seq.null remoteCommits
           then pure []
-          else io (gitConflictsWith env.verbosity (fromJust context.upstreamHead))
+          else io (gitConflictsWith verbosity (fromJust context.upstreamHead))
 
-      output $
+      io . output $
         Pretty.paragraphs
           [ Pretty.whenJust (mergeCommits merge) \commits ->
               mergeStanzas
@@ -427,10 +447,10 @@ mitMerge target = do
           ]
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
-mitSync :: (Abort Pretty) => Mit Env ()
-mitSync = do
-  dieIfMergeInProgress
-  mitSyncWith Pretty.empty Nothing
+mitSync :: (Abort Pretty) => Verbosity -> Mit r ()
+mitSync verbosity = do
+  dieIfMergeInProgress verbosity
+  mitSyncWith verbosity Pretty.empty Nothing
 
 -- | @mitSyncWith _ maybeUndos@
 --
@@ -452,26 +472,25 @@ mitSync = do
 --
 -- Instead, we want to undo to the point before running the 'mit merge' that caused the conflicts, which were later
 -- resolved by 'mit commit'.
-mitSyncWith :: (Abort Pretty) => Pretty -> Maybe [Undo] -> Mit Env ()
-mitSyncWith pretty0 maybeUndos = do
-  env <- getEnv
-  context <- getContext
+mitSyncWith :: (Abort Pretty) => Verbosity -> Pretty -> Maybe [Undo] -> Mit r ()
+mitSyncWith verbosity pretty0 maybeUndos = do
+  context <- getContext verbosity
   let upstream = contextUpstream context
 
-  cleanWorkingTree context
+  io (cleanWorkingTree verbosity context)
 
   merge <-
     case context.upstreamHead of
       -- Yay: no upstream branch is not different from an up-to-date local branch
       Nothing -> pure NothingToMerge
-      Just upstreamHead -> performMerge ("⅄ " <> context.branch) upstreamHead
+      Just upstreamHead -> io (performMerge verbosity ("⅄ " <> context.branch) upstreamHead)
 
   stashConflicts <-
     case (mergeDidntFail merge, snapshotStash context.snapshot) of
-      (True, Just stash) -> io (gitApplyStash env.verbosity stash)
+      (True, Just stash) -> io (gitApplyStash verbosity stash)
       _ -> pure []
 
-  push <- performPush context.branch
+  push <- io (performPush verbosity context.branch)
 
   let state =
         MitState
@@ -493,9 +512,9 @@ mitSyncWith pretty0 maybeUndos = do
                   Just undos' -> undos'
           }
 
-  writeMitState context.branch state
+  io (writeMitState verbosity context.branch state)
 
-  output $
+  io . output $
     Pretty.paragraphs
       [ pretty0,
         isSynchronizedStanza context.branch push,
@@ -535,23 +554,22 @@ mitSyncWith pretty0 maybeUndos = do
       ]
 
 -- FIXME output what we just undid
-mitUndo :: (Abort Pretty) => Mit Env ()
-mitUndo = do
-  env <- getEnv
-  context <- getContext
+mitUndo :: (Abort Pretty) => Verbosity -> Mit r ()
+mitUndo verbosity = do
+  context <- getContext verbosity
   undos <-
     List1.nonEmpty context.state.undos
       & onNothing (abort (Pretty.line (Pretty.style Text.red "Nothing to undo.")))
-  for_ undos applyUndo
-  head <- io (gitHead env.verbosity)
+  io (for_ undos (applyUndo verbosity))
+  head <- io (git verbosity ["rev-parse", "HEAD"])
   -- It's impossible for the snapshot to have a Nothing head (empty repo) if we got this far, since we had undos
-  when (head /= unsafeSnapshotHead context.snapshot) mitSync
+  when (head /= unsafeSnapshotHead context.snapshot) (mitSync verbosity)
 
 -- If origin/branch is ahead of branch, abort.
-abortIfRemoteIsAhead :: (Abort Pretty) => Context -> Mit Env ()
-abortIfRemoteIsAhead context = do
-  existRemoteCommits <- contextExistRemoteCommits context
-  existLocalCommits <- contextExistLocalCommits context
+abortIfRemoteIsAhead :: (Abort Pretty) => Verbosity -> Context -> Mit r ()
+abortIfRemoteIsAhead verbosity context = do
+  existRemoteCommits <- io (contextExistRemoteCommits verbosity context)
+  existLocalCommits <- io (contextExistLocalCommits verbosity context)
 
   when (existRemoteCommits && not existLocalCommits) do
     let upstream = contextUpstream context
@@ -562,24 +580,23 @@ abortIfRemoteIsAhead context = do
         ]
 
 -- Clean the working tree, if it's dirty (it's been stashed).
-cleanWorkingTree :: Context -> Mit Env ()
-cleanWorkingTree context = do
-  env <- getEnv
+cleanWorkingTree :: Verbosity -> Context -> IO ()
+cleanWorkingTree verbosity context = do
   whenJust (snapshotStash context.snapshot) \_stash ->
-    io (gitDeleteChanges env.verbosity)
+    git_ verbosity ["reset", "--hard", "--quiet", "HEAD"]
 
-output :: (MonadIO m) => Pretty -> m ()
+output :: Pretty -> IO ()
 output p =
-  liftIO (Pretty.put (emptyLine <> Pretty.indent 2 p <> emptyLine))
+  Pretty.put (emptyLine <> Pretty.indent 2 p <> emptyLine)
   where
     emptyLine = Pretty.line (Pretty.char ' ')
 
 -- FIXME this type kinda sux now, replace with GitMerge probably?
 data Sync = Sync
-  { commits :: Seq1 GitCommitInfo,
-    success :: Bool,
-    source :: Text,
-    target :: Text
+  { commits :: !(Seq1 GitCommitInfo),
+    success :: !Bool,
+    source :: !Text,
+    target :: !Text
   }
 
 canUndoStanza :: Pretty
@@ -651,43 +668,40 @@ syncStanza sync =
 -- Context
 
 data Context = Context
-  { branch :: Text,
-    snapshot :: Snapshot,
-    state :: MitState (),
-    upstreamHead :: Maybe Text
+  { branch :: !Text,
+    snapshot :: !Snapshot,
+    state :: !(MitState ()),
+    upstreamHead :: !(Maybe Text)
   }
 
-getContext :: (Abort Pretty) => Mit Env Context
-getContext = do
-  env <- getEnv
-  io (gitFetch_ env.verbosity "origin")
+getContext :: (Abort Pretty) => Verbosity -> Mit r Context
+getContext verbosity = do
+  io (gitFetch_ verbosity "origin")
   branch <-
-    io (git env.verbosity ["branch", "--show-current"]) & onNothingM do
+    io (git verbosity ["branch", "--show-current"]) & onNothingM do
       abort (Pretty.line (Pretty.style Text.red "You are not on a branch."))
-  upstreamHead <- io (gitRemoteBranchHead env.verbosity "origin" branch)
-  state <- readMitState branch
-  snapshot <- performSnapshot
+  upstreamHead <- io (gitRemoteBranchHead verbosity "origin" branch)
+  state <- io (readMitState verbosity branch)
+  snapshot <- io (performSnapshot verbosity)
   pure Context {branch, snapshot, state, upstreamHead}
 
-contextExistLocalCommits :: Context -> Mit Env Bool
-contextExistLocalCommits context = do
-  env <- getEnv
+contextExistLocalCommits :: Verbosity -> Context -> IO Bool
+contextExistLocalCommits verbosity context = do
   case context.upstreamHead of
     Nothing -> pure True
     Just upstreamHead ->
       case snapshotHead context.snapshot of
         Nothing -> pure False
-        Just head -> io (gitExistCommitsBetween env.verbosity upstreamHead head)
+        Just head -> gitExistCommitsBetween verbosity upstreamHead head
 
-contextExistRemoteCommits :: Context -> Mit Env Bool
-contextExistRemoteCommits context = do
-  env <- getEnv
+contextExistRemoteCommits :: Verbosity -> Context -> IO Bool
+contextExistRemoteCommits verbosity context = do
   case context.upstreamHead of
     Nothing -> pure False
     Just upstreamHead ->
       case snapshotHead context.snapshot of
         Nothing -> pure True
-        Just head -> io (gitExistCommitsBetween env.verbosity head upstreamHead)
+        Just head -> gitExistCommitsBetween verbosity head upstreamHead
 
 contextUpstream :: Context -> Text
 contextUpstream context =
@@ -756,21 +770,20 @@ mergeStanzas branch other = \case
       ]
 
 -- Perform a fast-forward-if-possible git merge.
-performMerge :: Text -> Text -> Mit Env GitMerge
-performMerge message commitish = do
-  env <- getEnv
-  head <- io (gitHead env.verbosity)
-  commits0 <- io (gitCommitsBetween env.verbosity (Just head) commitish)
+performMerge :: Verbosity -> Text -> Text -> IO GitMerge
+performMerge verbosity message commitish = do
+  head <- git verbosity ["rev-parse", "HEAD"]
+  commits0 <- gitCommitsBetween verbosity (Just head) commitish
   case Seq1.fromSeq commits0 of
     Nothing -> pure NothingToMerge
     Just commits -> do
-      io (git env.verbosity ["merge", "--ff", "--no-commit", commitish]) >>= \case
+      git verbosity ["merge", "--ff", "--no-commit", commitish] >>= \case
         False -> do
-          conflicts <- io (gitConflicts env.verbosity)
+          conflicts <- gitConflicts verbosity
           pure (TriedToMerge commits (Seq1.unsafeFromList conflicts))
         True -> do
           -- If this was a fast-forward, a merge would not be in progress at this point.
-          whenM (io (gitMergeInProgress env.verbosity)) (io (git_ env.verbosity ["commit", "--message", message]))
+          whenM (gitMergeInProgress verbosity) (git_ verbosity ["commit", "--message", message])
           pure (Merged commits)
 
 ------------------------------------------------------------------------------------------------------------------------
@@ -779,9 +792,9 @@ performMerge message commitish = do
 -- | The result of (considering a) git push.
 data GitPush
   = -- | We didn't push anthing.
-    DidntPush DidntPushReason
+    DidntPush !DidntPushReason
   | -- | We successfully pushed commits.
-    Pushed (Seq1 GitCommitInfo)
+    Pushed !(Seq1 GitCommitInfo)
 
 data DidntPushReason
   = -- | There was nothing to push.
@@ -807,25 +820,27 @@ pushPushed = \case
   Pushed _ -> True
 
 -- TODO get context
-performPush :: Text -> Mit Env GitPush
-performPush branch = do
-  env <- getEnv
-  fetched <- io (gitFetch env.verbosity "origin")
-  head <- io (gitHead env.verbosity)
-  upstreamHead <- io (gitRemoteBranchHead env.verbosity "origin" branch)
-  commits <- io (gitCommitsBetween env.verbosity upstreamHead head)
+performPush :: Verbosity -> Text -> IO GitPush
+performPush verbosity branch = do
+  fetched <- gitFetch verbosity "origin"
+  head <- git verbosity ["rev-parse", "HEAD"]
+  upstreamHead <- gitRemoteBranchHead verbosity "origin" branch
+  commits <- gitCommitsBetween verbosity upstreamHead head
 
   case Seq1.fromSeq commits of
     Nothing -> pure (DidntPush NothingToPush)
     Just commits1 -> do
-      existRemoteCommits <- maybe (pure False) (io . gitExistCommitsBetween env.verbosity head) upstreamHead
+      existRemoteCommits <-
+        case upstreamHead of
+          Nothing -> pure False
+          Just upstreamHead1 -> gitExistCommitsBetween verbosity head upstreamHead1
       if existRemoteCommits
         then pure (DidntPush (PushWouldBeRejected commits1))
         else
           if fetched
             then do
               let args = ["push", "--follow-tags", "--set-upstream", "origin", "--quiet", branch <> ":" <> branch]
-              io (git env.verbosity args) <&> \case
+              git verbosity args <&> \case
                 False -> DidntPush (TriedToPush commits1)
                 True -> Pushed commits1
             else pure (DidntPush (PushWouldntReachRemote commits1))

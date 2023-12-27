@@ -9,10 +9,9 @@ module Mit.Undo
 where
 
 import Data.Text qualified as Text
-import Mit.Env (Env (..))
-import Mit.Git
-import Mit.Monad
+import Mit.Git (git, gitUnstageChanges, git_)
 import Mit.Prelude
+import Mit.Verbosity (Verbosity)
 
 data Undo
   = Apply Text -- apply stash
@@ -43,19 +42,15 @@ parseUndos = do
           error (show text)
         ]
 
-applyUndo :: Undo -> Mit Env ()
-applyUndo = \case
+applyUndo :: Verbosity -> Undo -> IO ()
+applyUndo verbosity = \case
   Apply commit -> do
-    env <- getEnv
-    io (git_ env.verbosity ["stash", "apply", "--quiet", commit])
-    io (gitUnstageChanges env.verbosity)
+    git_ verbosity ["stash", "apply", "--quiet", commit]
+    gitUnstageChanges verbosity
   Reset commit -> do
-    env <- getEnv
-    io (git_ env.verbosity ["clean", "-d", "--force"])
-    io (git env.verbosity ["reset", "--hard", commit])
-  Revert commit -> do
-    env <- getEnv
-    io (git_ env.verbosity ["revert", commit])
+    git_ verbosity ["clean", "-d", "--force"]
+    git verbosity ["reset", "--hard", commit]
+  Revert commit -> git_ verbosity ["revert", commit]
 
 undosStash :: [Undo] -> Maybe Text
 undosStash undos =
