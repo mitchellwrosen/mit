@@ -1,6 +1,10 @@
 #!/bin/bash
 
-for script in ./mitscripts/input/*; do
+set -e
+
+cabal build mitscript
+
+for script in ./tests/input/*; do
   basename ${script}
-  ./bin/mitscript < ${script} > ${script/input/output}
+  $(cabal list-bin mitscript:exe:mitscript) < ${script} > ${script/input/output}
 done

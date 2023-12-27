@@ -1,0 +1,31 @@
+local/main> echo 'Hello, world!' > foo.txt # success
+local/main> mit commit --all --message 'initial commit' # success
+ 
+  ✓ main ≡ origin/main
+   
+    │ main → origin/main
+    │ cdc6973 initial commit - Bob Ross Jan 1 1970
+   
+  Run mit undo to undo this change.
+ 
+
+local/main> mit branch topic # success
+ 
+  Created topic in /home/mitchell/code/projects/mit/.mitscript/local/topic
+ 
+
+local/topic> echo 'Hey, world!' > foo.txt # success
+local/topic> mit merge main # success
+ 
+  ✓ topic ≡ origin/topic
+ 
+
+local/topic> git diff --no-ext-diff # success
+diff --git i/foo.txt w/foo.txt
+index af5626b..7253f95 100644
+--- i/foo.txt
++++ w/foo.txt
+@@ -1 +1 @@
+-Hello, world!
++Hey, world!
+

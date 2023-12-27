@@ -238,7 +238,10 @@ gitConflictsWith verbosity commit = do
 gitCreateStash :: Verbosity -> IO (Maybe Text)
 gitCreateStash verbosity = do
   git_ verbosity ["add", "--all"] -- it seems certain things (like renames), unless staged, cannot be stashed
-  stash <- git verbosity ["stash", "create"]
+  stash <-
+    git verbosity ["stash", "create"] <&> \case
+      Seq.Empty -> Nothing
+      stash Seq.:<| _ -> Just stash
   -- Even if the stash is Nothing, this still might be relevant/necessary.
   -- In particular, if there are only changes to submodule commits, we'll have staged them with 'git add' --all, then
   -- we'll have gotten no stash back from 'git stash create'.
@@ -246,9 +249,10 @@ gitCreateStash verbosity = do
   pure stash
 
 gitDefaultBranch :: Verbosity -> Text -> IO (Maybe Text)
-gitDefaultBranch verbosity remote = do
-  fmap (Text.drop (14 + Text.length remote))
-    <$> git verbosity ["symbolic-ref", "refs/remotes/" <> remote <> "/HEAD"]
+gitDefaultBranch verbosity remote =
+  git verbosity ["symbolic-ref", "refs/remotes/" <> remote <> "/HEAD"] <&> \case
+    Left _code -> Nothing
+    Right branch -> Just (Text.drop (14 + Text.length remote) branch)
 
 -- | Report whether there are any tracked, unstaged changes.
 gitDiff :: Verbosity -> IO DiffResult
@@ -261,7 +265,7 @@ gitExistCommitsBetween :: Verbosity -> Text -> Text -> IO Bool
 gitExistCommitsBetween verbosity commit1 commit2 =
   if commit1 == commit2
     then pure False
-    else isJust <$> git verbosity ["rev-list", "--max-count=1", commit1 <> ".." <> commit2]
+    else Seq.null <$> git verbosity ["rev-list", "--max-count=1", commit1 <> ".." <> commit2]
 
 -- | Do any untracked files exist?
 gitExistUntrackedFiles :: Verbosity -> IO Bool

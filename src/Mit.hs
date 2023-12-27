@@ -163,17 +163,15 @@ main2 verbosity command = do
     MitCommand'Undo -> mitUndo verbosity
 
 data MitCommand
-  = MitCommand'Branch Text
-  | MitCommand'Commit Bool {- --all? -} (Maybe Text {- message -})
+  = MitCommand'Branch !Text
+  | MitCommand'Commit
+      !Bool -- all?
+      !(Maybe Text) -- message
   | MitCommand'Gc
-  | MitCommand'Merge Text
+  | MitCommand'Merge !Text
   | MitCommand'Status
   | MitCommand'Sync
   | MitCommand'Undo
-
-dieIfMergeInProgress :: (Abort Output) => Verbosity -> IO ()
-dieIfMergeInProgress verbosity =
-  whenM (gitMergeInProgress verbosity) (abort Output.MergeInProgress)
 
 mitCommit :: (Abort Output) => Verbosity -> Bool -> Maybe Text -> IO ()
 mitCommit verbosity allFlag maybeMessage = do
@@ -346,7 +344,7 @@ mitGc verbosity = do
 
 mitMerge :: (Abort Output) => Verbosity -> Text -> IO ()
 mitMerge verbosity target = do
-  dieIfMergeInProgress verbosity
+  whenM (gitMergeInProgress verbosity) (abort Output.MergeInProgress)
 
   context <- getContext verbosity
   let upstream = contextUpstream context
@@ -448,7 +446,7 @@ mitMerge verbosity target = do
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
 mitSync :: (Abort Output) => Verbosity -> IO ()
 mitSync verbosity = do
-  dieIfMergeInProgress verbosity
+  whenM (gitMergeInProgress verbosity) (abort Output.MergeInProgress)
   mitSyncWith verbosity Pretty.empty Nothing
 
 -- | @mitSyncWith _ maybeUndos@
@@ -671,7 +669,10 @@ data Context = Context
 getContext :: (Abort Output) => Verbosity -> IO Context
 getContext verbosity = do
   gitFetch_ verbosity "origin"
-  branch <- git verbosity ["branch", "--show-current"] & onNothingM (abort Output.NotOnBranch)
+  branch <-
+    git verbosity ["branch", "--show-current"] >>= \case
+      Seq.Empty -> abort Output.NotOnBranch
+      branch Seq.:<| _ -> pure branch
   upstreamHead <- gitRemoteBranchHead verbosity "origin" branch
   state <- readMitState verbosity branch
   snapshot <- performSnapshot verbosity
