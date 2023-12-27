@@ -16,19 +16,18 @@ import Mit.Label (goto, label)
 import Mit.Logger (Logger)
 import Mit.Prelude
 import Mit.ProcessInfo (ProcessInfo)
-import Mit.Undo (Undo, parseUndos, showUndos)
+import Mit.Undo (Undo (..), parseUndo, renderUndo)
 import System.Directory (removeFile)
 
 data MitState a = MitState
-  { head :: a,
-    merging :: Maybe Text,
-    undos :: [Undo]
+  { head :: !a,
+    merging :: !(Maybe Text),
+    undo :: !(Maybe Undo)
   }
-  deriving stock (Eq, Show)
 
 emptyMitState :: MitState ()
 emptyMitState =
-  MitState {head = (), merging = Nothing, undos = []}
+  MitState {head = (), merging = Nothing, undo = Nothing}
 
 deleteMitState :: Logger ProcessInfo -> Text -> IO ()
 deleteMitState logger branch64 = do
@@ -44,8 +43,12 @@ parseMitState contents = do
       ["merging"] -> Just Nothing
       ["merging", branch] -> Just (Just branch)
       _ -> Nothing
-  undos <- Text.stripPrefix "undos " undosLine >>= parseUndos
-  pure MitState {head, merging, undos}
+  undo <- do
+    undosLine1 <- Text.stripPrefix "undo " undosLine
+    if Text.null undosLine1
+      then Just Nothing
+      else Just <$> parseUndo undosLine1
+  pure MitState {head, merging, undo}
 
 readMitState :: Logger ProcessInfo -> Text -> IO (MitState ())
 readMitState logger branch = do
@@ -81,7 +84,7 @@ writeMitState logger branch state = do
         Text.unlines
           [ "head " <> head,
             "merging " <> fromMaybe Text.empty state.merging,
-            "undos " <> showUndos state.undos
+            "undo " <> maybe Text.empty renderUndo state.undo
           ]
   mitfile <- getMitfile logger (Text.encodeBase64 branch)
   Text.writeFile mitfile contents `catch` \(_ :: IOException) -> pure ()
@@ -96,7 +99,7 @@ writeMitState2 logger branch state = do
       Text.unlines
         [ "head " <> state.head,
           "merging " <> fromMaybe Text.empty state.merging,
-          "undos " <> showUndos state.undos
+          "undo " <> maybe Text.empty renderUndo state.undo
         ]
 
 getMitfile :: Logger ProcessInfo -> Text -> IO FilePath

@@ -1,58 +1,76 @@
--- TODO replace with Git.Command
 module Mit.Undo
   ( Undo (..),
-    showUndos,
-    parseUndos,
+    concatUndos,
+    undoStash,
+    renderUndo,
+    parseUndo,
     applyUndo,
-    undosStash,
   )
 where
 
 import Data.Text qualified as Text
-import Mit.Git (git, gitUnstageChanges, git_)
+import Mit.Git (gitUnstageChanges, git_)
 import Mit.Logger (Logger)
 import Mit.Prelude
 import Mit.ProcessInfo (ProcessInfo)
 
 data Undo
-  = Apply !Text -- apply stash
-  | Reset !Text -- reset to commit
-  | Revert !Text -- revert commit
-  deriving stock (Eq, Show)
+  = Apply !Text !(Maybe Undo) -- apply stash
+  | Reset !Text !(Maybe Undo) -- reset to commit
+  | Revert !Text !(Maybe Undo) -- revert commit
 
-showUndos :: [Undo] -> Text
-showUndos =
-  Text.intercalate " " . map showUndo
+concatUndos :: Undo -> Undo -> Undo
+concatUndos x0 y =
+  case x0 of
+    Apply commit x -> Apply commit (f x)
+    Reset commit x -> Reset commit (f x)
+    Revert commit x -> Revert commit (f x)
   where
-    showUndo :: Undo -> Text
-    showUndo = \case
-      Apply commit -> "apply/" <> commit
-      Reset commit -> "reset/" <> commit
-      Revert commit -> "revert/" <> commit
+    f = Just . maybe y (`concatUndos` y)
 
-parseUndos :: Text -> Maybe [Undo]
-parseUndos = do
-  Text.words >>> traverse parseUndo
+undoStash :: Undo -> Maybe Text
+undoStash = \case
+  Apply commit _ -> Just commit
+  Reset _ maybeNext -> maybeNext >>= undoStash
+  Revert _ maybeNext -> maybeNext >>= undoStash
+
+renderUndo :: Undo -> Text
+renderUndo =
+  Text.unwords . f
   where
-    parseUndo :: Text -> Maybe Undo
-    parseUndo text =
-      asum
-        [ Apply <$> Text.stripPrefix "apply/" text,
-          Reset <$> Text.stripPrefix "reset/" text,
-          Revert <$> Text.stripPrefix "revert/" text,
-          error (show text)
-        ]
+    f :: Undo -> [Text]
+    f = \case
+      Apply commit next -> ("apply/" <> commit) : maybe [] f next
+      Reset commit next -> ("reset/" <> commit) : maybe [] f next
+      Revert commit next -> ("revert/" <> commit) : maybe [] f next
+
+parseUndo :: Text -> Maybe Undo
+parseUndo =
+  join . f . Text.words
+  where
+    f :: [Text] -> Maybe (Maybe Undo)
+    f = \case
+      [] -> Just Nothing
+      undo : undos
+        | Just commit <- Text.stripPrefix "apply/" undo -> Just . Apply commit <$> f undos
+        | Just commit <- Text.stripPrefix "reset/" undo -> Just . Reset commit <$> f undos
+        | Just commit <- Text.stripPrefix "revert/" undo -> Just . Revert commit <$> f undos
+        | otherwise -> Nothing
 
 applyUndo :: Logger ProcessInfo -> Undo -> IO ()
-applyUndo logger = \case
-  Apply commit -> do
-    git_ logger ["stash", "apply", "--quiet", commit]
-    gitUnstageChanges logger
-  Reset commit -> do
-    git_ logger ["clean", "-d", "--force"]
-    git logger ["reset", "--hard", commit]
-  Revert commit -> git_ logger ["revert", commit]
-
-undosStash :: [Undo] -> Maybe Text
-undosStash undos =
-  listToMaybe [commit | Apply commit <- undos]
+applyUndo logger =
+  go
+  where
+    go :: Undo -> IO ()
+    go = \case
+      Apply commit next -> do
+        git_ logger ["stash", "apply", "--quiet", commit]
+        gitUnstageChanges logger
+        whenJust next go
+      Reset commit next -> do
+        git_ logger ["clean", "-d", "--force"]
+        git_ logger ["reset", "--hard", commit]
+        whenJust next go
+      Revert commit next -> do
+        git_ logger ["revert", commit]
+        whenJust next go

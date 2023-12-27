@@ -11,7 +11,7 @@ import Mit.Git (gitCreateStash, gitMaybeHead)
 import Mit.Logger (Logger)
 import Mit.Prelude
 import Mit.ProcessInfo (ProcessInfo)
-import Mit.Undo (Undo (Apply, Reset))
+import Mit.Undo (Undo (..))
 
 -- | The snapshot of a git repository.
 data Snapshot
@@ -31,11 +31,11 @@ snapshotStash = \case
   Clean _head -> Nothing
   Dirty _head stash -> Just stash
 
-undoToSnapshot :: Snapshot -> [Undo]
+undoToSnapshot :: Snapshot -> Maybe Undo
 undoToSnapshot = \case
-  Empty -> []
-  Clean head -> [Reset head]
-  Dirty head stash -> [Reset head, Apply stash]
+  Empty -> Nothing
+  Clean head -> Just (Reset head Nothing)
+  Dirty head stash -> Just (Reset head (Just (Apply stash Nothing)))
 
 performSnapshot :: Logger ProcessInfo -> IO Snapshot
 performSnapshot logger =

@@ -51,7 +51,7 @@ import Mit.Push (DidntPushReason (NothingToPush, PushWouldBeRejected, PushWouldn
 import Mit.Seq1 qualified as Seq1
 import Mit.Snapshot (Snapshot, performSnapshot, snapshotHead, snapshotStash, undoToSnapshot)
 import Mit.State (MitState (..), readMitState, writeMitState, writeMitState2)
-import Mit.Undo (Undo (..), undosStash)
+import Mit.Undo (Undo (..), concatUndos, undoStash)
 import Mit.Verbosity (Verbosity (..), intToVerbosity)
 import Options.Applicative qualified as Opt
 import Options.Applicative.Types qualified as Opt (Backtracking (Backtrack))
@@ -246,32 +246,30 @@ mitCommitNotMerge logger allFlag maybeMessage = do
       (False, Just message) -> git2 logger ["commit", "--patch", "--message", message, "--quiet"]
 
   pushResult <- performPush logger context.branch
-  undoPush <-
+
+  maybeUndoPush <-
     case pushResult of
       Pushed commits ->
         case Seq1.toList commits of
           [commit] ->
             gitIsMergeCommit logger commit.hash <&> \case
-              False -> [Revert commit.hash]
-              True -> []
-          _ -> pure []
-      DidntPush _reason -> pure []
+              False -> Just (Revert commit.hash Nothing)
+              True -> Nothing
+          _ -> pure Nothing
+      DidntPush _reason -> pure Nothing
 
   let state =
         MitState
           { head = (),
             merging = Nothing,
-            undos =
-              case (pushResultPushed pushResult, committed) of
-                (False, False) -> context.state.undos
-                (False, True) -> undoToSnapshot context.snapshot
-                (True, False) -> undoPush
-                (True, True) ->
-                  if null undoPush
-                    then []
-                    else case snapshotStash context.snapshot of
-                      Nothing -> undoPush
-                      Just stash -> undoPush ++ [Apply stash]
+            undo =
+              case (pushResultPushed pushResult, committed, maybeUndoPush, snapshotStash context.snapshot) of
+                (False, False, _, _) -> context.state.undo
+                (False, True, _, _) -> undoToSnapshot context.snapshot
+                (True, False, _, _) -> maybeUndoPush
+                (True, True, Nothing, _) -> Nothing
+                (True, True, Just _, Nothing) -> maybeUndoPush
+                (True, True, Just undoPush, Just stash) -> Just (concatUndos undoPush (Apply stash Nothing))
           }
 
   writeMitState logger context.branch state
@@ -323,7 +321,7 @@ mitCommitNotMerge logger allFlag maybeMessage = do
         -- In this case, the underlying state hasn't changed, so 'mit undo' will still work as if the 'mit commit' was
         -- never run, we merely don't want to *say* "run 'mit undo' to undo" as feedback, because that sounds as if it
         -- would undo the last command run, namely the 'mit commit' that was aborted.
-        Pretty.when (not (null state.undos) && committed) canUndoStanza
+        Pretty.when (isJust state.undo && committed) canUndoStanza
       ]
 
 mitCommitMerge :: (Abort Output) => Logger ProcessInfo -> IO ()
@@ -365,13 +363,13 @@ mitCommitMerge logger = do
   --     b. We cannot cleanly unstash it, so don't sync, because that may *further* conflict, and we don't want nasty
   --        double conflict markers
 
-  case undosStash state.undos of
-    Nothing -> mitSyncWith logger pretty0 (Just [Reset head0])
+  case state.undo >>= undoStash of
+    Nothing -> mitSyncWith logger pretty0 (Just (Reset head0 Nothing))
     Just stash -> do
       conflicts <- gitApplyStash logger stash
       case List1.nonEmpty conflicts of
         -- FIXME we just unstashed, now we're about to stash again :/
-        Nothing -> mitSyncWith logger pretty0 (Just [Reset head0, Apply stash])
+        Nothing -> mitSyncWith logger pretty0 (Just (Reset head0 (Just (Apply stash Nothing))))
         Just conflicts1 ->
           output $
             Pretty.paragraphs
@@ -385,7 +383,7 @@ mitCommitMerge logger = do
                     <> " with "
                     <> Pretty.branch ("origin/" <> branch)
                     <> ".",
-                Pretty.when (not (null state.undos)) canUndoStanza
+                Pretty.when (isJust state.undo) canUndoStanza
               ]
 
 mitGc :: (Abort Output) => Logger ProcessInfo -> IO ()
@@ -431,9 +429,9 @@ mitMerge logger target = do
                   case mergeResultConflicts mergeResult of
                     Nothing -> Nothing
                     Just _conflicts -> Just target,
-                undos =
+                undo =
                   if pushResultPushed pushResult || isNothing (mergeResultConflicts mergeResult)
-                    then []
+                    then Nothing
                     else undoToSnapshot context.snapshot
               }
 
@@ -491,7 +489,7 @@ mitMerge logger target = do
                       ]
               DidntPush (TriedToPush _) -> runSyncStanza "Run" context.branch upstream
               Pushed _ -> Pretty.empty,
-            Pretty.when (not (null state.undos)) canUndoStanza
+            Pretty.when (isJust state.undo) canUndoStanza
           ]
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
@@ -520,8 +518,8 @@ mitSync logger = do
 --
 -- Instead, we want to undo to the point before running the 'mit merge' that caused the conflicts, which were later
 -- resolved by 'mit commit'.
-mitSyncWith :: (Abort Output) => Logger ProcessInfo -> Pretty -> Maybe [Undo] -> IO ()
-mitSyncWith logger pretty0 maybeUndos = do
+mitSyncWith :: (Abort Output) => Logger ProcessInfo -> Pretty -> Maybe Undo -> IO ()
+mitSyncWith logger pretty0 maybeUndo = do
   context <- getContext logger
   let upstream = contextUpstream context
 
@@ -547,17 +545,15 @@ mitSyncWith logger pretty0 maybeUndos = do
               case mergeResultConflicts mergeResult of
                 Nothing -> Nothing
                 Just _conflicts -> Just context.branch,
-            undos =
-              if pushResultPushed pushResult
-                then []
-                else case maybeUndos of
-                  Nothing ->
-                    case mergeResultConflicts mergeResult of
-                      Nothing -> []
-                      Just _conflicts -> undoToSnapshot context.snapshot
+            undo =
+              case (pushResultPushed pushResult, maybeUndo, mergeResultConflicts mergeResult) of
+                (True, _, _) -> Nothing
+                (False, Nothing, Nothing) -> Nothing
+                (False, Nothing, Just _conflicts) -> undoToSnapshot context.snapshot
+                (False, Just undo, _) ->
                   -- FIXME hm, could consider appending those undos instead, even if they obviate the recent stash/merge
                   -- undos
-                  Just undos' -> undos'
+                  Just undo
           }
 
   writeMitState logger context.branch state
@@ -601,7 +597,7 @@ mitSyncWith logger pretty0 maybeUndos = do
                 <> "."
           DidntPush (TriedToPush _) -> runSyncStanza "Run" context.branch upstream
           Pushed _ -> Pretty.empty,
-        Pretty.when (not (null state.undos)) canUndoStanza
+        Pretty.when (isJust state.undo) canUndoStanza
       ]
 
 -- If origin/branch is ahead of branch, abort.
