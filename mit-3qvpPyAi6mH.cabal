@@ -97,6 +97,7 @@ library
     Mit.Directory
     Mit.Git
     Mit.Label
+    Mit.Output
     Mit.Prelude
     Mit.Pretty
     Mit.Process

@@ -38,6 +38,8 @@ import Mit.Git
     prettyGitConflict,
   )
 import Mit.Label
+import Mit.Output (Output)
+import Mit.Output qualified as Output
 import Mit.Prelude
 import Mit.Pretty (Pretty)
 import Mit.Pretty qualified as Pretty
@@ -73,7 +75,7 @@ main :: IO ()
 main = do
   (verbosity, command) <- Opt.customExecParser parserPrefs parserInfo
   main1 verbosity command & onLeftM \err -> do
-    output err
+    output (renderOutput err)
     exitFailure
   where
     parserPrefs :: Opt.ParserPrefs
@@ -138,24 +140,21 @@ main = do
                 (Opt.progDesc "Undo the last `mit` command (if possible).")
           ]
 
-main1 :: Verbosity -> MitCommand -> IO (Either Pretty ())
+main1 :: Verbosity -> MitCommand -> IO (Either Output ())
 main1 verbosity command =
   label \return ->
     stick (Left >$< return) (Right <$> main2 verbosity command)
 
-main2 :: (Abort Pretty) => Verbosity -> MitCommand -> IO ()
+main2 :: (Abort Output) => Verbosity -> MitCommand -> IO ()
 main2 verbosity command = do
   version <- gitVersion verbosity
 
-  when (version < GitVersion 2 30 1) do
-    -- 'git stash create' broken before 2.30.1
-    abort (Pretty.line (Pretty.style Text.red "Minimum required git version: 2.30.1"))
-
-  whenNotM (gitRevParseAbsoluteGitDir verbosity) do
-    abort (Pretty.line (Pretty.style Text.red "The current directory doesn't contain a git repository."))
+  -- 'git stash create' broken before 2.30.1
+  when (version < GitVersion 2 30 1) (abort Output.GitTooOld)
+  whenNotM (gitRevParseAbsoluteGitDir verbosity) (abort Output.NoGitDir)
 
   case command of
-    MitCommand'Branch branch -> mitBranch output verbosity branch
+    MitCommand'Branch branch -> mitBranch (output . renderOutput) verbosity branch
     MitCommand'Commit allFlag maybeMessage -> mitCommit verbosity allFlag maybeMessage
     MitCommand'Gc -> mitGc verbosity
     MitCommand'Merge branch -> mitMerge verbosity branch
@@ -172,23 +171,22 @@ data MitCommand
   | MitCommand'Sync
   | MitCommand'Undo
 
-dieIfMergeInProgress :: (Abort Pretty) => Verbosity -> IO ()
-dieIfMergeInProgress verbosity = do
-  whenM (gitMergeInProgress verbosity) do
-    abort (Pretty.line (Pretty.style Text.red (Pretty.style Text.bold "git merge" <> " in progress.")))
+dieIfMergeInProgress :: (Abort Output) => Verbosity -> IO ()
+dieIfMergeInProgress verbosity =
+  whenM (gitMergeInProgress verbosity) (abort Output.MergeInProgress)
 
-mitCommit :: (Abort Pretty) => Verbosity -> Bool -> Maybe Text -> IO ()
+mitCommit :: (Abort Output) => Verbosity -> Bool -> Maybe Text -> IO ()
 mitCommit verbosity allFlag maybeMessage = do
   gitMergeInProgress verbosity >>= \case
     False -> mitCommitNotMerge verbosity allFlag maybeMessage
     True -> mitCommitMerge verbosity
 
-mitCommitNotMerge :: (Abort Pretty) => Verbosity -> Bool -> Maybe Text -> IO ()
+mitCommitNotMerge :: (Abort Output) => Verbosity -> Bool -> Maybe Text -> IO ()
 mitCommitNotMerge verbosity allFlag maybeMessage = do
   gitUnstageChanges verbosity
   gitDiff verbosity >>= \case
     Differences -> pure ()
-    NoDifferences -> abort (Pretty.line (Pretty.style Text.red "There's nothing to commit."))
+    NoDifferences -> abort Output.NothingToCommit
 
   context <- getContext verbosity
   let upstream = contextUpstream context
@@ -287,7 +285,7 @@ mitCommitNotMerge verbosity allFlag maybeMessage = do
         Pretty.when (not (null state.undos) && committed) canUndoStanza
       ]
 
-mitCommitMerge :: (Abort Pretty) => Verbosity -> IO ()
+mitCommitMerge :: (Abort Output) => Verbosity -> IO ()
 mitCommitMerge verbosity = do
   context <- getContext verbosity
   let upstream = contextUpstream context
@@ -340,13 +338,13 @@ mitCommitMerge verbosity = do
                 Pretty.when (not (null context.state.undos)) canUndoStanza
               ]
 
-mitGc :: (Abort Pretty) => Verbosity -> IO ()
+mitGc :: (Abort Output) => Verbosity -> IO ()
 mitGc verbosity = do
   context <- getContext verbosity
   let _upstream = contextUpstream context
   pure ()
 
-mitMerge :: (Abort Pretty) => Verbosity -> Text -> IO ()
+mitMerge :: (Abort Output) => Verbosity -> Text -> IO ()
 mitMerge verbosity target = do
   dieIfMergeInProgress verbosity
 
@@ -362,7 +360,7 @@ mitMerge verbosity target = do
         gitRemoteBranchHead verbosity "origin" target
           & onNothingM do
             gitBranchHead verbosity target
-              & onNothingM (abort (Pretty.line (Pretty.style Text.red "No such branch.")))
+              & onNothingM (abort Output.NoSuchBranch)
 
       abortIfRemoteIsAhead verbosity context
 
@@ -448,7 +446,7 @@ mitMerge verbosity target = do
           ]
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
-mitSync :: (Abort Pretty) => Verbosity -> IO ()
+mitSync :: (Abort Output) => Verbosity -> IO ()
 mitSync verbosity = do
   dieIfMergeInProgress verbosity
   mitSyncWith verbosity Pretty.empty Nothing
@@ -473,7 +471,7 @@ mitSync verbosity = do
 --
 -- Instead, we want to undo to the point before running the 'mit merge' that caused the conflicts, which were later
 -- resolved by 'mit commit'.
-mitSyncWith :: (Abort Pretty) => Verbosity -> Pretty -> Maybe [Undo] -> IO ()
+mitSyncWith :: (Abort Output) => Verbosity -> Pretty -> Maybe [Undo] -> IO ()
 mitSyncWith verbosity pretty0 maybeUndos = do
   context <- getContext verbosity
   let upstream = contextUpstream context
@@ -555,30 +553,25 @@ mitSyncWith verbosity pretty0 maybeUndos = do
       ]
 
 -- FIXME output what we just undid
-mitUndo :: (Abort Pretty) => Verbosity -> IO ()
+mitUndo :: (Abort Output) => Verbosity -> IO ()
 mitUndo verbosity = do
   context <- getContext verbosity
   undos <-
     List1.nonEmpty context.state.undos
-      & onNothing (abort (Pretty.line (Pretty.style Text.red "Nothing to undo.")))
+      & onNothing (abort Output.NothingToUndo)
   for_ undos (applyUndo verbosity)
   head <- git verbosity ["rev-parse", "HEAD"]
   -- It's impossible for the snapshot to have a Nothing head (empty repo) if we got this far, since we had undos
   when (head /= unsafeSnapshotHead context.snapshot) (mitSync verbosity)
 
 -- If origin/branch is ahead of branch, abort.
-abortIfRemoteIsAhead :: (Abort Pretty) => Verbosity -> Context -> IO ()
+abortIfRemoteIsAhead :: (Abort Output) => Verbosity -> Context -> IO ()
 abortIfRemoteIsAhead verbosity context = do
   existRemoteCommits <- contextExistRemoteCommits verbosity context
   existLocalCommits <- contextExistLocalCommits verbosity context
 
   when (existRemoteCommits && not existLocalCommits) do
-    let upstream = contextUpstream context
-    abort $
-      Pretty.paragraphs
-        [ notSynchronizedStanza context.branch upstream ".",
-          runSyncStanza "Run" context.branch upstream
-        ]
+    abort (Output.RemoteIsAhead context.branch (contextUpstream context))
 
 -- Clean the working tree, if it's dirty (it's been stashed).
 cleanWorkingTree :: Verbosity -> Context -> IO ()
@@ -675,12 +668,10 @@ data Context = Context
     upstreamHead :: !(Maybe Text)
   }
 
-getContext :: (Abort Pretty) => Verbosity -> IO Context
+getContext :: (Abort Output) => Verbosity -> IO Context
 getContext verbosity = do
   gitFetch_ verbosity "origin"
-  branch <-
-    git verbosity ["branch", "--show-current"] & onNothingM do
-      abort (Pretty.line (Pretty.style Text.red "You are not on a branch."))
+  branch <- git verbosity ["branch", "--show-current"] & onNothingM (abort Output.NotOnBranch)
   upstreamHead <- gitRemoteBranchHead verbosity "origin" branch
   state <- readMitState verbosity branch
   snapshot <- performSnapshot verbosity
@@ -845,3 +836,41 @@ performPush verbosity branch = do
                 False -> DidntPush (TriedToPush commits1)
                 True -> Pushed commits1
             else pure (DidntPush (PushWouldntReachRemote commits1))
+
+------------------------------------------------------------------------------------------------------------------------
+-- Rendering output to the terminal
+
+renderOutput :: Output -> Pretty
+renderOutput = \case
+  Output.BranchAlreadyCheckedOut branch directory ->
+    Pretty.line $
+      Pretty.style Text.red $
+        Pretty.branch branch
+          <> " is already checked out in "
+          <> Pretty.directory directory
+          <> "."
+  Output.CheckedOutBranch branch directory ->
+    Pretty.line ("Checked out " <> Pretty.branch branch <> " in " <> Pretty.directory directory)
+  Output.CreatedBranch branch directory maybeUpstream ->
+    Pretty.line $
+      "Created "
+        <> Pretty.branch branch
+        <> " in "
+        <> Pretty.directory directory
+        <> case maybeUpstream of
+          Nothing -> ""
+          Just upstream -> " tracking " <> Pretty.branch upstream
+  Output.DirectoryAlreadyExists directory ->
+    Pretty.line (Pretty.style Text.red ("Directory " <> Pretty.directory directory <> " already exists."))
+  Output.GitTooOld -> Pretty.line (Pretty.style Text.red "Minimum required git version: 2.30.1")
+  Output.MergeInProgress -> Pretty.line (Pretty.style Text.red (Pretty.style Text.bold "git merge" <> " in progress."))
+  Output.NoGitDir -> Pretty.line (Pretty.style Text.red "The current directory doesn't contain a git repository.")
+  Output.NoSuchBranch -> Pretty.line (Pretty.style Text.red "No such branch.")
+  Output.NotOnBranch -> Pretty.line (Pretty.style Text.red "You are not on a branch.")
+  Output.NothingToCommit -> Pretty.line (Pretty.style Text.red "There's nothing to commit.")
+  Output.NothingToUndo -> Pretty.line (Pretty.style Text.red "Nothing to undo.")
+  Output.RemoteIsAhead branch upstream ->
+    Pretty.paragraphs
+      [ notSynchronizedStanza branch upstream ".",
+        runSyncStanza "Run" branch upstream
+      ]
