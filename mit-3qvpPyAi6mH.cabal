@@ -97,7 +97,6 @@ library
     Mit.Directory
     Mit.Git
     Mit.Label
-    Mit.Monad
     Mit.Prelude
     Mit.Pretty
     Mit.Process
