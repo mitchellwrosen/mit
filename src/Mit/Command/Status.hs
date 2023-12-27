@@ -4,12 +4,13 @@ module Mit.Command.Status
 where
 
 import Mit.Git (git, gitUnstageChanges)
+import Mit.Logger (Logger)
 import Mit.Prelude
 import Mit.Pretty qualified as Pretty
-import Mit.Verbosity (Verbosity)
+import Mit.ProcessInfo (ProcessInfo)
 
-mitStatus :: Verbosity -> IO ()
-mitStatus verbosity = do
-  gitUnstageChanges verbosity
-  lines <- git verbosity ["status", "--porcelain=v1"]
+mitStatus :: Logger ProcessInfo -> IO ()
+mitStatus logger = do
+  gitUnstageChanges logger
+  lines <- git logger ["status", "--porcelain=v1"]
   Pretty.put (Pretty.lines (map Pretty.text lines))

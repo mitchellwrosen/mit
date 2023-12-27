@@ -4,6 +4,7 @@ module Mit.State
     deleteMitState,
     readMitState,
     writeMitState,
+    writeMitState2,
   )
 where
 
@@ -12,9 +13,10 @@ import Data.Text.Encoding.Base64 qualified as Text
 import Data.Text.IO qualified as Text
 import Mit.Git (git, gitMaybeHead, gitRevParseAbsoluteGitDir)
 import Mit.Label (goto, label)
+import Mit.Logger (Logger)
 import Mit.Prelude
+import Mit.ProcessInfo (ProcessInfo)
 import Mit.Undo (Undo, parseUndos, showUndos)
-import Mit.Verbosity (Verbosity)
 import System.Directory (removeFile)
 
 data MitState a = MitState
@@ -28,9 +30,9 @@ emptyMitState :: MitState ()
 emptyMitState =
   MitState {head = (), merging = Nothing, undos = []}
 
-deleteMitState :: Verbosity -> Text -> IO ()
-deleteMitState verbosity branch64 = do
-  mitfile <- getMitfile verbosity branch64
+deleteMitState :: Logger ProcessInfo -> Text -> IO ()
+deleteMitState logger branch64 = do
+  mitfile <- getMitfile logger branch64
   removeFile mitfile `catch` \(_ :: IOException) -> pure ()
 
 parseMitState :: Text -> Maybe (MitState Text)
@@ -45,14 +47,14 @@ parseMitState contents = do
   undos <- Text.stripPrefix "undos " undosLine >>= parseUndos
   pure MitState {head, merging, undos}
 
-readMitState :: Verbosity -> Text -> IO (MitState ())
-readMitState verbosity branch = do
+readMitState :: Logger ProcessInfo -> Text -> IO (MitState ())
+readMitState logger branch = do
   label \return -> do
     head <-
-      gitMaybeHead verbosity >>= \case
+      gitMaybeHead logger >>= \case
         Nothing -> goto return emptyMitState
         Just head -> pure head
-    mitfile <- getMitfile verbosity branch64
+    mitfile <- getMitfile logger branch64
     contents <-
       try (Text.readFile mitfile) >>= \case
         Left (_ :: IOException) -> goto return emptyMitState
@@ -64,16 +66,16 @@ readMitState verbosity branch = do
     state <-
       case maybeState of
         Nothing -> do
-          deleteMitState verbosity branch64
+          deleteMitState logger branch64
           goto return emptyMitState
         Just state -> pure state
     pure (state {head = ()} :: MitState ())
   where
     branch64 = Text.encodeBase64 branch
 
-writeMitState :: Verbosity -> Text -> MitState () -> IO ()
-writeMitState verbosity branch state = do
-  head <- git verbosity ["rev-parse", "HEAD"]
+writeMitState :: Logger ProcessInfo -> Text -> MitState () -> IO ()
+writeMitState logger branch state = do
+  head <- git logger ["rev-parse", "HEAD"]
   let contents :: Text
       contents =
         Text.unlines
@@ -81,10 +83,23 @@ writeMitState verbosity branch state = do
             "merging " <> fromMaybe Text.empty state.merging,
             "undos " <> showUndos state.undos
           ]
-  mitfile <- getMitfile verbosity (Text.encodeBase64 branch)
+  mitfile <- getMitfile logger (Text.encodeBase64 branch)
   Text.writeFile mitfile contents `catch` \(_ :: IOException) -> pure ()
 
-getMitfile :: Verbosity -> Text -> IO FilePath
-getMitfile verbosity branch64 = do
-  gitdir <- gitRevParseAbsoluteGitDir verbosity
+writeMitState2 :: Logger ProcessInfo -> Text -> MitState Text -> IO ()
+writeMitState2 logger branch state = do
+  mitfile <- getMitfile logger (Text.encodeBase64 branch)
+  Text.writeFile mitfile contents `catch` \(_ :: IOException) -> pure ()
+  where
+    contents :: Text
+    contents =
+      Text.unlines
+        [ "head " <> state.head,
+          "merging " <> fromMaybe Text.empty state.merging,
+          "undos " <> showUndos state.undos
+        ]
+
+getMitfile :: Logger ProcessInfo -> Text -> IO FilePath
+getMitfile logger branch64 = do
+  gitdir <- gitRevParseAbsoluteGitDir logger
   pure (Text.unpack (gitdir <> "/.mit-" <> branch64))

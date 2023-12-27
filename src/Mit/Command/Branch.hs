@@ -17,44 +17,45 @@ import Mit.Label (Abort, abort, goto, label)
 import Mit.Output (Output)
 import Mit.Output qualified as Output
 import Mit.Prelude
-import Mit.Verbosity (Verbosity)
+import Mit.Logger (Logger)
+import Mit.ProcessInfo (ProcessInfo)
 
-mitBranch :: (Abort Output) => (Output -> IO ()) -> Verbosity -> Text -> IO ()
-mitBranch output verbosity branch = do
+mitBranch :: (Abort Output) => (Output -> IO ()) -> Logger ProcessInfo -> Text -> IO ()
+mitBranch output logger branch = do
   worktreeDir <- do
-    rootdir <- git verbosity ["rev-parse", "--show-toplevel"]
+    rootdir <- git logger ["rev-parse", "--show-toplevel"]
     pure (Text.dropWhileEnd (/= '/') rootdir <> branch)
 
-  gitBranchWorktreeDir verbosity branch >>= \case
+  gitBranchWorktreeDir logger branch >>= \case
     Just directory -> when (directory /= worktreeDir) (abort (Output.BranchAlreadyCheckedOut branch directory))
     Nothing -> do
       whenM (doesDirectoryExist worktreeDir) (abort (Output.DirectoryAlreadyExists worktreeDir))
 
-      git_ verbosity ["worktree", "add", "--detach", worktreeDir]
+      git_ logger ["worktree", "add", "--detach", worktreeDir]
 
       label \done ->
         cd worktreeDir do
           -- Maybe the branch already exists; try switching to it.
-          whenM (git verbosity ["switch", branch]) do
+          whenM (git logger ["switch", branch]) do
             output (Output.CheckedOutBranch branch worktreeDir)
             goto done ()
 
           -- Ok, it doesn't exist; create it.
-          git_ verbosity ["branch", "--no-track", branch]
-          git_ verbosity ["switch", branch]
+          git_ logger ["branch", "--no-track", branch]
+          git_ logger ["switch", branch]
 
-          gitFetch_ verbosity "origin"
-          upstreamExists <- gitRemoteBranchExists verbosity "origin" branch
+          gitFetch_ logger "origin"
+          upstreamExists <- gitRemoteBranchExists logger "origin" branch
           if upstreamExists
             then do
               let upstream = "origin/" <> branch
-              git_ verbosity ["reset", "--hard", "--quiet", upstream]
-              git_ verbosity ["branch", "--set-upstream-to", upstream]
+              git_ logger ["reset", "--hard", "--quiet", upstream]
+              git_ logger ["branch", "--set-upstream-to", upstream]
               output (Output.CreatedBranch branch worktreeDir (Just upstream))
             else do
               -- Start the new branch at the latest origin/main, if there is an origin/main
               -- This seems better than starting from whatever branch the user happened to fork from, which was
               -- probably some slightly out-of-date main
-              whenJustM (gitDefaultBranch verbosity "origin") \defaultBranch ->
-                git_ verbosity ["reset", "--hard", "--quiet", "origin/" <> defaultBranch]
+              whenJustM (gitDefaultBranch logger "origin") \defaultBranch ->
+                git_ logger ["reset", "--hard", "--quiet", "origin/" <> defaultBranch]
               output (Output.CreatedBranch branch worktreeDir Nothing)

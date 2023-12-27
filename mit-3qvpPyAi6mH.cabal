@@ -94,15 +94,18 @@ library
     Mit
     Mit.Command.Branch
     Mit.Command.Status
+    Mit.Command.Undo
     Mit.Directory
     Mit.Git
     Mit.Label
     Mit.Logger
+    Mit.Merge
     Mit.Output
     Mit.Prelude
     Mit.Pretty
     Mit.Process
     Mit.ProcessInfo
+    Mit.Push
     Mit.Seq
     Mit.Seq1
     Mit.Snapshot

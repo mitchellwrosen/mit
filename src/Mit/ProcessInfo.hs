@@ -12,6 +12,6 @@ data ProcessInfo = ProcessInfo
     args :: ![Text],
     output :: !(Seq Text),
     errput :: !(Seq Text),
-    code :: !ExitCode,
+    exitCode :: !ExitCode,
     seconds :: !Double
   }

@@ -16,6 +16,7 @@ module Mit.Git
     gitConflicts,
     gitConflictsWith,
     gitCreateStash,
+    gitCurrentBranch,
     gitDiff,
     gitExistCommitsBetween,
     gitExistUntrackedFiles,
@@ -37,31 +38,38 @@ module Mit.Git
 where
 
 import Data.Char qualified as Char
-import Data.Foldable qualified as Foldable
 import Data.List qualified as List
-import Data.List.NonEmpty qualified as List1
 import Data.Map.Strict qualified as Map
 import Data.Sequence qualified as Seq
 import Data.Text qualified as Text
-import Data.Text.Builder.Linear qualified as Text.Builder
 import Data.Text.IO qualified as Text
 import GHC.Clock (getMonotonicTime)
 import Ki qualified
+import Mit.Label (Abort, abort)
+import Mit.Logger (Logger, log)
+import Mit.Output (Output)
+import Mit.Output qualified as Output
 import Mit.Prelude
 import Mit.Pretty qualified as Pretty
-import Mit.Process
-import Mit.Verbosity (Verbosity (V0, V1, V2))
+import Mit.Process (ProcessOutput (..))
+import Mit.ProcessInfo (ProcessInfo (..))
 import System.Directory (doesFileExist)
 import System.Exit (ExitCode (..))
 import System.IO (Handle, hClose, hIsEOF)
 import System.IO.Unsafe (unsafePerformIO)
 import System.Posix.Process (getProcessGroupIDOf)
-import System.Posix.Signals
+import System.Posix.Signals (sigTERM, signalProcessGroup)
 import System.Process
-import System.Process.Internals
+  ( CmdSpec (RawCommand),
+    CreateProcess (..),
+    ProcessHandle,
+    StdStream (CreatePipe, Inherit, NoStream),
+    createProcess,
+    waitForProcess,
+  )
+import System.Process.Internals (ProcessHandle__ (ClosedHandle, OpenExtHandle, OpenHandle), withProcessHandle)
 import Text.Builder.ANSI qualified as Text.Builder
 import Text.Parsec qualified as Parsec
-import Text.Printf (printf)
 
 data DiffResult
   = Differences
@@ -168,32 +176,32 @@ showGitVersion (GitVersion x y z) =
   Text.pack (show x) <> "." <> Text.pack (show y) <> "." <> Text.pack (show z)
 
 -- | Apply stash, return conflicts.
-gitApplyStash :: Verbosity -> Text -> IO [GitConflict]
-gitApplyStash verbosity stash = do
+gitApplyStash :: Logger ProcessInfo -> Text -> IO [GitConflict]
+gitApplyStash logger stash = do
   conflicts <-
-    git verbosity ["stash", "apply", "--quiet", stash] >>= \case
-      False -> gitConflicts verbosity
+    git logger ["stash", "apply", "--quiet", stash] >>= \case
+      False -> gitConflicts logger
       True -> pure []
-  gitUnstageChanges verbosity
+  gitUnstageChanges logger
   pure conflicts
 
 -- | Get the directory a branch's worktree is checked out in, if it exists.
-gitBranchWorktreeDir :: Verbosity -> Text -> IO (Maybe Text)
-gitBranchWorktreeDir verbosity branch = do
-  worktrees <- gitListWorktrees verbosity
+gitBranchWorktreeDir :: Logger ProcessInfo -> Text -> IO (Maybe Text)
+gitBranchWorktreeDir logger branch = do
+  worktrees <- gitListWorktrees logger
   pure case List.find (\worktree -> worktree.branch == Just branch) worktrees of
     Nothing -> Nothing
     Just worktree -> Just worktree.directory
 
-gitCommitsBetween :: Verbosity -> Maybe Text -> Text -> IO (Seq GitCommitInfo)
-gitCommitsBetween verbosity commit1 commit2 =
+gitCommitsBetween :: Logger ProcessInfo -> Maybe Text -> Text -> IO (Seq GitCommitInfo)
+gitCommitsBetween logger commit1 commit2 =
   if commit1 == Just commit2
     then pure Seq.empty
     else do
       commits <-
         -- --first-parent seems desirable for topic branches
         git
-          verbosity
+          logger
           [ "rev-list",
             "--color=always",
             "--date=human",
@@ -209,67 +217,74 @@ gitCommitsBetween verbosity commit1 commit2 =
       _ Seq.:<| x Seq.:<| xs -> x Seq.<| dropEvens xs
       xs -> xs
 
-gitConflicts :: Verbosity -> IO [GitConflict]
-gitConflicts verbosity =
-  mapMaybe parseGitConflict <$> git verbosity ["status", "--no-renames", "--porcelain=v1"]
+gitConflicts :: Logger ProcessInfo -> IO [GitConflict]
+gitConflicts logger =
+  mapMaybe parseGitConflict <$> git logger ["status", "--no-renames", "--porcelain=v1"]
 
 -- | Get the conflicts with the given commitish.
 --
 -- Precondition: there is no merge in progress.
-gitConflictsWith :: Verbosity -> Text -> IO [GitConflict]
-gitConflictsWith verbosity commit = do
-  maybeStash <- gitStash verbosity
+gitConflictsWith :: Logger ProcessInfo -> Text -> IO [GitConflict]
+gitConflictsWith logger commit = do
+  maybeStash <- gitStash logger
   conflicts <- do
-    git verbosity ["merge", "--no-commit", "--no-ff", commit] >>= \case
-      False -> gitConflicts verbosity
+    git logger ["merge", "--no-commit", "--no-ff", commit] >>= \case
+      False -> gitConflicts logger
       True -> pure []
-  whenM (gitMergeInProgress verbosity) (git_ verbosity ["merge", "--abort"])
-  whenJust maybeStash \stash -> git verbosity ["stash", "apply", "--quiet", stash]
+  whenM (gitMergeInProgress logger) (git_ logger ["merge", "--abort"])
+  whenJust maybeStash \stash -> git logger ["stash", "apply", "--quiet", stash]
   pure conflicts
 
-gitCreateStash :: Verbosity -> IO (Maybe Text)
-gitCreateStash verbosity = do
-  git_ verbosity ["add", "--all"] -- it seems certain things (like renames), unless staged, cannot be stashed
+gitCreateStash :: Logger ProcessInfo -> IO (Maybe Text)
+gitCreateStash logger = do
+  git_ logger ["add", "--all"] -- it seems certain things (like renames), unless staged, cannot be stashed
   stash <-
-    git verbosity ["stash", "create"] <&> \case
+    git logger ["stash", "create"] <&> \case
       Seq.Empty -> Nothing
       stash Seq.:<| _ -> Just stash
   -- Even if the stash is Nothing, this still might be relevant/necessary.
   -- In particular, if there are only changes to submodule commits, we'll have staged them with 'git add' --all, then
   -- we'll have gotten no stash back from 'git stash create'.
-  gitUnstageChanges verbosity
+  gitUnstageChanges logger
   pure stash
 
-gitDefaultBranch :: Verbosity -> Text -> IO (Maybe Text)
-gitDefaultBranch verbosity remote =
-  git verbosity ["symbolic-ref", "refs/remotes/" <> remote <> "/HEAD"] <&> \case
+-- | Get the name of the current branch, or abort if we're not on a branch.
+gitCurrentBranch :: (Abort Output) => Logger ProcessInfo -> IO Text
+gitCurrentBranch logger =
+  git logger ["branch", "--show-current"] >>= \case
+    Seq.Empty -> abort Output.NotOnBranch
+    branch Seq.:<| _ -> pure branch
+
+gitDefaultBranch :: Logger ProcessInfo -> Text -> IO (Maybe Text)
+gitDefaultBranch logger remote =
+  git logger ["symbolic-ref", "refs/remotes/" <> remote <> "/HEAD"] <&> \case
     Left _code -> Nothing
     Right branch -> Just (Text.drop (14 + Text.length remote) branch)
 
 -- | Report whether there are any tracked, unstaged changes.
-gitDiff :: Verbosity -> IO DiffResult
-gitDiff verbosity = do
-  git verbosity ["diff", "--quiet"] <&> \case
+gitDiff :: Logger ProcessInfo -> IO DiffResult
+gitDiff logger = do
+  git logger ["diff", "--quiet"] <&> \case
     False -> Differences
     True -> NoDifferences
 
-gitExistCommitsBetween :: Verbosity -> Text -> Text -> IO Bool
-gitExistCommitsBetween verbosity commit1 commit2 =
+gitExistCommitsBetween :: Logger ProcessInfo -> Text -> Text -> IO Bool
+gitExistCommitsBetween logger commit1 commit2 =
   if commit1 == commit2
     then pure False
-    else Seq.null <$> git verbosity ["rev-list", "--max-count=1", commit1 <> ".." <> commit2]
+    else Seq.null <$> git logger ["rev-list", "--max-count=1", commit1 <> ".." <> commit2]
 
 -- | Do any untracked files exist?
-gitExistUntrackedFiles :: Verbosity -> IO Bool
-gitExistUntrackedFiles verbosity =
-  not . null <$> gitListUntrackedFiles verbosity
+gitExistUntrackedFiles :: Logger ProcessInfo -> IO Bool
+gitExistUntrackedFiles logger =
+  not . null <$> gitListUntrackedFiles logger
 
-gitFetch :: Verbosity -> Text -> IO Bool
-gitFetch verbosity remote = do
+gitFetch :: Logger ProcessInfo -> Text -> IO Bool
+gitFetch logger remote = do
   fetched <- readIORef fetchedRef
   case Map.lookup remote fetched of
     Nothing -> do
-      success <- git verbosity ["fetch", "--atomic", remote]
+      success <- git logger ["fetch", "--atomic", remote]
       writeIORef fetchedRef (Map.insert remote success fetched)
       pure success
     Just success -> pure success
@@ -280,54 +295,54 @@ fetchedRef =
   unsafePerformIO (newIORef mempty)
 {-# NOINLINE fetchedRef #-}
 
-gitFetch_ :: Verbosity -> Text -> IO ()
-gitFetch_ verbosity =
-  void . gitFetch verbosity
+gitFetch_ :: Logger ProcessInfo -> Text -> IO ()
+gitFetch_ logger =
+  void . gitFetch logger
 
 -- | Get whether a commit is a merge commit.
-gitIsMergeCommit :: Verbosity -> Text -> IO Bool
-gitIsMergeCommit verbosity commit =
-  git verbosity ["rev-parse", "--quiet", "--verify", commit <> "^2"]
+gitIsMergeCommit :: Logger ProcessInfo -> Text -> IO Bool
+gitIsMergeCommit logger commit =
+  git logger ["rev-parse", "--quiet", "--verify", commit <> "^2"]
 
 -- | List all untracked files.
-gitListUntrackedFiles :: Verbosity -> IO [Text]
-gitListUntrackedFiles verbosity =
-  git verbosity ["ls-files", "--exclude-standard", "--other"]
+gitListUntrackedFiles :: Logger ProcessInfo -> IO [Text]
+gitListUntrackedFiles logger =
+  git logger ["ls-files", "--exclude-standard", "--other"]
 
 -- | Get the head commit, if it exists.
-gitMaybeHead :: Verbosity -> IO (Maybe Text)
-gitMaybeHead verbosity =
-  git verbosity ["rev-parse", "HEAD"] <&> \case
+gitMaybeHead :: Logger ProcessInfo -> IO (Maybe Text)
+gitMaybeHead logger =
+  git logger ["rev-parse", "HEAD"] <&> \case
     Left _ -> Nothing
     Right commit -> Just commit
 
 -- | Get whether a merge is in progress.
-gitMergeInProgress :: Verbosity -> IO Bool
-gitMergeInProgress verbosity = do
-  gitdir <- gitRevParseAbsoluteGitDir verbosity
+gitMergeInProgress :: Logger ProcessInfo -> IO Bool
+gitMergeInProgress logger = do
+  gitdir <- gitRevParseAbsoluteGitDir logger
   doesFileExist (Text.unpack (gitdir <> "/MERGE_HEAD"))
 
 -- | Does the given remote branch (refs/remotes/...) exist?
-gitRemoteBranchExists :: Verbosity -> Text -> Text -> IO Bool
-gitRemoteBranchExists verbosity remote branch =
-  git verbosity ["rev-parse", "--quiet", "--verify", "refs/remotes/" <> remote <> "/" <> branch]
+gitRemoteBranchExists :: Logger ProcessInfo -> Text -> Text -> IO Bool
+gitRemoteBranchExists logger remote branch =
+  git logger ["rev-parse", "--quiet", "--verify", "refs/remotes/" <> remote <> "/" <> branch]
 
 -- | Get the head of a remote branch.
-gitRemoteBranchHead :: Verbosity -> Text -> Text -> IO (Maybe Text)
-gitRemoteBranchHead verbosity remote branch =
-  git verbosity ["rev-parse", "refs/remotes/" <> remote <> "/" <> branch] <&> \case
+gitRemoteBranchHead :: Logger ProcessInfo -> Text -> Text -> IO (Maybe Text)
+gitRemoteBranchHead logger remote branch =
+  git logger ["rev-parse", "refs/remotes/" <> remote <> "/" <> branch] <&> \case
     Left _ -> Nothing
     Right head -> Just head
 
-gitRevParseAbsoluteGitDir :: (ProcessOutput a) => Verbosity -> IO a
-gitRevParseAbsoluteGitDir verbosity =
-  git verbosity ["rev-parse", "--absolute-git-dir"]
+gitRevParseAbsoluteGitDir :: (ProcessOutput a) => Logger ProcessInfo -> IO a
+gitRevParseAbsoluteGitDir logger =
+  git logger ["rev-parse", "--absolute-git-dir"]
 
-gitShow :: Verbosity -> Text -> IO GitCommitInfo
-gitShow verbosity commit =
+gitShow :: Logger ProcessInfo -> Text -> IO GitCommitInfo
+gitShow logger commit =
   fmap parseGitCommitInfo do
     git
-      verbosity
+      logger
       [ "show",
         "--color=always",
         "--date=human",
@@ -336,28 +351,28 @@ gitShow verbosity commit =
       ]
 
 -- | Stash uncommitted changes (if any).
-gitStash :: Verbosity -> IO (Maybe Text)
-gitStash verbosity = do
-  gitCreateStash verbosity >>= \case
+gitStash :: Logger ProcessInfo -> IO (Maybe Text)
+gitStash logger = do
+  gitCreateStash logger >>= \case
     Nothing -> pure Nothing
     Just stash -> do
-      git_ verbosity ["clean", "-d", "--force"]
-      git_ verbosity ["reset", "--hard", "--quiet", "HEAD"]
+      git_ logger ["clean", "-d", "--force"]
+      git_ logger ["reset", "--hard", "--quiet", "HEAD"]
       pure (Just stash)
 
-gitUnstageChanges :: Verbosity -> IO ()
-gitUnstageChanges verbosity = do
-  git_ verbosity ["reset", "--quiet", "--", "."]
-  untrackedFiles <- gitListUntrackedFiles verbosity
+gitUnstageChanges :: Logger ProcessInfo -> IO ()
+gitUnstageChanges logger = do
+  git_ logger ["reset", "--quiet", "--", "."]
+  untrackedFiles <- gitListUntrackedFiles logger
   when (not (null untrackedFiles)) do
-    git_ verbosity ("add" : "--intent-to-add" : untrackedFiles)
+    git_ logger ("add" : "--intent-to-add" : untrackedFiles)
 
 -- | Parse the @git@ version from the output of @git --version@.
 --
 -- If parsing fails, returns version @0.0.0@.
-gitVersion :: Verbosity -> IO GitVersion
-gitVersion verbosity = do
-  v0 <- git verbosity ["--version"]
+gitVersion :: Logger ProcessInfo -> IO GitVersion
+gitVersion logger = do
+  v0 <- git logger ["--version"]
   pure do
     fromMaybe (GitVersion 0 0 0) do
       "git" : "version" : v1 : _ <- Just (Text.words v0)
@@ -375,9 +390,9 @@ data GitWorktree = GitWorktree
   }
 
 -- | List worktrees.
-gitListWorktrees :: Verbosity -> IO [GitWorktree]
-gitListWorktrees verbosity = do
-  git verbosity ["worktree", "list"] <&> map \line ->
+gitListWorktrees :: Logger ProcessInfo -> IO [GitWorktree]
+gitListWorktrees logger = do
+  git logger ["worktree", "list"] <&> map \line ->
     case Parsec.parse parser "" line of
       Left err -> error (show err)
       Right worktree -> worktree
@@ -414,8 +429,8 @@ parseGitRepo url = do
   url' <- Text.stripSuffix ".git" url
   pure (url, Text.takeWhileEnd (/= '/') url')
 
-git :: (ProcessOutput a) => Verbosity -> [Text] -> IO a
-git verbosity args = do
+git :: (ProcessOutput a) => Logger ProcessInfo -> [Text] -> IO a
+git logger args = do
   let spec :: CreateProcess
       spec =
         CreateProcess
@@ -443,10 +458,19 @@ git verbosity args = do
       stderrThread <- Ki.fork scope (drainTextHandle (fromJust maybeStderr))
       exitCode <- waitForProcess processHandle
       t1 <- getMonotonicTime
-      stdoutLines <- atomically (Ki.await stdoutThread)
-      stderrLines <- atomically (Ki.await stderrThread)
-      debugPrintGit verbosity args stdoutLines stderrLines exitCode (t1 - t0)
-      fromProcessOutput stdoutLines stderrLines exitCode
+      output <- atomically (Ki.await stdoutThread)
+      errput <- atomically (Ki.await stderrThread)
+      log
+        logger
+        ProcessInfo
+          { name = "git",
+            args,
+            output,
+            errput,
+            exitCode,
+            seconds = t1 - t0
+          }
+      fromProcessOutput output errput exitCode
   where
     cleanup :: (Maybe Handle, Maybe Handle, Maybe Handle, ProcessHandle) -> IO ()
     cleanup (maybeStdin, maybeStdout, maybeStderr, process) =
@@ -477,15 +501,15 @@ ignoreSyncExceptions action =
         Just (_ :: SomeAsyncException) -> throwIO ex
     Right () -> pure ()
 
-git_ :: Verbosity -> [Text] -> IO ()
+git_ :: Logger ProcessInfo -> [Text] -> IO ()
 git_ =
   git
 
 -- Yucky interactive/inherity variant (so 'git commit' can open an editor).
 --
 -- FIXME bracket
-git2 :: Verbosity -> [Text] -> IO Bool
-git2 verbosity args = do
+git2 :: Logger ProcessInfo -> [Text] -> IO Bool
+git2 logger args = do
   t0 <- getMonotonicTime
   (_, _, stderrHandle, processHandle) <- do
     createProcess
@@ -512,48 +536,20 @@ git2 verbosity args = do
       UserInterrupt -> pure (ExitFailure (-130))
       exception -> throwIO exception
   t1 <- getMonotonicTime
-  stderrLines <- drainTextHandle (fromJust stderrHandle)
-  debugPrintGit verbosity args Seq.empty stderrLines exitCode (t1 - t0)
+  errput <- drainTextHandle (fromJust stderrHandle)
+  log
+    logger
+    ProcessInfo
+      { name = "git",
+        args,
+        output = Seq.empty,
+        errput,
+        exitCode,
+        seconds = t1 - t0
+      }
   pure case exitCode of
     ExitFailure _ -> False
     ExitSuccess -> True
-
-debugPrintGit :: Verbosity -> [Text] -> Seq Text -> Seq Text -> ExitCode -> Double -> IO ()
-debugPrintGit verbosity args stdoutLines stderrLines exitCode sec = do
-  case verbosity of
-    V0 -> pure ()
-    V1 -> Pretty.put v1
-    V2 -> Pretty.put (v1 <> v2)
-  where
-    v1 =
-      Pretty.line $
-        Pretty.style (Text.Builder.bold . Text.Builder.brightBlack) $
-          let prefix =
-                marker
-                  <> " ["
-                  <> Pretty.builder (foldMap Text.Builder.fromChar (printf "%.0f" (sec * 1000) :: [Char]))
-                  <> "ms] git "
-           in case List1.nonEmpty args of
-                Nothing -> prefix
-                Just args1 -> prefix <> sconcat (List1.intersperse (Pretty.char ' ') (quote <$> args1))
-    v2 =
-      (stdoutLines <> stderrLines)
-        & Foldable.toList
-        & map (Pretty.style Text.Builder.brightBlack . Pretty.text)
-        & Pretty.lines
-        & Pretty.indent 4
-
-    quote :: Text -> Pretty.Line
-    quote s =
-      if Text.any Char.isSpace s
-        then Pretty.char '\'' <> Pretty.text (Text.replace "'" "\\'" s) <> Pretty.char '\''
-        else Pretty.text s
-
-    marker :: Pretty.Line
-    marker =
-      case exitCode of
-        ExitFailure _ -> Pretty.char '✗'
-        ExitSuccess -> Pretty.char '✓'
 
 drainTextHandle :: Handle -> IO (Seq Text)
 drainTextHandle handle = do

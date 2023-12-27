@@ -10,13 +10,14 @@ where
 
 import Data.Text qualified as Text
 import Mit.Git (git, gitUnstageChanges, git_)
+import Mit.Logger (Logger)
 import Mit.Prelude
-import Mit.Verbosity (Verbosity)
+import Mit.ProcessInfo (ProcessInfo)
 
 data Undo
-  = Apply Text -- apply stash
-  | Reset Text -- reset to commit
-  | Revert Text -- revert commit
+  = Apply !Text -- apply stash
+  | Reset !Text -- reset to commit
+  | Revert !Text -- revert commit
   deriving stock (Eq, Show)
 
 showUndos :: [Undo] -> Text
@@ -42,15 +43,15 @@ parseUndos = do
           error (show text)
         ]
 
-applyUndo :: Verbosity -> Undo -> IO ()
-applyUndo verbosity = \case
+applyUndo :: Logger ProcessInfo -> Undo -> IO ()
+applyUndo logger = \case
   Apply commit -> do
-    git_ verbosity ["stash", "apply", "--quiet", commit]
-    gitUnstageChanges verbosity
+    git_ logger ["stash", "apply", "--quiet", commit]
+    gitUnstageChanges logger
   Reset commit -> do
-    git_ verbosity ["clean", "-d", "--force"]
-    git verbosity ["reset", "--hard", commit]
-  Revert commit -> git_ verbosity ["revert", commit]
+    git_ logger ["clean", "-d", "--force"]
+    git logger ["reset", "--hard", commit]
+  Revert commit -> git_ logger ["revert", commit]
 
 undosStash :: [Undo] -> Maybe Text
 undosStash undos =

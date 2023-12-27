@@ -1,7 +1,6 @@
 module Mit.Snapshot
   ( Snapshot,
     snapshotHead,
-    unsafeSnapshotHead,
     snapshotStash,
     undoToSnapshot,
     performSnapshot,
@@ -9,9 +8,10 @@ module Mit.Snapshot
 where
 
 import Mit.Git (gitCreateStash, gitMaybeHead)
+import Mit.Logger (Logger)
 import Mit.Prelude
+import Mit.ProcessInfo (ProcessInfo)
 import Mit.Undo (Undo (Apply, Reset))
-import Mit.Verbosity (Verbosity)
 
 -- | The snapshot of a git repository.
 data Snapshot
@@ -25,12 +25,6 @@ snapshotHead = \case
   Clean head -> Just head
   Dirty head _stash -> Just head
 
-unsafeSnapshotHead :: Snapshot -> Text
-unsafeSnapshotHead snapshot =
-  case snapshotHead snapshot of
-    Nothing -> error "unsafeSnapshotHead: no head"
-    Just head -> head
-
 snapshotStash :: Snapshot -> Maybe Text
 snapshotStash = \case
   Empty -> Nothing
@@ -43,11 +37,11 @@ undoToSnapshot = \case
   Clean head -> [Reset head]
   Dirty head stash -> [Reset head, Apply stash]
 
-performSnapshot :: Verbosity -> IO Snapshot
-performSnapshot verbosity =
-  gitMaybeHead verbosity >>= \case
+performSnapshot :: Logger ProcessInfo -> IO Snapshot
+performSnapshot logger =
+  gitMaybeHead logger >>= \case
     Nothing -> pure Empty
     Just head ->
-      gitCreateStash verbosity <&> \case
+      gitCreateStash logger <&> \case
         Nothing -> Clean head
         Just stash -> Dirty head stash
