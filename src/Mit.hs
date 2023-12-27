@@ -18,6 +18,7 @@ import Mit.Prelude
 import Mit.Pretty (Pretty)
 import Mit.Pretty qualified as Pretty
 import Mit.Seq1 qualified as Seq1
+import Mit.Snapshot
 import Mit.State
 import Mit.Undo
 import Options.Applicative qualified as Opt
@@ -651,7 +652,7 @@ syncStanza sync =
 
 data Context = Context
   { branch :: Text,
-    snapshot :: GitSnapshot,
+    snapshot :: Snapshot,
     state :: MitState (),
     upstreamHead :: Maybe Text
   }
@@ -828,45 +829,3 @@ performPush branch = do
                 False -> DidntPush (TriedToPush commits1)
                 True -> Pushed commits1
             else pure (DidntPush (PushWouldntReachRemote commits1))
-
-------------------------------------------------------------------------------------------------------------------------
--- Git snapshot
-
-data GitSnapshot
-  = SnapshotEmpty -- empty repo
-  | SnapshotClean Text -- head
-  | SnapshotDirty Text Text -- head, stash
-
-snapshotHead :: GitSnapshot -> Maybe Text
-snapshotHead = \case
-  SnapshotEmpty -> Nothing
-  SnapshotClean head -> Just head
-  SnapshotDirty head _stash -> Just head
-
-unsafeSnapshotHead :: GitSnapshot -> Text
-unsafeSnapshotHead snapshot =
-  case snapshotHead snapshot of
-    Nothing -> error "unsafeSnapshotHead: no head"
-    Just head -> head
-
-snapshotStash :: GitSnapshot -> Maybe Text
-snapshotStash = \case
-  SnapshotEmpty -> Nothing
-  SnapshotClean _head -> Nothing
-  SnapshotDirty _head stash -> Just stash
-
-performSnapshot :: Mit Env GitSnapshot
-performSnapshot = do
-  env <- getEnv
-  io (gitMaybeHead env.verbosity) >>= \case
-    Nothing -> pure SnapshotEmpty
-    Just head ->
-      io (gitCreateStash env.verbosity) <&> \case
-        Nothing -> SnapshotClean head
-        Just stash -> SnapshotDirty head stash
-
-undoToSnapshot :: GitSnapshot -> [Undo]
-undoToSnapshot = \case
-  SnapshotEmpty -> []
-  SnapshotClean head -> [Reset head]
-  SnapshotDirty head stash -> [Reset head, Apply stash]

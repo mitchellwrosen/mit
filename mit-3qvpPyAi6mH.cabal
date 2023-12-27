@@ -104,6 +104,7 @@ library
     Mit.Process
     Mit.Seq
     Mit.Seq1
+    Mit.Snapshot
     Mit.State
     Mit.Undo
   hs-source-dirs: src
