@@ -272,7 +272,9 @@ gitExistCommitsBetween :: Logger ProcessInfo -> Text -> Text -> IO Bool
 gitExistCommitsBetween logger commit1 commit2 =
   if commit1 == commit2
     then pure False
-    else Seq.null <$> git logger ["rev-list", "--max-count=1", commit1 <> ".." <> commit2]
+    else do
+      commits <- git logger ["rev-list", "--max-count=1", commit1 <> ".." <> commit2]
+      pure (not (Seq.null commits))
 
 -- | Do any untracked files exist?
 gitExistUntrackedFiles :: Logger ProcessInfo -> IO Bool
