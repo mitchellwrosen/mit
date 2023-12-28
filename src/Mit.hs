@@ -153,7 +153,7 @@ main = do
             Opt.command "commit" $
               Opt.info
                 ( MitCommand'Commit
-                    <$> Opt.switch (Opt.help "All changes" <> Opt.long "all")
+                    <$> Opt.switch (Opt.help "Include all changes" <> Opt.long "all")
                     <*> Opt.optional
                       ( Opt.strOption $
                           Opt.help "Commit message"
@@ -224,6 +224,7 @@ mitCommit logger allFlag maybeMessage = do
 mitCommitNotMerge :: (Abort Output) => Logger ProcessInfo -> Bool -> Maybe Text -> IO ()
 mitCommitNotMerge logger allFlag maybeMessage = do
   gitUnstageChanges logger
+
   gitDiff logger >>= \case
     Differences -> pure ()
     NoDifferences -> abort Output.NothingToCommit
@@ -234,10 +235,7 @@ mitCommitNotMerge logger allFlag maybeMessage = do
   abortIfRemoteIsAhead logger context
 
   committed <- do
-    doCommitAll <-
-      if allFlag
-        then pure True
-        else not <$> queryTerminal 0
+    doCommitAll <- if allFlag then pure True else not <$> queryTerminal 0
     case (doCommitAll, maybeMessage) of
       (True, Nothing) -> git2 logger ["commit", "--all"]
       (True, Just message) -> git logger ["commit", "--all", "--message", message]
@@ -601,11 +599,14 @@ mitSyncWith logger pretty0 maybeUndo = do
 -- If origin/branch is ahead of branch, abort.
 abortIfRemoteIsAhead :: (Abort Output) => Logger ProcessInfo -> Context -> IO ()
 abortIfRemoteIsAhead logger context = do
-  existRemoteCommits <- contextExistRemoteCommits logger context
-  existLocalCommits <- contextExistLocalCommits logger context
-
-  when (existRemoteCommits && not existLocalCommits) do
-    abort (Output.RemoteIsAhead context.branch (contextUpstream context))
+  whenJust context.upstreamHead \upstreamHead -> do
+    head <- snapshotHead context.snapshot & onNothing remoteIsAhead
+    whenM (gitExistCommitsBetween logger head upstreamHead) do
+      whenNotM (gitExistCommitsBetween logger upstreamHead head) remoteIsAhead
+  where
+    remoteIsAhead :: IO void
+    remoteIsAhead =
+      abort (Output.RemoteIsAhead context.branch (contextUpstream context))
 
 -- Clean the working tree, if it's dirty (it's been stashed).
 cleanWorkingTree :: Logger ProcessInfo -> Context -> IO ()
@@ -710,24 +711,6 @@ getContext logger = do
   state <- readMitState logger branch
   snapshot <- performSnapshot logger
   pure Context {branch, snapshot, state, upstreamHead}
-
-contextExistLocalCommits :: Logger ProcessInfo -> Context -> IO Bool
-contextExistLocalCommits logger context = do
-  case context.upstreamHead of
-    Nothing -> pure True
-    Just upstreamHead ->
-      case snapshotHead context.snapshot of
-        Nothing -> pure False
-        Just head -> gitExistCommitsBetween logger upstreamHead head
-
-contextExistRemoteCommits :: Logger ProcessInfo -> Context -> IO Bool
-contextExistRemoteCommits logger context = do
-  case context.upstreamHead of
-    Nothing -> pure False
-    Just upstreamHead ->
-      case snapshotHead context.snapshot of
-        Nothing -> pure True
-        Just head -> gitExistCommitsBetween logger head upstreamHead
 
 contextUpstream :: Context -> Text
 contextUpstream context =
