@@ -27,8 +27,9 @@ import Mit.Git
     gitCurrentBranch,
     gitDiff,
     gitExistCommitsBetween,
-    gitFetch_,
+    gitFetch,
     gitIsMergeCommit,
+    gitMaybeHead,
     gitMergeInProgress,
     gitRemoteBranchHead,
     gitRevParseAbsoluteGitDir,
@@ -46,10 +47,16 @@ import Mit.Prelude
 import Mit.Pretty (Pretty)
 import Mit.Pretty qualified as Pretty
 import Mit.ProcessInfo (ProcessInfo (..))
-import Mit.Push (DidntPushReason (NothingToPush, PushWouldBeRejected, PushWouldntReachRemote, TriedToPush), PushResult (DidntPush, Pushed), performPush, pushResultCommits, pushResultPushed)
+import Mit.Push
+  ( DidntPushReason (NothingToPush, PushWouldBeRejected, PushWouldntReachRemote, TriedToPush),
+    PushResult (DidntPush, Pushed),
+    performPush,
+    pushResultCommits,
+    pushResultPushed,
+  )
 import Mit.Seq1 qualified as Seq1
-import Mit.Snapshot (Snapshot, performSnapshot, snapshotHead, snapshotStash, undoToSnapshot)
-import Mit.State (MitState (..), readMitState, writeMitState, writeMitState2)
+import Mit.Snapshot (Snapshot, performSnapshot, snapshotStash, undoToSnapshot)
+import Mit.State (MitState (..), readMitState, writeMitState)
 import Mit.Undo (Undo (..), concatUndos, undoStash)
 import Mit.Verbosity (Verbosity (..), intToVerbosity)
 import Options.Applicative qualified as Opt
@@ -198,7 +205,7 @@ main2 logger command = do
   case command of
     MitCommand'Branch branch -> mitBranch (output . renderOutput) logger branch
     MitCommand'Commit allFlag maybeMessage -> mitCommit logger allFlag maybeMessage
-    MitCommand'Gc -> mitGc logger
+    MitCommand'Gc -> mitGc
     MitCommand'Merge branch -> mitMerge logger branch
     MitCommand'Status -> mitStatus logger
     MitCommand'Sync -> mitSync logger
@@ -223,17 +230,23 @@ mitCommit logger allFlag maybeMessage = do
 
 mitCommitNotMerge :: (Abort Output) => Logger ProcessInfo -> Bool -> Maybe Text -> IO ()
 mitCommitNotMerge logger allFlag maybeMessage = do
+  -- Check to see if there's even anything to commit, and bail if not.
   gitUnstageChanges logger
-
   gitDiff logger >>= \case
     Differences -> pure ()
     NoDifferences -> abort Output.NothingToCommit
 
-  context <- getContext logger
-  let upstream = contextUpstream context
+  fetched <- gitFetch logger "origin"
+  branch <- gitCurrentBranch logger
+  maybeHead0 <- gitMaybeHead logger
+  let upstream = "origin/" <> branch
+  maybeUpstreamHead <- gitRemoteBranchHead logger "origin" branch
+  state0 <- readMitState logger branch
+  snapshot <- performSnapshot logger
 
-  abortIfRemoteIsAhead logger context
+  abortIfUpstreamIsAhead logger branch maybeHead0 upstream maybeUpstreamHead fetched
 
+  -- Initiate a commit, which (if interactive) can be cancelled with Ctrl+C.
   committed <- do
     doCommitAll <- if allFlag then pure True else not <$> queryTerminal 0
     case (doCommitAll, maybeMessage) of
@@ -242,58 +255,68 @@ mitCommitNotMerge logger allFlag maybeMessage = do
       (False, Nothing) -> git2 logger ["commit", "--patch", "--quiet"]
       (False, Just message) -> git2 logger ["commit", "--patch", "--message", message, "--quiet"]
 
-  pushResult <- performPush logger context.branch
+  -- Get the new head after the commit (if successful)
+  maybeHead1 <- if committed then Just <$> git logger ["rev-parse", "HEAD"] else pure maybeHead0
 
-  maybeUndoPush <-
-    case pushResult of
-      Pushed commits ->
-        case Seq1.toList commits of
-          [commit] ->
-            gitIsMergeCommit logger commit.hash <&> \case
-              False -> Just (Revert commit.hash Nothing)
-              True -> Nothing
-          _ -> pure Nothing
-      DidntPush _reason -> pure Nothing
+  -- Attempt a push (even if the commit was cancelled, since we might have other unpublished commits).
+  pushResult <- performPush logger branch maybeHead1 maybeUpstreamHead fetched
 
-  let state =
-        MitState
-          { head = (),
-            merging = Nothing,
-            undo =
-              case (pushResultPushed pushResult, committed, maybeUndoPush, snapshotStash context.snapshot) of
-                (False, False, _, _) -> context.state.undo
-                (False, True, _, _) -> undoToSnapshot context.snapshot
-                (True, False, _, _) -> maybeUndoPush
-                (True, True, Nothing, _) -> Nothing
-                (True, True, Just _, Nothing) -> maybeUndoPush
-                (True, True, Just undoPush, Just stash) -> Just (concatUndos undoPush (Apply stash Nothing))
-          }
-
-  writeMitState logger context.branch state
+  maybeUndo1 <-
+    case maybeHead1 of
+      Nothing -> pure Nothing
+      Just head1 -> do
+        maybeUndoPush <-
+          case pushResult of
+            Pushed commits ->
+              case Seq1.toList commits of
+                [commit] ->
+                  gitIsMergeCommit logger commit.hash <&> \case
+                    False -> Just (Revert commit.hash Nothing)
+                    True -> Nothing
+                _ -> pure Nothing
+            DidntPush _reason -> pure Nothing
+        let maybeUndo1 =
+              case (pushResultPushed pushResult, committed) of
+                (False, False) -> state0.undo
+                (False, True) -> undoToSnapshot snapshot
+                (True, False) -> maybeUndoPush
+                (True, True) -> do
+                  -- If we can revert the push *and* there is a stash in the snapshot (i.e. this *isnt* the very first
+                  -- commit), then we can undo (by reverting then applying the stash).
+                  --
+                  -- But if (for example) we can revert the push but there is *not* a stash in the snapshot, that means
+                  -- there were no commits before this one (`git stash create` is illegal there), so we don't want to
+                  -- offer to undo, because although we can revert the commit, we have no way of getting from there to
+                  -- back to having some dirty stuff to commit.
+                  undoPush <- maybeUndoPush
+                  stash <- snapshotStash snapshot
+                  Just (concatUndos undoPush (Apply stash Nothing))
+        writeMitState logger branch MitState {head = head1, merging = Nothing, undo = maybeUndo1}
+        pure maybeUndo1
 
   remoteCommits <-
-    case context.upstreamHead of
+    case maybeUpstreamHead of
       Nothing -> pure Seq.empty
       Just upstreamHead -> gitCommitsBetween logger (Just "HEAD") upstreamHead
 
   conflictsOnSync <-
     if Seq.null remoteCommits
       then pure []
-      else gitConflictsWith logger (fromJust context.upstreamHead)
+      else gitConflictsWith logger (fromJust maybeUpstreamHead)
 
   output $
     Pretty.paragraphs
-      [ isSynchronizedStanza context.branch pushResult,
+      [ isSynchronizedStanza branch pushResult,
         Pretty.whenJust (Seq1.fromSeq remoteCommits) \commits ->
-          syncStanza Sync {commits, success = False, source = upstream, target = context.branch},
+          syncStanza Sync {commits, success = False, source = upstream, target = branch},
         Pretty.whenJust (pushResultCommits pushResult) \commits ->
-          syncStanza Sync {commits, success = pushResultPushed pushResult, source = context.branch, target = upstream},
+          syncStanza Sync {commits, success = pushResultPushed pushResult, source = branch, target = upstream},
         case pushResult of
           DidntPush NothingToPush -> Pretty.empty
-          DidntPush (PushWouldntReachRemote _) -> runSyncStanza "When you come online, run" context.branch upstream
+          DidntPush (PushWouldntReachRemote _) -> runSyncStanza "When you come online, run" branch upstream
           DidntPush (PushWouldBeRejected _) ->
             case List1.nonEmpty conflictsOnSync of
-              Nothing -> runSyncStanza "Run" context.branch upstream
+              Nothing -> runSyncStanza "Run" branch upstream
               Just conflictsOnSync1 ->
                 Pretty.paragraphs
                   [ conflictsStanza
@@ -305,12 +328,12 @@ mitCommitNotMerge logger allFlag maybeMessage = do
                         <> ", resolve the conflicts, then run "
                         <> Pretty.command "mit commit"
                         <> " to synchronize "
-                        <> Pretty.branch context.branch
+                        <> Pretty.branch branch
                         <> " with "
                         <> Pretty.branch upstream
                         <> "."
                   ]
-          DidntPush (TriedToPush _) -> runSyncStanza "Run" context.branch upstream
+          DidntPush (TriedToPush _) -> runSyncStanza "Run" branch upstream
           Pushed _ -> Pretty.empty,
         -- Whether we say we can undo from here is not exactly if the state says we can undo, because of one corner
         -- case: we ran 'mit commit', then aborted the commit, and ultimately didn't push any other local changes.
@@ -318,7 +341,7 @@ mitCommitNotMerge logger allFlag maybeMessage = do
         -- In this case, the underlying state hasn't changed, so 'mit undo' will still work as if the 'mit commit' was
         -- never run, we merely don't want to *say* "run 'mit undo' to undo" as feedback, because that sounds as if it
         -- would undo the last command run, namely the 'mit commit' that was aborted.
-        Pretty.when (isJust state.undo && committed) canUndoStanza
+        Pretty.when (isJust maybeUndo1 && committed) canUndoStanza
       ]
 
 mitCommitMerge :: (Abort Output) => Logger ProcessInfo -> IO ()
@@ -344,7 +367,7 @@ mitCommitMerge logger = do
   head1 <- git logger ["rev-parse", "HEAD"]
 
   -- Record that we are no longer merging.
-  writeMitState2 logger branch state {head = head1, merging = Nothing}
+  writeMitState logger branch state {head = head1, merging = Nothing}
 
   let pretty0 = do
         fromMaybe Pretty.empty do
@@ -383,20 +406,22 @@ mitCommitMerge logger = do
                 Pretty.when (isJust state.undo) canUndoStanza
               ]
 
-mitGc :: (Abort Output) => Logger ProcessInfo -> IO ()
-mitGc logger = do
-  context <- getContext logger
-  let _upstream = contextUpstream context
+mitGc :: IO ()
+mitGc =
   pure ()
 
 mitMerge :: (Abort Output) => Logger ProcessInfo -> Text -> IO ()
 mitMerge logger target = do
   whenM (gitMergeInProgress logger) (abort Output.MergeInProgress)
 
-  context <- getContext logger
-  let upstream = contextUpstream context
+  fetched <- gitFetch logger "origin"
+  branch <- gitCurrentBranch logger
+  maybeHead0 <- gitMaybeHead logger
+  let upstream = "origin/" <> branch
+  maybeUpstreamHead <- gitRemoteBranchHead logger "origin" branch
+  snapshot <- performSnapshot logger
 
-  case target == context.branch || target == upstream of
+  case target == branch || target == upstream of
     -- If on branch `foo`, treat `mit merge foo` and `mit merge origin/foo` as `mit sync`
     True -> mitSyncWith logger Pretty.empty Nothing
     False -> do
@@ -406,56 +431,58 @@ mitMerge logger target = do
           git logger ["rev-parse", "refs/heads/" <> target] & onLeftM \_ ->
             abort Output.NoSuchBranch
 
-      abortIfRemoteIsAhead logger context
+      abortIfUpstreamIsAhead logger branch maybeHead0 upstream maybeUpstreamHead fetched
 
-      cleanWorkingTree logger context
+      cleanWorkingTree logger snapshot
 
-      mergeResult <- performMerge logger targetCommit ("⅄ " <> target <> " → " <> context.branch)
+      mergeResult <- performMerge logger targetCommit ("⅄ " <> target <> " → " <> branch)
 
       stashConflicts <-
-        case (mergeResultConflicts mergeResult, snapshotStash context.snapshot) of
+        case (mergeResultConflicts mergeResult, snapshotStash snapshot) of
           (Nothing, Just stash) -> gitApplyStash logger stash
           _ -> pure []
 
-      pushResult <- performPush logger context.branch
+      head1 <- git logger ["rev-parse", "HEAD"] -- can this be Nothing?
+      pushResult <- performPush logger branch (Just head1) maybeUpstreamHead fetched
+      let undo1 =
+            if pushResultPushed pushResult || isNothing (mergeResultConflicts mergeResult)
+              then Nothing
+              else undoToSnapshot snapshot
 
-      let state =
-            MitState
-              { head = (),
-                merging =
-                  case mergeResultConflicts mergeResult of
-                    Nothing -> Nothing
-                    Just _conflicts -> Just target,
-                undo =
-                  if pushResultPushed pushResult || isNothing (mergeResultConflicts mergeResult)
-                    then Nothing
-                    else undoToSnapshot context.snapshot
-              }
-
-      writeMitState logger context.branch state
+      writeMitState
+        logger
+        branch
+        MitState
+          { head = head1,
+            merging =
+              case mergeResultConflicts mergeResult of
+                Nothing -> Nothing
+                Just _conflicts -> Just target,
+            undo = undo1
+          }
 
       remoteCommits <-
-        case context.upstreamHead of
+        case maybeUpstreamHead of
           Nothing -> pure Seq.empty
           Just upstreamHead -> gitCommitsBetween logger (Just "HEAD") upstreamHead
 
       conflictsOnSync <-
         if Seq.null remoteCommits
           then pure []
-          else gitConflictsWith logger (fromJust context.upstreamHead)
+          else gitConflictsWith logger (fromJust maybeUpstreamHead)
 
       output $
         Pretty.paragraphs
           [ Pretty.whenJust (mergeResultCommits mergeResult) \commits ->
               mergeStanzas
-                context.branch
+                branch
                 target
                 case mergeResultConflicts mergeResult of
                   Nothing -> Right (Just commits)
                   Just _conflicts -> Left commits,
-            isSynchronizedStanza context.branch pushResult,
+            isSynchronizedStanza branch pushResult,
             Pretty.whenJust (Seq1.fromSeq remoteCommits) \commits ->
-              syncStanza Sync {commits, success = False, source = upstream, target = context.branch},
+              syncStanza Sync {commits, success = False, source = upstream, target = branch},
             -- TODO show commits to remote
             case (Seq1.toList1 <$> mergeResultConflicts mergeResult) <|> List1.nonEmpty stashConflicts of
               Nothing -> Pretty.empty
@@ -463,11 +490,11 @@ mitMerge logger target = do
             -- TODO audit this
             case pushResult of
               DidntPush NothingToPush -> Pretty.empty
-              DidntPush (PushWouldntReachRemote _) -> runSyncStanza "When you come online, run" context.branch upstream
+              DidntPush (PushWouldntReachRemote _) -> runSyncStanza "When you come online, run" branch upstream
               -- FIXME hrm, but we might have merge conflicts and/or stash conflicts!
               DidntPush (PushWouldBeRejected _) ->
                 case List1.nonEmpty conflictsOnSync of
-                  Nothing -> runSyncStanza "Run" context.branch upstream
+                  Nothing -> runSyncStanza "Run" branch upstream
                   Just conflictsOnSync1 ->
                     Pretty.paragraphs
                       [ conflictsStanza
@@ -479,14 +506,14 @@ mitMerge logger target = do
                             <> ", resolve the conflicts, then run "
                             <> Pretty.command "mit commit"
                             <> " to synchronize "
-                            <> Pretty.branch context.branch
+                            <> Pretty.branch branch
                             <> " with "
                             <> Pretty.branch upstream
                             <> "."
                       ]
-              DidntPush (TriedToPush _) -> runSyncStanza "Run" context.branch upstream
+              DidntPush (TriedToPush _) -> runSyncStanza "Run" branch upstream
               Pushed _ -> Pretty.empty,
-            Pretty.when (isJust state.undo) canUndoStanza
+            Pretty.when (isJust undo1) canUndoStanza
           ]
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
@@ -517,47 +544,52 @@ mitSync logger = do
 -- resolved by 'mit commit'.
 mitSyncWith :: (Abort Output) => Logger ProcessInfo -> Pretty -> Maybe Undo -> IO ()
 mitSyncWith logger pretty0 maybeUndo = do
-  context <- getContext logger
-  let upstream = contextUpstream context
+  fetched <- gitFetch logger "origin"
+  branch <- gitCurrentBranch logger
+  let upstream = "origin/" <> branch
+  maybeUpstreamHead <- gitRemoteBranchHead logger "origin" branch
+  snapshot <- performSnapshot logger
 
-  cleanWorkingTree logger context
+  cleanWorkingTree logger snapshot
 
   mergeResult <-
-    case context.upstreamHead of
+    case maybeUpstreamHead of
       -- Yay: no upstream branch is not different from an up-to-date local branch
       Nothing -> pure NothingToMerge
-      Just upstreamHead -> performMerge logger upstreamHead ("⅄ " <> context.branch)
+      Just upstreamHead -> performMerge logger upstreamHead ("⅄ " <> branch)
 
   stashConflicts <-
-    case (mergeResultConflicts mergeResult, snapshotStash context.snapshot) of
+    case (mergeResultConflicts mergeResult, snapshotStash snapshot) of
       (Nothing, Just stash) -> gitApplyStash logger stash
       _ -> pure []
 
-  pushResult <- performPush logger context.branch
+  head1 <- git logger ["rev-parse", "HEAD"] -- can this be Nothing?
+  pushResult <- performPush logger branch (Just head1) maybeUpstreamHead fetched
+  let undo1 =
+        case (pushResultPushed pushResult, maybeUndo, mergeResultConflicts mergeResult) of
+          (True, _, _) -> Nothing
+          (False, Nothing, Nothing) -> Nothing
+          (False, Nothing, Just _conflicts) -> undoToSnapshot snapshot
+          -- FIXME hm, could consider appending those undos instead, even if they obviate the recent stash/merge
+          -- undos
+          (False, Just undo, _) -> Just undo
 
-  let state =
-        MitState
-          { head = (),
-            merging =
-              case mergeResultConflicts mergeResult of
-                Nothing -> Nothing
-                Just _conflicts -> Just context.branch,
-            undo =
-              case (pushResultPushed pushResult, maybeUndo, mergeResultConflicts mergeResult) of
-                (True, _, _) -> Nothing
-                (False, Nothing, Nothing) -> Nothing
-                (False, Nothing, Just _conflicts) -> undoToSnapshot context.snapshot
-                -- FIXME hm, could consider appending those undos instead, even if they obviate the recent stash/merge
-                -- undos
-                (False, Just undo, _) -> Just undo
-          }
-
-  writeMitState logger context.branch state
+  writeMitState
+    logger
+    branch
+    MitState
+      { head = head1,
+        merging =
+          case mergeResultConflicts mergeResult of
+            Nothing -> Nothing
+            Just _conflicts -> Just branch,
+        undo = undo1
+      }
 
   output $
     Pretty.paragraphs
       [ pretty0,
-        isSynchronizedStanza context.branch pushResult,
+        isSynchronizedStanza branch pushResult,
         Pretty.whenJust (mergeResultCommits mergeResult) \commits ->
           syncStanza
             Sync
@@ -567,51 +599,52 @@ mitSyncWith logger pretty0 maybeUndo = do
                     Nothing -> True
                     Just _conflicts -> False,
                 source = upstream,
-                target = context.branch
+                target = branch
               },
         Pretty.whenJust (pushResultCommits pushResult) \commits ->
           syncStanza
             Sync
               { commits,
                 success = pushResultPushed pushResult,
-                source = context.branch,
+                source = branch,
                 target = upstream
               },
         Pretty.whenJust ((Seq1.toList1 <$> mergeResultConflicts mergeResult) <|> List1.nonEmpty stashConflicts) \conflicts1 ->
           conflictsStanza "These files are in conflict:" conflicts1,
         case pushResult of
           DidntPush NothingToPush -> Pretty.empty
-          DidntPush (PushWouldntReachRemote _) -> runSyncStanza "When you come online, run" context.branch upstream
+          DidntPush (PushWouldntReachRemote _) -> runSyncStanza "When you come online, run" branch upstream
           DidntPush (PushWouldBeRejected _) ->
             Pretty.line $
               "Resolve the conflicts, then run "
                 <> Pretty.command "mit commit"
                 <> " to synchronize "
-                <> Pretty.branch context.branch
+                <> Pretty.branch branch
                 <> " with "
                 <> Pretty.branch upstream
                 <> "."
-          DidntPush (TriedToPush _) -> runSyncStanza "Run" context.branch upstream
+          DidntPush (TriedToPush _) -> runSyncStanza "Run" branch upstream
           Pushed _ -> Pretty.empty,
-        Pretty.when (isJust state.undo) canUndoStanza
+        Pretty.when (isJust undo1) canUndoStanza
       ]
 
--- If origin/branch is ahead of branch, abort.
-abortIfRemoteIsAhead :: (Abort Output) => Logger ProcessInfo -> Context -> IO ()
-abortIfRemoteIsAhead logger context = do
-  whenJust context.upstreamHead \upstreamHead -> do
-    head <- snapshotHead context.snapshot & onNothing remoteIsAhead
-    whenM (gitExistCommitsBetween logger head upstreamHead) do
-      whenNotM (gitExistCommitsBetween logger upstreamHead head) remoteIsAhead
+-- If origin/branch is ahead of branch, abort, but only if we fetched. We do want to allow offline activity.
+abortIfUpstreamIsAhead :: (Abort Output) => Logger ProcessInfo -> Text -> Maybe Text -> Text -> Maybe Text -> Bool -> IO ()
+abortIfUpstreamIsAhead logger branch maybeHead upstream maybeUpstreamHead fetched = do
+  when fetched do
+    whenJust maybeUpstreamHead \upstreamHead -> do
+      head <- maybeHead & onNothing upstreamIsAhead
+      whenM (gitExistCommitsBetween logger head upstreamHead) do
+        whenNotM (gitExistCommitsBetween logger upstreamHead head) upstreamIsAhead
   where
-    remoteIsAhead :: IO void
-    remoteIsAhead =
-      abort (Output.RemoteIsAhead context.branch (contextUpstream context))
+    upstreamIsAhead :: IO void
+    upstreamIsAhead =
+      abort (Output.RemoteIsAhead branch upstream)
 
 -- Clean the working tree, if it's dirty (it's been stashed).
-cleanWorkingTree :: Logger ProcessInfo -> Context -> IO ()
-cleanWorkingTree logger context = do
-  whenJust (snapshotStash context.snapshot) \_stash ->
+cleanWorkingTree :: Logger ProcessInfo -> Snapshot -> IO ()
+cleanWorkingTree logger snapshot = do
+  whenJust (snapshotStash snapshot) \_stash ->
     git @() logger ["reset", "--hard", "--quiet", "HEAD"]
 
 output :: Pretty -> IO ()
@@ -692,29 +725,6 @@ syncStanza sync =
       case Seq1.length sync.commits > 10 of
         False -> (Seq1.toSeq sync.commits, False)
         True -> (Seq1.dropEnd 1 sync.commits, True)
-
-------------------------------------------------------------------------------------------------------------------------
--- Context
-
-data Context = Context
-  { branch :: !Text,
-    snapshot :: !Snapshot,
-    state :: !(MitState ()),
-    upstreamHead :: !(Maybe Text)
-  }
-
-getContext :: (Abort Output) => Logger ProcessInfo -> IO Context
-getContext logger = do
-  gitFetch_ logger "origin"
-  branch <- gitCurrentBranch logger
-  upstreamHead <- gitRemoteBranchHead logger "origin" branch
-  state <- readMitState logger branch
-  snapshot <- performSnapshot logger
-  pure Context {branch, snapshot, state, upstreamHead}
-
-contextUpstream :: Context -> Text
-contextUpstream context =
-  "origin/" <> context.branch
 
 ------------------------------------------------------------------------------------------------------------------------
 -- Git merge

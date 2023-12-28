@@ -5,7 +5,7 @@ where
 
 import Data.Text qualified as Text
 import Mit.Directory (cd, doesDirectoryExist)
-import Mit.Git (git, gitBranchWorktreeDir, gitDefaultBranch, gitFetch_, gitRemoteBranchExists)
+import Mit.Git (git, gitBranchWorktreeDir, gitDefaultBranch, gitFetch, gitRemoteBranchExists)
 import Mit.Label (Abort, abort, goto, label)
 import Mit.Logger (Logger)
 import Mit.Output (Output)
@@ -54,7 +54,7 @@ mitBranch output logger branch = do
       git @() logger ["branch", "--no-track", branch]
       git @() logger ["switch", branch]
 
-      gitFetch_ logger "origin"
+      _fetched <- gitFetch logger "origin"
       gitRemoteBranchExists logger "origin" branch >>= \case
         False -> do
           -- Start the new branch at the latest origin/main, if there is an origin/main

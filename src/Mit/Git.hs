@@ -20,7 +20,6 @@ module Mit.Git
     gitExistCommitsBetween,
     gitExistUntrackedFiles,
     gitFetch,
-    gitFetch_,
     gitIsMergeCommit,
     gitMaybeHead,
     gitMergeInProgress,
@@ -295,10 +294,6 @@ fetchedRef :: IORef (Map Text Bool)
 fetchedRef =
   unsafePerformIO (newIORef mempty)
 {-# NOINLINE fetchedRef #-}
-
-gitFetch_ :: Logger ProcessInfo -> Text -> IO ()
-gitFetch_ logger =
-  void . gitFetch logger
 
 -- | Get whether a commit is a merge commit.
 gitIsMergeCommit :: Logger ProcessInfo -> Text -> IO Bool

@@ -1,6 +1,5 @@
 module Mit.Snapshot
   ( Snapshot,
-    snapshotHead,
     snapshotStash,
     undoToSnapshot,
     performSnapshot,
@@ -18,12 +17,6 @@ data Snapshot
   = Empty -- empty repo
   | Clean !Text -- head
   | Dirty !Text !Text -- head, stash
-
-snapshotHead :: Snapshot -> Maybe Text
-snapshotHead = \case
-  Empty -> Nothing
-  Clean head -> Just head
-  Dirty head _stash -> Just head
 
 snapshotStash :: Snapshot -> Maybe Text
 snapshotStash = \case

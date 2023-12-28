@@ -4,14 +4,13 @@ module Mit.State
     deleteMitState,
     readMitState,
     writeMitState,
-    writeMitState2,
   )
 where
 
 import Data.Text qualified as Text
 import Data.Text.Encoding.Base64 qualified as Text
 import Data.Text.IO qualified as Text
-import Mit.Git (git, gitMaybeHead, gitRevParseAbsoluteGitDir)
+import Mit.Git (gitMaybeHead, gitRevParseAbsoluteGitDir)
 import Mit.Label (goto, label)
 import Mit.Logger (Logger)
 import Mit.Prelude
@@ -76,21 +75,8 @@ readMitState logger branch = do
   where
     branch64 = Text.encodeBase64 branch
 
-writeMitState :: Logger ProcessInfo -> Text -> MitState () -> IO ()
+writeMitState :: Logger ProcessInfo -> Text -> MitState Text -> IO ()
 writeMitState logger branch state = do
-  head <- git logger ["rev-parse", "HEAD"]
-  let contents :: Text
-      contents =
-        Text.unlines
-          [ "head " <> head,
-            "merging " <> fromMaybe Text.empty state.merging,
-            "undo " <> maybe Text.empty renderUndo state.undo
-          ]
-  mitfile <- getMitfile logger (Text.encodeBase64 branch)
-  Text.writeFile mitfile contents `catch` \(_ :: IOException) -> pure ()
-
-writeMitState2 :: Logger ProcessInfo -> Text -> MitState Text -> IO ()
-writeMitState2 logger branch state = do
   mitfile <- getMitfile logger (Text.encodeBase64 branch)
   Text.writeFile mitfile contents `catch` \(_ :: IOException) -> pure ()
   where

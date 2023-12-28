@@ -7,37 +7,28 @@ module Mit.Push
   )
 where
 
-import Mit.Git (GitCommitInfo, git, gitCommitsBetween, gitExistCommitsBetween, gitFetch, gitRemoteBranchHead)
+import Mit.Git (GitCommitInfo, git, gitCommitsBetween, gitExistCommitsBetween)
+import Mit.Label (goto, label)
 import Mit.Logger (Logger)
 import Mit.Prelude
 import Mit.ProcessInfo (ProcessInfo)
 import Mit.Seq1 qualified as Seq1
 
--- TODO get context
-performPush :: Logger ProcessInfo -> Text -> IO PushResult
-performPush logger branch = do
-  fetched <- gitFetch logger "origin"
-  head <- git logger ["rev-parse", "HEAD"]
-  upstreamHead <- gitRemoteBranchHead logger "origin" branch
-  commits <- gitCommitsBetween logger upstreamHead head
-
-  case Seq1.fromSeq commits of
-    Nothing -> pure (DidntPush NothingToPush)
-    Just commits1 -> do
-      existRemoteCommits <-
-        case upstreamHead of
-          Nothing -> pure False
-          Just upstreamHead1 -> gitExistCommitsBetween logger head upstreamHead1
-      if existRemoteCommits
-        then pure (DidntPush (PushWouldBeRejected commits1))
-        else
-          if fetched
-            then do
-              let args = ["push", "--follow-tags", "--set-upstream", "origin", "--quiet", branch <> ":" <> branch]
-              git logger args <&> \case
-                False -> DidntPush (TriedToPush commits1)
-                True -> Pushed commits1
-            else pure (DidntPush (PushWouldntReachRemote commits1))
+performPush :: Logger ProcessInfo -> Text -> Maybe Text -> Maybe Text -> Bool -> IO PushResult
+performPush logger branch maybeHead maybeUpstreamHead fetched = do
+  label \done -> do
+    head <- maybeHead & onNothing (goto done (DidntPush NothingToPush))
+    commits <- gitCommitsBetween logger maybeUpstreamHead head
+    commits1 <- Seq1.fromSeq commits & onNothing (goto done (DidntPush NothingToPush))
+    existRemoteCommits <-
+      case maybeUpstreamHead of
+        Nothing -> pure False
+        Just upstreamHead -> gitExistCommitsBetween logger head upstreamHead
+    when existRemoteCommits (goto done (DidntPush (PushWouldBeRejected commits1)))
+    when (not fetched) (goto done (DidntPush (PushWouldntReachRemote commits1)))
+    git logger ["push", "--follow-tags", "--set-upstream", "origin", "--quiet", branch <> ":" <> branch] <&> \case
+      False -> DidntPush (TriedToPush commits1)
+      True -> Pushed commits1
 
 -- | The result of (considering a) git push.
 data PushResult
