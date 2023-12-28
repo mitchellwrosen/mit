@@ -1,0 +1,13 @@
+local/main> echo 'Hello, world' > hello.txt # success
+local/main> git add --all # success
+local/main> git commit --message 'Initial commit' # success
+[main (root-commit) 2c14b13] Initial commit
+ 1 file changed, 1 insertion(+)
+ create mode 100644 hello.txt
+
+local/main> mkdir ../foo # success
+local/main> mit branch foo # failure
+ 
+  Directory /home/mitchell/code/projects/mit/.mitscript/local/foo already exists.
+ 
+

@@ -2,6 +2,7 @@ module Main where
 
 import Control.Exception (bracket_, throwIO, try)
 import Control.Monad (when)
+import Data.Char qualified as Char
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.IO qualified as Text
@@ -52,11 +53,12 @@ data Line
   | Shell !Text !Text
 
 parseLine :: Text -> Line
-parseLine line =
-  let (before, after) = Text.span (/= '>') line
-   in if Text.null after
-        then Comment line
-        else Shell before (Text.strip (Text.drop 1 after))
+parseLine line
+  | Text.all (\c -> Char.isAlpha c || c == '/') before && not (Text.null after) =
+      Shell before (Text.strip (Text.drop 1 after))
+  | otherwise = Comment line
+  where
+    (before, after) = Text.span (/= '>') line
 
 forlines :: (Text -> IO ()) -> IO ()
 forlines action =

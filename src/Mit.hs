@@ -34,7 +34,6 @@ import Mit.Git
     gitRevParseAbsoluteGitDir,
     gitUnstageChanges,
     gitVersion,
-    git_,
     prettyGitCommitInfo,
     prettyGitConflict,
   )
@@ -334,9 +333,9 @@ mitCommitMerge logger = do
   -- that tells us we're merging in <branch>. But we also handle the case that we went `git merge` -> `mit commit`,
   -- because why not.
   case state.merging of
-    Nothing -> git_ logger ["commit", "--all", "--no-edit"]
+    Nothing -> git @() logger ["commit", "--all", "--no-edit"]
     Just merging ->
-      git_
+      git @()
         logger
         [ "commit",
           "--all",
@@ -399,10 +398,10 @@ mitMerge logger target = do
   context <- getContext logger
   let upstream = contextUpstream context
 
-  if target == context.branch || target == upstream
-    then -- If on branch `foo`, treat `mit merge foo` and `mit merge origin/foo` as `mit sync`
-      mitSyncWith logger Pretty.empty Nothing
-    else do
+  case target == context.branch || target == upstream of
+    -- If on branch `foo`, treat `mit merge foo` and `mit merge origin/foo` as `mit sync`
+    True -> mitSyncWith logger Pretty.empty Nothing
+    False -> do
       -- When given 'mit merge foo', prefer running 'git merge origin/foo' over 'git merge foo'
       targetCommit <-
         gitRemoteBranchHead logger "origin" target & onNothingM do
@@ -550,10 +549,9 @@ mitSyncWith logger pretty0 maybeUndo = do
                 (True, _, _) -> Nothing
                 (False, Nothing, Nothing) -> Nothing
                 (False, Nothing, Just _conflicts) -> undoToSnapshot context.snapshot
-                (False, Just undo, _) ->
-                  -- FIXME hm, could consider appending those undos instead, even if they obviate the recent stash/merge
-                  -- undos
-                  Just undo
+                -- FIXME hm, could consider appending those undos instead, even if they obviate the recent stash/merge
+                -- undos
+                (False, Just undo, _) -> Just undo
           }
 
   writeMitState logger context.branch state
@@ -613,7 +611,7 @@ abortIfRemoteIsAhead logger context = do
 cleanWorkingTree :: Logger ProcessInfo -> Context -> IO ()
 cleanWorkingTree logger context = do
   whenJust (snapshotStash context.snapshot) \_stash ->
-    git_ logger ["reset", "--hard", "--quiet", "HEAD"]
+    git @() logger ["reset", "--hard", "--quiet", "HEAD"]
 
 output :: Pretty -> IO ()
 output p =

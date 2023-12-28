@@ -1,0 +1,6 @@
+`mit branch <name>` creates a worktree in ../<name>
+
+local/main> echo 'Hello, world' > hello.txt
+local/main> git add --all
+local/main> git commit --message 'Initial commit'
+local/main> mit branch foo

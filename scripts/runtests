@@ -2,9 +2,31 @@
 
 set -e
 
-cabal build mitscript
+# Define a grep variant that doesn't return 1 on zero matches
+mygrep() {
+  grep "$@" || [ $? = 1 ]
+}
 
-for script in ./tests/input/*; do
-  basename ${script}
-  $(cabal list-bin mitscript:exe:mitscript) < ${script} > ${script/input/output}
+echo "================================================================================"
+echo "Building mitscript executable"
+echo "================================================================================"
+
+cabal build mitscript
+mitscript=$(cabal list-bin mitscript:exe:mitscript)
+
+echo ""
+
+echo "================================================================================"
+echo "Running matching tests (provide a regex argument to filter)"
+echo "================================================================================"
+
+files=($(ls tests/input | mygrep "$1"))
+
+for file in "${files[@]}"; do
+  echo -n "$file "
+  SECONDS=1
+  time0=$(date +%s%N)
+  "$mitscript" < "tests/input/$file" > "tests/output/$file"
+  time1=$(date +%s%N)
+  echo " ($((($time1 - $time0)/1000000))ms)"
 done

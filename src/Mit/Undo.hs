@@ -9,7 +9,7 @@ module Mit.Undo
 where
 
 import Data.Text qualified as Text
-import Mit.Git (gitUnstageChanges, git_)
+import Mit.Git (gitUnstageChanges, git)
 import Mit.Logger (Logger)
 import Mit.Prelude
 import Mit.ProcessInfo (ProcessInfo)
@@ -64,13 +64,13 @@ applyUndo logger =
     go :: Undo -> IO ()
     go = \case
       Apply commit next -> do
-        git_ logger ["stash", "apply", "--quiet", commit]
+        git @() logger ["stash", "apply", "--quiet", commit]
         gitUnstageChanges logger
         whenJust next go
       Reset commit next -> do
-        git_ logger ["clean", "-d", "--force"]
-        git_ logger ["reset", "--hard", commit]
+        git @() logger ["clean", "-d", "--force"]
+        git @() logger ["reset", "--hard", commit]
         whenJust next go
       Revert commit next -> do
-        git_ logger ["revert", commit]
+        git @() logger ["revert", commit]
         whenJust next go

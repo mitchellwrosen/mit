@@ -8,7 +8,6 @@ module Mit.Git
     GitVersion (..),
     showGitVersion,
     git,
-    git_,
     git2,
     gitApplyStash,
     gitBranchWorktreeDir,
@@ -231,13 +230,13 @@ gitConflictsWith logger commit = do
     git logger ["merge", "--no-commit", "--no-ff", commit] >>= \case
       False -> gitConflicts logger
       True -> pure []
-  whenM (gitMergeInProgress logger) (git_ logger ["merge", "--abort"])
+  whenM (gitMergeInProgress logger) (git @() logger ["merge", "--abort"])
   whenJust maybeStash \stash -> git logger ["stash", "apply", "--quiet", stash]
   pure conflicts
 
 gitCreateStash :: Logger ProcessInfo -> IO (Maybe Text)
 gitCreateStash logger = do
-  git_ logger ["add", "--all"] -- it seems certain things (like renames), unless staged, cannot be stashed
+  git @() logger ["add", "--all"] -- it seems certain things (like renames), unless staged, cannot be stashed
   stash <-
     git logger ["stash", "create"] <&> \case
       Seq.Empty -> Nothing
@@ -358,16 +357,16 @@ gitStash logger = do
   gitCreateStash logger >>= \case
     Nothing -> pure Nothing
     Just stash -> do
-      git_ logger ["clean", "-d", "--force"]
-      git_ logger ["reset", "--hard", "--quiet", "HEAD"]
+      git @() logger ["clean", "-d", "--force"]
+      git @() logger ["reset", "--hard", "--quiet", "HEAD"]
       pure (Just stash)
 
 gitUnstageChanges :: Logger ProcessInfo -> IO ()
 gitUnstageChanges logger = do
-  git_ logger ["reset", "--quiet", "--", "."]
+  git @() logger ["reset", "--quiet", "--", "."]
   untrackedFiles <- gitListUntrackedFiles logger
   when (not (null untrackedFiles)) do
-    git_ logger ("add" : "--intent-to-add" : untrackedFiles)
+    git @() logger ("add" : "--intent-to-add" : untrackedFiles)
 
 -- | Parse the @git@ version from the output of @git --version@.
 --
@@ -502,10 +501,6 @@ ignoreSyncExceptions action =
         Nothing -> pure ()
         Just (_ :: SomeAsyncException) -> throwIO ex
     Right () -> pure ()
-
-git_ :: Logger ProcessInfo -> [Text] -> IO ()
-git_ =
-  git
 
 -- Yucky interactive/inherity variant (so 'git commit' can open an editor).
 --

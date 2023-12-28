@@ -5,57 +5,66 @@ where
 
 import Data.Text qualified as Text
 import Mit.Directory (cd, doesDirectoryExist)
-import Mit.Git
-  ( git,
-    gitBranchWorktreeDir,
-    gitDefaultBranch,
-    gitFetch_,
-    gitRemoteBranchExists,
-    git_,
-  )
+import Mit.Git (git, gitBranchWorktreeDir, gitDefaultBranch, gitFetch_, gitRemoteBranchExists)
 import Mit.Label (Abort, abort, goto, label)
+import Mit.Logger (Logger)
 import Mit.Output (Output)
 import Mit.Output qualified as Output
 import Mit.Prelude
-import Mit.Logger (Logger)
 import Mit.ProcessInfo (ProcessInfo)
 
 mitBranch :: (Abort Output) => (Output -> IO ()) -> Logger ProcessInfo -> Text -> IO ()
 mitBranch output logger branch = do
+  -- Get the worktree directory that corresponds to the branch.
+  --
+  -- For example, if the main branch (and git repo) is in /my/repo/main, and the branch is called "foo", then the
+  -- worktree directory is /my/repo/foo
   worktreeDir <- do
     rootdir <- git logger ["rev-parse", "--show-toplevel"]
     pure (Text.dropWhileEnd (/= '/') rootdir <> branch)
 
-  gitBranchWorktreeDir logger branch >>= \case
-    Just directory -> when (directory /= worktreeDir) (abort (Output.BranchAlreadyCheckedOut branch directory))
-    Nothing -> do
-      whenM (doesDirectoryExist worktreeDir) (abort (Output.DirectoryAlreadyExists worktreeDir))
+  label \done -> do
+    -- It's possible that branch "foo" is already checked out in *some* worktree. If it is, we're done.
+    --
+    -- If the branch's worktree is already where we were going to create it, this is just a do-nothing no-op. (Possible
+    -- improvement: output something here).
+    --
+    -- If it isn't, that's an error; we'd like to check out "foo" in /my/repo/foo but it's already checked out in
+    -- /my/repo/bar?! Complain and quit.
+    gitBranchWorktreeDir logger branch & onJustM \directory ->
+      if directory == worktreeDir
+        then goto done ()
+        else abort (Output.BranchAlreadyCheckedOut branch directory)
 
-      git_ logger ["worktree", "add", "--detach", worktreeDir]
+    -- Maybe branch "foo" isn't checked out in any worktree, but there's already some directory at /my/repo/foo, which
+    -- is also a problem.
+    whenM (doesDirectoryExist worktreeDir) (abort (Output.DirectoryAlreadyExists worktreeDir))
 
-      label \done ->
-        cd worktreeDir do
-          -- Maybe the branch already exists; try switching to it.
-          whenM (git logger ["switch", branch]) do
-            output (Output.CheckedOutBranch branch worktreeDir)
-            goto done ()
+    -- Create the new worktree with a detached HEAD.
+    git @() logger ["worktree", "add", "--detach", worktreeDir]
 
-          -- Ok, it doesn't exist; create it.
-          git_ logger ["branch", "--no-track", branch]
-          git_ logger ["switch", branch]
+    -- Inside the new worktree directory...
+    cd worktreeDir do
+      -- Maybe branch "foo" already exists; try simply switching to it. If that works, we're done!
+      whenM (git logger ["switch", branch]) do
+        output (Output.CheckedOutBranch branch worktreeDir)
+        goto done ()
 
-          gitFetch_ logger "origin"
-          upstreamExists <- gitRemoteBranchExists logger "origin" branch
-          if upstreamExists
-            then do
-              let upstream = "origin/" <> branch
-              git_ logger ["reset", "--hard", "--quiet", upstream]
-              git_ logger ["branch", "--set-upstream-to", upstream]
-              output (Output.CreatedBranch branch worktreeDir (Just upstream))
-            else do
-              -- Start the new branch at the latest origin/main, if there is an origin/main
-              -- This seems better than starting from whatever branch the user happened to fork from, which was
-              -- probably some slightly out-of-date main
-              whenJustM (gitDefaultBranch logger "origin") \defaultBranch ->
-                git_ logger ["reset", "--hard", "--quiet", "origin/" <> defaultBranch]
-              output (Output.CreatedBranch branch worktreeDir Nothing)
+      -- Ok, it doesn't exist; create it.
+      git @() logger ["branch", "--no-track", branch]
+      git @() logger ["switch", branch]
+
+      gitFetch_ logger "origin"
+      gitRemoteBranchExists logger "origin" branch >>= \case
+        False -> do
+          -- Start the new branch at the latest origin/main, if there is an origin/main
+          -- This seems better than starting from whatever branch the user happened to fork from, which was
+          -- probably some slightly out-of-date main
+          whenJustM (gitDefaultBranch logger "origin") \defaultBranch ->
+            git @() logger ["reset", "--hard", "--quiet", "origin/" <> defaultBranch]
+          output (Output.CreatedBranch branch worktreeDir Nothing)
+        True -> do
+          let upstream = "origin/" <> branch
+          git @() logger ["reset", "--hard", "--quiet", upstream]
+          git @() logger ["branch", "--set-upstream-to", upstream]
+          output (Output.CreatedBranch branch worktreeDir (Just upstream))

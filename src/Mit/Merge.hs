@@ -7,7 +7,7 @@ module Mit.Merge
   )
 where
 
-import Mit.Git (GitCommitInfo, GitConflict, git, gitCommitsBetween, gitConflicts, gitMergeInProgress, git_)
+import Mit.Git (GitCommitInfo, GitConflict, git, gitCommitsBetween, gitConflicts, gitMergeInProgress)
 import Mit.Logger (Logger)
 import Mit.Prelude
 import Mit.ProcessInfo (ProcessInfo)
@@ -28,7 +28,7 @@ performMerge logger commit message = do
           pure (TriedToMerge commits (Seq1.unsafeFromList conflicts))
         True -> do
           -- If this was a fast-forward, a merge would not be in progress at this point.
-          whenM (gitMergeInProgress logger) (git_ logger ["commit", "--message", message])
+          whenM (gitMergeInProgress logger) (git @() logger ["commit", "--message", message])
           pure (Merged commits)
 
 -- | The result of a 'performMerge'. Lists of commits do not contain the merge commit itself.

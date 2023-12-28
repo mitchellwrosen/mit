@@ -1,0 +1,18 @@
+local/main> echo 'Hello, world' > hello.txt # success
+local/main> git add --all # success
+local/main> git commit --message 'Initial commit' # success
+[main (root-commit) 2c14b13] Initial commit
+ 1 file changed, 1 insertion(+)
+ create mode 100644 hello.txt
+
+
+local/main> git worktree add -b foo ../bar # success
+HEAD is now at 2c14b13 Initial commit
+
+Preparing worktree (new branch 'foo')
+
+local/main> mit branch foo # failure
+ 
+  foo is already checked out in /home/mitchell/code/projects/mit/.mitscript/local/bar.
+ 
+

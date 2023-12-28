@@ -1,0 +1,14 @@
+`mit branch <name>` creates a worktree in ../<name>
+
+local/main> echo 'Hello, world' > hello.txt # success
+local/main> git add --all # success
+local/main> git commit --message 'Initial commit' # success
+[main (root-commit) 2c14b13] Initial commit
+ 1 file changed, 1 insertion(+)
+ create mode 100644 hello.txt
+
+local/main> mit branch foo # success
+ 
+  Created foo in /home/mitchell/code/projects/mit/.mitscript/local/foo
+ 
+

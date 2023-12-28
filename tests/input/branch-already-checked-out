@@ -1,0 +1,6 @@
+local/main> echo 'Hello, world' > hello.txt
+local/main> git add --all
+local/main> git commit --message 'Initial commit'
+
+local/main> git worktree add -b foo ../bar
+local/main> mit branch foo
