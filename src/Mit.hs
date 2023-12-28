@@ -237,8 +237,8 @@ mitCommitNotMerge logger allFlag maybeMessage = do
   committed <- do
     doCommitAll <- if allFlag then pure True else not <$> queryTerminal 0
     case (doCommitAll, maybeMessage) of
-      (True, Nothing) -> git2 logger ["commit", "--all"]
-      (True, Just message) -> git logger ["commit", "--all", "--message", message]
+      (True, Nothing) -> git2 logger ["commit", "--all", "--quiet"]
+      (True, Just message) -> git logger ["commit", "--all", "--message", message, "--quiet"]
       (False, Nothing) -> git2 logger ["commit", "--patch", "--quiet"]
       (False, Just message) -> git2 logger ["commit", "--patch", "--message", message, "--quiet"]
 
