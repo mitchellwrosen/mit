@@ -13,6 +13,7 @@ module Mit.Pretty
     char,
     text,
     builder,
+    int,
     --
     branch,
     command,
@@ -23,10 +24,10 @@ where
 import Data.List qualified as List
 import Data.String (IsString (..))
 import Data.Text qualified as Text
+import Data.Text.Builder.Linear qualified as Text (Builder)
+import Data.Text.Builder.Linear qualified as Text.Builder
 import Data.Text.IO qualified as Text
 import Mit.Prelude
-import Data.Text.Builder.Linear qualified as Text.Builder
-import Data.Text.Builder.Linear qualified as Text (Builder)
 import Text.Builder.ANSI qualified as Text.Builder
 
 type Pretty =
@@ -94,6 +95,10 @@ text =
 builder :: Text.Builder -> Line
 builder =
   coerce
+
+int :: Int -> Line
+int =
+  builder . Text.Builder.fromDec
 
 ---
 

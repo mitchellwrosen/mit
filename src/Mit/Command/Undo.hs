@@ -15,11 +15,11 @@ import Mit.Undo (applyUndo)
 
 -- FIXME output what we just undid
 mitUndo :: (Abort Output) => Logger ProcessInfo -> (Logger ProcessInfo -> IO ()) -> IO ()
-mitUndo logger sync = do
-  branch <- gitCurrentBranch logger
-  state <- readMitState logger branch
+mitUndo pinfo sync = do
+  branch <- gitCurrentBranch pinfo & onNothingM (abort Output.NotOnBranch)
+  state <- readMitState pinfo branch
   undo <- state.undo & onNothing (abort Output.NothingToUndo)
-  headBefore <- git @Text logger ["rev-parse", "HEAD"]
-  applyUndo logger undo
-  headAfter <- git logger ["rev-parse", "HEAD"]
-  when (headBefore /= headAfter) (sync logger)
+  headBefore <- git @Text pinfo ["rev-parse", "HEAD"]
+  applyUndo pinfo undo
+  headAfter <- git pinfo ["rev-parse", "HEAD"]
+  when (headBefore /= headAfter) (sync pinfo)

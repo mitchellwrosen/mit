@@ -7,7 +7,7 @@ module Mit.Push
   )
 where
 
-import Mit.Git (GitCommitInfo, git, gitCommitsBetween, gitExistCommitsBetween)
+import Mit.Git (GitCommitInfo, git, gitCommitsBetween, gitNumCommitsBetween)
 import Mit.Label (goto, label)
 import Mit.Logger (Logger)
 import Mit.Prelude
@@ -20,11 +20,11 @@ performPush logger branch maybeHead maybeUpstreamHead fetched = do
     head <- maybeHead & onNothing (goto done (DidntPush NothingToPush))
     commits <- gitCommitsBetween logger maybeUpstreamHead head
     commits1 <- Seq1.fromSeq commits & onNothing (goto done (DidntPush NothingToPush))
-    existRemoteCommits <-
+    numRemoteCommits <-
       case maybeUpstreamHead of
-        Nothing -> pure False
-        Just upstreamHead -> gitExistCommitsBetween logger head upstreamHead
-    when existRemoteCommits (goto done (DidntPush (PushWouldBeRejected commits1)))
+        Nothing -> pure 0
+        Just upstreamHead -> gitNumCommitsBetween logger head upstreamHead
+    when (numRemoteCommits > 0) (goto done (DidntPush (PushWouldBeRejected commits1 numRemoteCommits)))
     when (not fetched) (goto done (DidntPush (PushWouldntReachRemote commits1)))
     git logger ["push", "--follow-tags", "--set-upstream", "origin", "--quiet", branch <> ":" <> branch] <&> \case
       False -> DidntPush (TriedToPush commits1)
@@ -41,17 +41,17 @@ data DidntPushReason
   = -- | There was nothing to push.
     NothingToPush
   | -- | We have commits to push, but we appear to be offline.
-    PushWouldntReachRemote (Seq1 GitCommitInfo)
+    PushWouldntReachRemote !(Seq1 GitCommitInfo)
   | -- | We have commits to push, but there are also remote commits to merge.
-    PushWouldBeRejected (Seq1 GitCommitInfo)
+    PushWouldBeRejected !(Seq1 GitCommitInfo) !Int
   | -- | We had commits to push, and tried to push, but it failed.
-    TriedToPush (Seq1 GitCommitInfo)
+    TriedToPush !(Seq1 GitCommitInfo)
 
 pushResultCommits :: PushResult -> Maybe (Seq1 GitCommitInfo)
 pushResultCommits = \case
   DidntPush NothingToPush -> Nothing
   DidntPush (PushWouldntReachRemote commits) -> Just commits
-  DidntPush (PushWouldBeRejected commits) -> Just commits
+  DidntPush (PushWouldBeRejected commits _) -> Just commits
   DidntPush (TriedToPush commits) -> Just commits
   Pushed commits -> Just commits
 

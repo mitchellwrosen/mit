@@ -1,10 +1,12 @@
 local/main> echo 'Hello, world!' > foo.txt # success
 local/main> mit commit --all --message 'initial commit' # success
  
-  ✓ main ≡ origin/main
+  Pushed 1 commit.
    
-    │ main → origin/main
     │ cdc6973 initial commit - Bob Ross Jan 1 1970
+ 
+ 
+  ✓ main ≡ origin/main
  
 
 local/main> mit branch topic # success
@@ -14,6 +16,9 @@ local/main> mit branch topic # success
 
 local/topic> echo 'Hey, world!' > foo.txt # success
 local/topic> mit merge main # success
+ 
+  topic is already up-to-date with main.
+ 
  
   ✓ topic ≡ origin/topic
  

@@ -7,20 +7,20 @@ import Data.Text qualified as Text
 import Mit.Directory (cd, doesDirectoryExist)
 import Mit.Git (git, gitBranchWorktreeDir, gitDefaultBranch, gitFetch, gitRemoteBranchExists)
 import Mit.Label (Abort, abort, goto, label)
-import Mit.Logger (Logger)
+import Mit.Logger (Logger, log)
 import Mit.Output (Output)
 import Mit.Output qualified as Output
 import Mit.Prelude
 import Mit.ProcessInfo (ProcessInfo)
 
-mitBranch :: (Abort Output) => (Output -> IO ()) -> Logger ProcessInfo -> Text -> IO ()
-mitBranch output logger branch = do
+mitBranch :: (Abort Output) => Logger Output -> Logger ProcessInfo -> Text -> IO ()
+mitBranch output pinfo branch = do
   -- Get the worktree directory that corresponds to the branch.
   --
   -- For example, if the main branch (and git repo) is in /my/repo/main, and the branch is called "foo", then the
   -- worktree directory is /my/repo/foo
   worktreeDir <- do
-    rootdir <- git logger ["rev-parse", "--show-toplevel"]
+    rootdir <- git pinfo ["rev-parse", "--show-toplevel"]
     pure (Text.dropWhileEnd (/= '/') rootdir <> branch)
 
   label \done -> do
@@ -31,7 +31,7 @@ mitBranch output logger branch = do
     --
     -- If it isn't, that's an error; we'd like to check out "foo" in /my/repo/foo but it's already checked out in
     -- /my/repo/bar?! Complain and quit.
-    gitBranchWorktreeDir logger branch & onJustM \directory ->
+    gitBranchWorktreeDir pinfo branch & onJustM \directory ->
       if directory == worktreeDir
         then goto done ()
         else abort (Output.BranchAlreadyCheckedOut branch directory)
@@ -41,30 +41,30 @@ mitBranch output logger branch = do
     whenM (doesDirectoryExist worktreeDir) (abort (Output.DirectoryAlreadyExists worktreeDir))
 
     -- Create the new worktree with a detached HEAD.
-    git @() logger ["worktree", "add", "--detach", worktreeDir]
+    git @() pinfo ["worktree", "add", "--detach", worktreeDir]
 
     -- Inside the new worktree directory...
     cd worktreeDir do
       -- Maybe branch "foo" already exists; try simply switching to it. If that works, we're done!
-      whenM (git logger ["switch", "--no-guess", "--quiet", branch]) do
-        output (Output.CheckedOutBranch branch worktreeDir)
+      whenM (git pinfo ["switch", "--no-guess", "--quiet", branch]) do
+        log output (Output.CheckedOutBranch branch worktreeDir)
         goto done ()
 
       -- Ok, it doesn't exist; create it.
-      git @() logger ["branch", "--no-track", branch]
-      git @() logger ["switch", "--quiet", branch]
+      git @() pinfo ["branch", "--no-track", branch]
+      git @() pinfo ["switch", "--quiet", branch]
 
-      _fetched <- gitFetch logger "origin"
-      gitRemoteBranchExists logger "origin" branch >>= \case
+      _fetched <- gitFetch pinfo "origin"
+      gitRemoteBranchExists pinfo "origin" branch >>= \case
         False -> do
           -- Start the new branch at the latest origin/main, if there is an origin/main
           -- This seems better than starting from whatever branch the user happened to fork from, which was
           -- probably some slightly out-of-date main
-          whenJustM (gitDefaultBranch logger "origin") \defaultBranch ->
-            git @() logger ["reset", "--hard", "--quiet", "origin/" <> defaultBranch]
-          output (Output.CreatedBranch branch worktreeDir Nothing)
+          whenJustM (gitDefaultBranch pinfo "origin") \defaultBranch ->
+            git @() pinfo ["reset", "--hard", "--quiet", "origin/" <> defaultBranch]
+          log output (Output.CreatedBranch branch worktreeDir Nothing)
         True -> do
           let upstream = "origin/" <> branch
-          git @() logger ["reset", "--hard", "--quiet", upstream]
-          git @() logger ["branch", "--quiet", "--set-upstream-to", upstream]
-          output (Output.CreatedBranch branch worktreeDir (Just upstream))
+          git @() pinfo ["reset", "--hard", "--quiet", upstream]
+          git @() pinfo ["branch", "--quiet", "--set-upstream-to", upstream]
+          log output (Output.CreatedBranch branch worktreeDir (Just upstream))

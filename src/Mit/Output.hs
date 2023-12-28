@@ -3,6 +3,7 @@ module Mit.Output
   )
 where
 
+import Mit.Git (GitCommitInfo)
 import Mit.Prelude
 
 data Output
@@ -12,9 +13,17 @@ data Output
   | DirectoryAlreadyExists !Text
   | GitTooOld
   | MergeInProgress
+  | MergeFailed !Text !Text !(Seq1 GitCommitInfo)
+  | -- FIXME persist the commits that we're merging so we can report them (no more Just Nothing case)
+    MergeSucceeded !Text !Text !(Maybe (Seq1 GitCommitInfo))
   | NoGitDir
   | NoSuchBranch
   | NotOnBranch
   | NothingToCommit
+  | NothingToMerge !Text !Text
   | NothingToUndo
-  | RemoteIsAhead !Text !Text -- branch name, upstream branch name
+  | PushFailed !(Seq1 GitCommitInfo)
+  | PushSucceeded !(Seq1 GitCommitInfo)
+  | PushWouldBeRejected !(Seq1 GitCommitInfo) !Int
+  | PushWouldntReachRemote !(Seq1 GitCommitInfo)
+  | UpstreamIsAhead !Text !Text -- branch name, upstream branch name

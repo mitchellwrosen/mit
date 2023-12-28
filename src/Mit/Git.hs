@@ -2,9 +2,8 @@
 module Mit.Git
   ( DiffResult (..),
     GitCommitInfo (..),
-    prettyGitCommitInfo,
-    GitConflict,
-    prettyGitConflict,
+    GitConflict (..),
+    GitConflictXY (..),
     GitVersion (..),
     showGitVersion,
     git,
@@ -23,6 +22,7 @@ module Mit.Git
     gitIsMergeCommit,
     gitMaybeHead,
     gitMergeInProgress,
+    gitNumCommitsBetween,
     gitRemoteBranchExists,
     gitRemoteBranchHead,
     gitRevParseAbsoluteGitDir,
@@ -41,14 +41,11 @@ import Data.Map.Strict qualified as Map
 import Data.Sequence qualified as Seq
 import Data.Text qualified as Text
 import Data.Text.IO qualified as Text
+import Data.Text.Read qualified as Text.Read
 import GHC.Clock (getMonotonicTime)
 import Ki qualified
-import Mit.Label (Abort, abort)
 import Mit.Logger (Logger, log)
-import Mit.Output (Output)
-import Mit.Output qualified as Output
 import Mit.Prelude
-import Mit.Pretty qualified as Pretty
 import Mit.Process (ProcessOutput (..))
 import Mit.ProcessInfo (ProcessInfo (..))
 import System.Directory (doesFileExist)
@@ -66,7 +63,6 @@ import System.Process
     waitForProcess,
   )
 import System.Process.Internals (ProcessHandle__ (ClosedHandle, OpenExtHandle, OpenHandle), withProcessHandle)
-import Text.Builder.ANSI qualified as Text.Builder
 import Text.Parsec qualified as Parsec
 
 data DiffResult
@@ -87,16 +83,6 @@ parseGitCommitInfo line =
   case Text.split (== '\xFEFF') line of
     [author, date, hash, shorthash, subject] -> GitCommitInfo {author, date, hash, shorthash, subject}
     _ -> error (Text.unpack line)
-
-prettyGitCommitInfo :: GitCommitInfo -> Pretty.Line
-prettyGitCommitInfo info =
-  Pretty.style (Text.Builder.bold . Text.Builder.black) (Pretty.text info.shorthash)
-    <> Pretty.char ' '
-    <> Pretty.style (Text.Builder.bold . Text.Builder.white) (Pretty.text info.subject)
-    <> " - "
-    <> Pretty.style (Text.Builder.italic . Text.Builder.white) (Pretty.text info.author)
-    <> Pretty.char ' '
-    <> Pretty.style (Text.Builder.italic . Text.Builder.yellow) (Pretty.text info.date)
 
 -- FIXME some other color, magenta?
 
@@ -130,10 +116,6 @@ parseGitConflict line = do
   [xy, name] <- Just (Text.words line)
   GitConflict <$> parseGitConflictXY xy <*> Just name
 
-prettyGitConflict :: GitConflict -> Pretty.Line
-prettyGitConflict (GitConflict xy name) =
-  Pretty.text name <> " (" <> prettyGitConflictXY xy <> ")"
-
 data GitConflictXY
   = AA -- both added
   | AU -- added by us
@@ -154,16 +136,6 @@ parseGitConflictXY = \case
   "UD" -> Just UD
   "UU" -> Just UU
   _ -> Nothing
-
-prettyGitConflictXY :: GitConflictXY -> Pretty.Line
-prettyGitConflictXY = \case
-  AA -> "both added"
-  AU -> "added by us"
-  DD -> "both deleted"
-  DU -> "deleted by us"
-  UA -> "added by them"
-  UD -> "deleted by them"
-  UU -> "both modified"
 
 data GitVersion
   = GitVersion Int Int Int
@@ -246,12 +218,12 @@ gitCreateStash logger = do
   gitUnstageChanges logger
   pure stash
 
--- | Get the name of the current branch, or abort if we're not on a branch.
-gitCurrentBranch :: (Abort Output) => Logger ProcessInfo -> IO Text
+-- | Get the name of the current branch.
+gitCurrentBranch :: Logger ProcessInfo -> IO (Maybe Text)
 gitCurrentBranch logger =
-  git logger ["branch", "--show-current"] >>= \case
-    Seq.Empty -> abort Output.NotOnBranch
-    branch Seq.:<| _ -> pure branch
+  git logger ["branch", "--show-current"] <&> \case
+    Seq.Empty -> Nothing
+    branch Seq.:<| _ -> Just branch
 
 gitDefaultBranch :: Logger ProcessInfo -> Text -> IO (Maybe Text)
 gitDefaultBranch logger remote =
@@ -317,6 +289,16 @@ gitMergeInProgress :: Logger ProcessInfo -> IO Bool
 gitMergeInProgress logger = do
   gitdir <- gitRevParseAbsoluteGitDir logger
   doesFileExist (Text.unpack (gitdir <> "/MERGE_HEAD"))
+
+gitNumCommitsBetween :: Logger ProcessInfo -> Text -> Text -> IO Int
+gitNumCommitsBetween logger commit1 commit2 =
+  if commit1 == commit2
+    then pure 0
+    else do
+      commitsString <- git logger ["rev-list", "--count", commit1 <> ".." <> commit2]
+      pure case Text.Read.decimal commitsString of
+        Right (commits, "") -> commits
+        _ -> 0
 
 -- | Does the given remote branch (refs/remotes/...) exist?
 gitRemoteBranchExists :: Logger ProcessInfo -> Text -> Text -> IO Bool

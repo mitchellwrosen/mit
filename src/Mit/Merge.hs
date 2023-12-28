@@ -38,7 +38,7 @@ data MergeResult
   | -- | We tried to merge these commits, but observed these conflicts.
     TriedToMerge !(Seq1 GitCommitInfo) !(Seq1 GitConflict)
   | -- | We successfully merged these commits.
-    Merged (Seq1 GitCommitInfo) -- note: doesn't distinguish between FF and non-FF
+    Merged !(Seq1 GitCommitInfo) -- note: doesn't distinguish between FF and non-FF
 
 mergeResultCommits :: MergeResult -> Maybe (Seq1 GitCommitInfo)
 mergeResultCommits = \case
