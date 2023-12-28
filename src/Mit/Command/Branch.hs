@@ -46,13 +46,13 @@ mitBranch output logger branch = do
     -- Inside the new worktree directory...
     cd worktreeDir do
       -- Maybe branch "foo" already exists; try simply switching to it. If that works, we're done!
-      whenM (git logger ["switch", branch]) do
+      whenM (git logger ["switch", "--no-guess", "--quiet", branch]) do
         output (Output.CheckedOutBranch branch worktreeDir)
         goto done ()
 
       -- Ok, it doesn't exist; create it.
       git @() logger ["branch", "--no-track", branch]
-      git @() logger ["switch", branch]
+      git @() logger ["switch", "--quiet", branch]
 
       _fetched <- gitFetch logger "origin"
       gitRemoteBranchExists logger "origin" branch >>= \case
@@ -66,5 +66,5 @@ mitBranch output logger branch = do
         True -> do
           let upstream = "origin/" <> branch
           git @() logger ["reset", "--hard", "--quiet", upstream]
-          git @() logger ["branch", "--set-upstream-to", upstream]
+          git @() logger ["branch", "--quiet", "--set-upstream-to", upstream]
           output (Output.CreatedBranch branch worktreeDir (Just upstream))

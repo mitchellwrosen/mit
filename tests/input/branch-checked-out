@@ -1,5 +1,11 @@
+If "foo" exists, `mit branch foo` will just check it out in a worktree.
+
 local/main> echo 'Hello, world' > hello.txt
 local/main> git add --all
 local/main> git commit --message 'Initial commit'
 local/main> git branch -c foo
+
 local/main> mit branch foo
+
+local/foo> git log
+local/foo> git status

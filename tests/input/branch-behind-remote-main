@@ -1,0 +1,15 @@
+If "origin/foo" doesn't exist, but "origin/main" does, `mit branch foo` will begin "foo" at "origin/main".
+
+local/main> echo 'Hello, world' > hello.txt
+local/main> git add --all
+local/main> git commit --message 'First commit'
+local/main> echo 'Hello, world!' > hello.txt
+local/main> git commit --all --message 'Second commit'
+local/main> git push origin main:main
+local/main> git remote set-head origin --auto
+local/main> git reset --hard HEAD~
+
+local/main> mit branch foo
+
+local/foo> git log
+local/foo> git status

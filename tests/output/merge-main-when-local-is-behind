@@ -10,8 +10,6 @@ local/main> mit commit --all --message 'initial commit' # success
    
     │ main → origin/main
     │ cdc6973 initial commit - Bob Ross Jan 1 1970
-   
-  Run mit undo to undo this change.
  
 
 local/main> mit branch topic # success

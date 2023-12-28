@@ -1,5 +1,8 @@
+If ../foo already exists, and doesn't contain a worktree with "foo" checked out, `mit branch foo` will fail.
+
 local/main> echo 'Hello, world' > hello.txt
 local/main> git add --all
 local/main> git commit --message 'Initial commit'
 local/main> mkdir ../foo
+
 local/main> mit branch foo

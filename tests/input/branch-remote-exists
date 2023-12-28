@@ -1,11 +1,11 @@
-`mit branch foo` creates a branch "foo" checked out in worktree ../foo
+If "origin/foo" exists, `mit branch foo` will begin "foo" at "origin/foo".
 
 local/main> echo 'Hello, world' > hello.txt
 local/main> git add --all
 local/main> git commit --message 'Initial commit'
+local/main> git push origin main:foo
 
 local/main> mit branch foo
 
-local/main> git worktree list
 local/foo> git log
 local/foo> git status

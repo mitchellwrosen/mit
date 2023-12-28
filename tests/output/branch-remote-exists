@@ -1,4 +1,4 @@
-If "foo" exists, `mit branch foo` will just check it out in a worktree.
+If "origin/foo" exists, `mit branch foo` will begin "foo" at "origin/foo".
 
 local/main> echo 'Hello, world' > hello.txt # success
 local/main> git add --all # success
@@ -7,11 +7,14 @@ local/main> git commit --message 'Initial commit' # success
  1 file changed, 1 insertion(+)
  create mode 100644 hello.txt
 
-local/main> git branch -c foo # success
+local/main> git push origin main:foo # success
+To ../../remote/.git
+ * [new branch]      main -> foo
+
 
 local/main> mit branch foo # success
  
-  Checked out foo in /home/mitchell/code/projects/mit/.mitscript/local/foo
+  Created foo in /home/mitchell/code/projects/mit/.mitscript/local/foo tracking origin/foo
  
 
 
@@ -24,5 +27,7 @@ Date:   Thu Jan 1 00:00:00 1970 -0500
 
 local/foo> git status # success
 On branch foo
+Your branch is up to date with 'origin/foo'.
+
 nothing to commit, working tree clean
 

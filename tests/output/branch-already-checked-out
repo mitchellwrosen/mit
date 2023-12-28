@@ -1,3 +1,6 @@
+`mit branch foo` fails if "foo" is already checked out in a worktree that isn't ../foo, since each branch can only be
+checked out in at most one worktree.
+
 local/main> echo 'Hello, world' > hello.txt # success
 local/main> git add --all # success
 local/main> git commit --message 'Initial commit' # success
@@ -5,11 +8,11 @@ local/main> git commit --message 'Initial commit' # success
  1 file changed, 1 insertion(+)
  create mode 100644 hello.txt
 
-
 local/main> git worktree add -b foo ../bar # success
 HEAD is now at 2c14b13 Initial commit
 
 Preparing worktree (new branch 'foo')
+
 
 local/main> mit branch foo # failure
  

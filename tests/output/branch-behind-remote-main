@@ -1,0 +1,48 @@
+If "origin/foo" doesn't exist, but "origin/main" does, `mit branch foo` will begin "foo" at "origin/main".
+
+local/main> echo 'Hello, world' > hello.txt # success
+local/main> git add --all # success
+local/main> git commit --message 'First commit' # success
+[main (root-commit) 0f76604] First commit
+ 1 file changed, 1 insertion(+)
+ create mode 100644 hello.txt
+
+local/main> echo 'Hello, world!' > hello.txt # success
+local/main> git commit --all --message 'Second commit' # success
+[main 0fcb10f] Second commit
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+local/main> git push origin main:main # success
+To ../../remote/.git
+ * [new branch]      main -> main
+
+local/main> git remote set-head origin --auto # success
+origin/HEAD set to main
+
+local/main> git reset --hard HEAD~ # success
+HEAD is now at 0f76604 First commit
+
+
+local/main> mit branch foo # success
+ 
+  Created foo in /home/mitchell/code/projects/mit/.mitscript/local/foo
+ 
+
+
+local/foo> git log # success
+commit 0fcb10fdfb3679d3e53dfd9824eda9443d86b5ab
+Author: Bob Ross <bob@bobross.com>
+Date:   Thu Jan 1 00:00:00 1970 -0500
+
+    Second commit
+
+commit 0f766048c742e5be75fc5fad0640cbea81a0a5f0
+Author: Bob Ross <bob@bobross.com>
+Date:   Thu Jan 1 00:00:00 1970 -0500
+
+    First commit
+
+local/foo> git status # success
+On branch foo
+nothing to commit, working tree clean
+
