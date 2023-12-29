@@ -10,9 +10,6 @@ local/main> mit commit --all --message 'initial commit' # success
    
     │ cdc6973 initial commit - Bob Ross Jan 1 1970
  
- 
-  ✓ main ≡ origin/main
- 
 
 local/main> mit branch topic # success
  
@@ -27,8 +24,6 @@ local/main> mit commit --all --message 'second commit' # success
     │ b344055 second commit - Bob Ross Jan 1 1970
  
  
-  ✓ main ≡ origin/main
-   
   Run mit undo to undo this change.
  
 

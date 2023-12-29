@@ -4,22 +4,29 @@ module Mit.Command.Undo
 where
 
 import Mit.Git (git, gitCurrentBranch)
-import Mit.Label (Abort, abort)
-import Mit.Logger (Logger)
+import Mit.Label (Label, goto)
+import Mit.Logger (Logger, log)
 import Mit.Output (Output)
 import Mit.Output qualified as Output
 import Mit.Prelude
 import Mit.ProcessInfo (ProcessInfo)
 import Mit.State (MitState (..), readMitState)
 import Mit.Undo (applyUndo)
+import System.Exit (ExitCode (..))
 
 -- FIXME output what we just undid
-mitUndo :: (Abort Output) => Logger ProcessInfo -> (Logger ProcessInfo -> IO ()) -> IO ()
-mitUndo pinfo sync = do
-  branch <- gitCurrentBranch pinfo & onNothingM (abort Output.NotOnBranch)
+mitUndo :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> IO () -> IO ()
+mitUndo exit output pinfo sync = do
+  branch <-
+    gitCurrentBranch pinfo & onNothingM do
+      log output Output.NotOnBranch
+      goto exit (ExitFailure 1)
   state <- readMitState pinfo branch
-  undo <- state.undo & onNothing (abort Output.NothingToUndo)
+  undo <-
+    state.undo & onNothing do
+      log output Output.NothingToUndo
+      goto exit (ExitFailure 1)
   headBefore <- git @Text pinfo ["rev-parse", "HEAD"]
   applyUndo pinfo undo
   headAfter <- git pinfo ["rev-parse", "HEAD"]
-  when (headBefore /= headAfter) (sync pinfo)
+  when (headBefore /= headAfter) sync

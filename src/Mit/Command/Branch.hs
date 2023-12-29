@@ -6,15 +6,16 @@ where
 import Data.Text qualified as Text
 import Mit.Directory (cd, doesDirectoryExist)
 import Mit.Git (git, gitBranchWorktreeDir, gitDefaultBranch, gitFetch, gitRemoteBranchExists)
-import Mit.Label (Abort, abort, goto, label)
+import Mit.Label (Label, goto, label)
 import Mit.Logger (Logger, log)
 import Mit.Output (Output)
 import Mit.Output qualified as Output
 import Mit.Prelude
 import Mit.ProcessInfo (ProcessInfo)
+import System.Exit (ExitCode (..))
 
-mitBranch :: (Abort Output) => Logger Output -> Logger ProcessInfo -> Text -> IO ()
-mitBranch output pinfo branch = do
+mitBranch :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> Text -> IO ()
+mitBranch exit output pinfo branch = do
   -- Get the worktree directory that corresponds to the branch.
   --
   -- For example, if the main branch (and git repo) is in /my/repo/main, and the branch is called "foo", then the
@@ -34,11 +35,15 @@ mitBranch output pinfo branch = do
     gitBranchWorktreeDir pinfo branch & onJustM \directory ->
       if directory == worktreeDir
         then goto done ()
-        else abort (Output.BranchAlreadyCheckedOut branch directory)
+        else do
+          log output (Output.BranchAlreadyCheckedOut branch directory)
+          goto exit (ExitFailure 1)
 
     -- Maybe branch "foo" isn't checked out in any worktree, but there's already some directory at /my/repo/foo, which
     -- is also a problem.
-    whenM (doesDirectoryExist worktreeDir) (abort (Output.DirectoryAlreadyExists worktreeDir))
+    whenM (doesDirectoryExist worktreeDir) do
+      log output (Output.DirectoryAlreadyExists worktreeDir)
+      goto exit (ExitFailure 1)
 
     -- Create the new worktree with a detached HEAD.
     git @() pinfo ["worktree", "add", "--detach", worktreeDir]

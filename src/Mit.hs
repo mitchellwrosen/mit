@@ -38,7 +38,7 @@ import Mit.Git
     gitUnstageChanges,
     gitVersion,
   )
-import Mit.Label (Abort, abort, label, stick)
+import Mit.Label (Label, goto, label)
 import Mit.Logger (Logger, log, makeLogger)
 import Mit.Merge (MergeResult (..), mergeResultCommits, mergeResultConflicts, performMerge)
 import Mit.Output (Output)
@@ -61,7 +61,7 @@ import Mit.Undo (Undo (..), concatUndos, undoStash)
 import Mit.Verbosity (Verbosity (..), intToVerbosity)
 import Options.Applicative qualified as Opt
 import Options.Applicative.Types qualified as Opt (Backtracking (Backtrack))
-import System.Exit (ExitCode (..), exitFailure)
+import System.Exit (ExitCode (..), exitWith)
 import System.Posix.Terminal (queryTerminal)
 import Text.Builder.ANSI qualified as Text
 import Text.Builder.ANSI qualified as Text.Builder
@@ -148,9 +148,8 @@ main = do
               ExitFailure _ -> Pretty.char '✗'
               ExitSuccess -> Pretty.char '✓'
 
-  main1 output pinfo command & onLeftM \err -> do
-    putPretty (renderOutput err)
-    exitFailure
+  exitCode <- main1 output pinfo command
+  exitWith exitCode
   where
     parser :: Opt.Parser (Verbosity, MitCommand)
     parser =
@@ -195,25 +194,32 @@ main = do
                 (Opt.progDesc "Undo the last `mit` command (if possible).")
           ]
 
-main1 :: Logger Output -> Logger ProcessInfo -> MitCommand -> IO (Either Output ())
+main1 :: Logger Output -> Logger ProcessInfo -> MitCommand -> IO ExitCode
 main1 output pinfo command =
-  label \return ->
-    stick (Left >$< return) (Right <$> main2 output pinfo command)
+  label \exit -> do
+    main2 exit output pinfo command
+    pure ExitSuccess
 
-main2 :: (Abort Output) => Logger Output -> Logger ProcessInfo -> MitCommand -> IO ()
-main2 output pinfo command = do
+main2 :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> MitCommand -> IO ()
+main2 exit output pinfo command = do
   version <- gitVersion pinfo
-  when (version < GitVersion 2 30 1) (abort Output.GitTooOld) -- 'git stash create' broken before 2.30.1
-  whenNotM (gitRevParseAbsoluteGitDir pinfo) (abort Output.NoGitDir)
+  -- 'git stash create' broken before 2.30.1
+  when (version < GitVersion 2 30 1) do
+    log output Output.GitTooOld
+    goto exit (ExitFailure 1)
+  whenNotM (gitRevParseAbsoluteGitDir pinfo) do
+    log output Output.NoGitDir
+    goto exit (ExitFailure 1)
 
+  let sync = mitSync exit output pinfo
   case command of
-    MitCommand'Branch branch -> mitBranch output pinfo branch
-    MitCommand'Commit allFlag maybeMessage -> mitCommit output pinfo allFlag maybeMessage
+    MitCommand'Branch branch -> mitBranch exit output pinfo branch
+    MitCommand'Commit allFlag maybeMessage -> mitCommit exit output pinfo allFlag maybeMessage
     MitCommand'Gc -> mitGc
-    MitCommand'Merge branch -> mitMerge output pinfo branch
+    MitCommand'Merge branch -> mitMerge exit output pinfo branch
     MitCommand'Status -> mitStatus pinfo
-    MitCommand'Sync -> mitSync pinfo
-    MitCommand'Undo -> mitUndo pinfo mitSync
+    MitCommand'Sync -> sync
+    MitCommand'Undo -> mitUndo exit output pinfo sync
 
 data MitCommand
   = MitCommand'Branch !Text
@@ -226,29 +232,34 @@ data MitCommand
   | MitCommand'Sync
   | MitCommand'Undo
 
-mitCommit :: (Abort Output) => Logger Output -> Logger ProcessInfo -> Bool -> Maybe Text -> IO ()
-mitCommit output pinfo allFlag maybeMessage = do
+mitCommit :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> Bool -> Maybe Text -> IO ()
+mitCommit exit output pinfo allFlag maybeMessage = do
   gitMergeInProgress pinfo >>= \case
-    False -> mitCommitNotMerge output pinfo allFlag maybeMessage
-    True -> mitCommitMerge output pinfo
+    False -> mitCommitNotMerge exit output pinfo allFlag maybeMessage
+    True -> mitCommitMerge exit output pinfo
 
-mitCommitNotMerge :: (Abort Output) => Logger Output -> Logger ProcessInfo -> Bool -> Maybe Text -> IO ()
-mitCommitNotMerge output pinfo allFlag maybeMessage = do
+mitCommitNotMerge :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> Bool -> Maybe Text -> IO ()
+mitCommitNotMerge exit output pinfo allFlag maybeMessage = do
   -- Check to see if there's even anything to commit, and bail if not.
   gitUnstageChanges pinfo
   gitDiff pinfo >>= \case
     Differences -> pure ()
-    NoDifferences -> abort Output.NothingToCommit
+    NoDifferences -> do
+      log output Output.NothingToCommit
+      goto exit (ExitFailure 1)
 
   fetched <- gitFetch pinfo "origin"
-  branch <- gitCurrentBranch pinfo & onNothingM (abort Output.NotOnBranch)
+  branch <-
+    gitCurrentBranch pinfo & onNothingM do
+      log output Output.NotOnBranch
+      goto exit (ExitFailure 1)
   maybeHead0 <- gitMaybeHead pinfo
   let upstream = "origin/" <> branch
   maybeUpstreamHead <- gitRemoteBranchHead pinfo "origin" branch
   state0 <- readMitState pinfo branch
   snapshot <- performSnapshot pinfo
 
-  abortIfCouldFastForwardToUpstream pinfo branch maybeHead0 upstream maybeUpstreamHead fetched
+  abortIfCouldFastForwardToUpstream exit output pinfo branch maybeHead0 upstream maybeUpstreamHead fetched
 
   -- Initiate a commit, which (if interactive) can be cancelled with Ctrl+C.
   committed <- do
@@ -273,54 +284,52 @@ mitCommitNotMerge output pinfo allFlag maybeMessage = do
     DidntPush (TriedToPush commits) -> log output (Output.PushFailed commits)
     Pushed commits -> log output (Output.PushSucceeded commits)
 
-  maybeUndo1 <-
-    case maybeHead1 of
-      Nothing -> pure Nothing
-      Just head1 -> do
-        maybeUndoPush <-
-          case pushResult of
-            Pushed commits ->
-              case Seq1.toList commits of
-                [commit] ->
-                  gitIsMergeCommit pinfo commit.hash <&> \case
-                    False -> Just (Revert commit.hash Nothing)
-                    True -> Nothing
-                _ -> pure Nothing
-            DidntPush _reason -> pure Nothing
-        let maybeUndo1 =
-              case (pushResultPushed pushResult, committed) of
-                (False, False) -> state0.undo
-                (False, True) -> undoToSnapshot snapshot
-                (True, False) -> maybeUndoPush
-                (True, True) -> do
-                  -- If we can revert the push *and* there is a stash in the snapshot (i.e. this *isnt* the very first
-                  -- commit), then we can undo (by reverting then applying the stash).
-                  --
-                  -- But if (for example) we can revert the push but there is *not* a stash in the snapshot, that means
-                  -- there were no commits before this one (`git stash create` is illegal there), so we don't want to
-                  -- offer to undo, because although we can revert the commit, we have no way of getting from there to
-                  -- back to having some dirty stuff to commit.
-                  undoPush <- maybeUndoPush
-                  stash <- snapshotStash snapshot
-                  Just (concatUndos undoPush (Apply stash Nothing))
-        writeMitState pinfo branch MitState {head = head1, merging = Nothing, undo = maybeUndo1}
-        pure maybeUndo1
+  whenJust maybeHead1 \head1 -> do
+    maybeUndoPush <-
+      case pushResult of
+        Pushed commits ->
+          case Seq1.toList commits of
+            [commit] ->
+              gitIsMergeCommit pinfo commit.hash <&> \case
+                False -> Just (Revert commit.hash Nothing)
+                True -> Nothing
+            _ -> pure Nothing
+        DidntPush _reason -> pure Nothing
 
-  putPretty $
-    Pretty.paragraphs
-      [ isSynchronizedStanza branch pushResult,
-        -- Whether we say we can undo from here is not exactly if the state says we can undo, because of one corner
-        -- case: we ran 'mit commit', then aborted the commit, and ultimately didn't push any other local changes.
-        --
-        -- In this case, the underlying state hasn't changed, so 'mit undo' will still work as if the 'mit commit' was
-        -- never run, we merely don't want to *say* "run 'mit undo' to undo" as feedback, because that sounds as if it
-        -- would undo the last command run, namely the 'mit commit' that was aborted.
-        Pretty.when (isJust maybeUndo1 && committed) canUndoStanza
-      ]
+    let maybeUndo1 =
+          case (pushResultPushed pushResult, committed) of
+            (False, False) -> state0.undo
+            (False, True) -> undoToSnapshot snapshot
+            (True, False) -> maybeUndoPush
+            (True, True) -> do
+              -- If we can revert the push *and* there is a stash in the snapshot (i.e. this *isnt* the very first
+              -- commit), then we can undo (by reverting then applying the stash).
+              --
+              -- But if (for example) we can revert the push but there is *not* a stash in the snapshot, that means
+              -- there were no commits before this one (`git stash create` is illegal there), so we don't want to
+              -- offer to undo, because although we can revert the commit, we have no way of getting from there to
+              -- back to having some dirty stuff to commit.
+              undoPush <- maybeUndoPush
+              stash <- snapshotStash snapshot
+              Just (concatUndos undoPush (Apply stash Nothing))
 
-mitCommitMerge :: (Abort Output) => Logger Output -> Logger ProcessInfo -> IO ()
-mitCommitMerge output pinfo = do
-  branch <- gitCurrentBranch pinfo & onNothingM (abort Output.NotOnBranch)
+    writeMitState pinfo branch MitState {head = head1, merging = Nothing, undo = maybeUndo1}
+
+    -- Whether we say we can undo from here is not exactly if the state says we can undo, because of one corner case: we
+    -- ran 'mit commit', then aborted the commit, and ultimately didn't push any other local changes.
+    --
+    -- In this case, the underlying state hasn't changed, so 'mit undo' will still work as if the 'mit commit' was never
+    -- run, we merely don't want to *say* "run 'mit undo' to undo" as feedback, because that sounds as if it would undo
+    -- the last command run, namely the 'mit commit' that was aborted.
+    when (isJust maybeUndo1 && committed) do
+      putPretty canUndoStanza
+
+mitCommitMerge :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> IO ()
+mitCommitMerge exit output pinfo = do
+  branch <-
+    gitCurrentBranch pinfo & onNothingM do
+      log output Output.NotOnBranch
+      goto exit (ExitFailure 1)
   state0 <- readMitState pinfo branch
   head0 <- git pinfo ["rev-parse", "HEAD"]
 
@@ -355,12 +364,12 @@ mitCommitMerge output pinfo = do
   --        double conflict markers
 
   case state0.undo >>= undoStash of
-    Nothing -> mitSyncWith pinfo (Just (Reset head0 Nothing))
+    Nothing -> mitSyncWith exit output pinfo (Just (Reset head0 Nothing))
     Just stash -> do
       conflicts <- gitApplyStash pinfo stash
       case List1.nonEmpty conflicts of
         -- FIXME we just unstashed, now we're about to stash again :/
-        Nothing -> mitSyncWith pinfo (Just (Reset head0 (Just (Apply stash Nothing))))
+        Nothing -> mitSyncWith exit output pinfo (Just (Reset head0 (Just (Apply stash Nothing))))
         Just conflicts1 ->
           putPretty $
             Pretty.paragraphs
@@ -380,20 +389,25 @@ mitGc :: IO ()
 mitGc =
   pure ()
 
-mitMerge :: (Abort Output) => Logger Output -> Logger ProcessInfo -> Text -> IO ()
-mitMerge output pinfo source = do
-  whenM (gitMergeInProgress pinfo) (abort Output.MergeInProgress)
+mitMerge :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> Text -> IO ()
+mitMerge exit output pinfo source = do
+  whenM (gitMergeInProgress pinfo) do
+    log output Output.MergeInProgress
+    goto exit (ExitFailure 1)
 
-  branch <- gitCurrentBranch pinfo & onNothingM (abort Output.NotOnBranch)
+  branch <-
+    gitCurrentBranch pinfo & onNothingM do
+      log output Output.NotOnBranch
+      goto exit (ExitFailure 1)
   let upstream = "origin/" <> branch
 
   -- Special case: if on branch "foo", treat `mit merge foo` and `mit merge origin/foo` as `mit sync`
   case source == branch || source == upstream of
-    True -> mitSyncWith pinfo Nothing
-    False -> mitMerge_ output pinfo source branch upstream
+    True -> mitSyncWith exit output pinfo Nothing
+    False -> mitMerge_ exit output pinfo source branch upstream
 
-mitMerge_ :: (Abort Output) => Logger Output -> Logger ProcessInfo -> Text -> Text -> Text -> IO ()
-mitMerge_ output pinfo source branch upstream = do
+mitMerge_ :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> Text -> Text -> Text -> IO ()
+mitMerge_ exit output pinfo source branch upstream = do
   fetched <- gitFetch pinfo "origin"
   maybeHead0 <- gitMaybeHead pinfo
   maybeUpstreamHead <- gitRemoteBranchHead pinfo "origin" branch
@@ -402,10 +416,11 @@ mitMerge_ output pinfo source branch upstream = do
   -- When given 'mit merge foo', prefer running 'git merge origin/foo' over 'git merge foo'
   sourceCommit <-
     gitRemoteBranchHead pinfo "origin" source & onNothingM do
-      git pinfo ["rev-parse", "refs/heads/" <> source] & onLeftM \_ ->
-        abort Output.NoSuchBranch
+      git pinfo ["rev-parse", "refs/heads/" <> source] & onLeftM \_ -> do
+        log output Output.NoSuchBranch
+        goto exit (ExitFailure 1)
 
-  abortIfCouldFastForwardToUpstream pinfo branch maybeHead0 upstream maybeUpstreamHead fetched
+  abortIfCouldFastForwardToUpstream exit output pinfo branch maybeHead0 upstream maybeUpstreamHead fetched
 
   cleanWorkingTree pinfo snapshot
 
@@ -489,10 +504,12 @@ mitMerge_ output pinfo source branch upstream = do
       ]
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
-mitSync :: (Abort Output) => Logger ProcessInfo -> IO ()
-mitSync pinfo = do
-  whenM (gitMergeInProgress pinfo) (abort Output.MergeInProgress)
-  mitSyncWith pinfo Nothing
+mitSync :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> IO ()
+mitSync exit output pinfo = do
+  whenM (gitMergeInProgress pinfo) do
+    log output Output.MergeInProgress
+    goto exit (ExitFailure 1)
+  mitSyncWith exit output pinfo Nothing
 
 -- | @mitSyncWith _ maybeUndos@
 --
@@ -514,10 +531,13 @@ mitSync pinfo = do
 --
 -- Instead, we want to undo to the point before running the 'mit merge' that caused the conflicts, which were later
 -- resolved by 'mit commit'.
-mitSyncWith :: (Abort Output) => Logger ProcessInfo -> Maybe Undo -> IO ()
-mitSyncWith pinfo maybeUndo = do
+mitSyncWith :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> Maybe Undo -> IO ()
+mitSyncWith exit output pinfo maybeUndo = do
   fetched <- gitFetch pinfo "origin"
-  branch <- gitCurrentBranch pinfo & onNothingM (abort Output.NotOnBranch)
+  branch <- do
+    gitCurrentBranch pinfo & onNothingM do
+      log output Output.NotOnBranch
+      goto exit (ExitFailure 1)
   let upstream = "origin/" <> branch
   maybeUpstreamHead <- gitRemoteBranchHead pinfo "origin" branch
   snapshot <- performSnapshot pinfo
@@ -601,8 +621,17 @@ mitSyncWith pinfo maybeUndo = do
 
 -- If origin/branch is strictly ahead of branch (so we could fast-forward), abort, but if we successfully fetched,
 -- because we do want to allow offline activity regardless.
-abortIfCouldFastForwardToUpstream :: (Abort Output) => Logger ProcessInfo -> Text -> Maybe Text -> Text -> Maybe Text -> Bool -> IO ()
-abortIfCouldFastForwardToUpstream pinfo branch maybeHead upstream maybeUpstreamHead fetched = do
+abortIfCouldFastForwardToUpstream ::
+  Label ExitCode ->
+  Logger Output ->
+  Logger ProcessInfo ->
+  Text ->
+  Maybe Text ->
+  Text ->
+  Maybe Text ->
+  Bool ->
+  IO ()
+abortIfCouldFastForwardToUpstream exit output pinfo branch maybeHead upstream maybeUpstreamHead fetched = do
   when fetched do
     whenJust maybeUpstreamHead \upstreamHead -> do
       head <- maybeHead & onNothing upstreamIsAhead
@@ -610,8 +639,9 @@ abortIfCouldFastForwardToUpstream pinfo branch maybeHead upstream maybeUpstreamH
         whenNotM (gitExistCommitsBetween pinfo upstreamHead head) upstreamIsAhead
   where
     upstreamIsAhead :: IO void
-    upstreamIsAhead =
-      abort (Output.UpstreamIsAhead branch upstream)
+    upstreamIsAhead = do
+      log output (Output.UpstreamIsAhead branch upstream)
+      goto exit (ExitFailure 1)
 
 -- Clean the working tree, if it's dirty (it's been stashed).
 cleanWorkingTree :: Logger ProcessInfo -> Snapshot -> IO ()

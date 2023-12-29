@@ -5,7 +5,4 @@ local/main> mit commit --all --message 'initial commit' # success
    
     │ cdc6973 initial commit - Bob Ross Jan 1 1970
  
- 
-  ✓ main ≡ origin/main
- 
 
