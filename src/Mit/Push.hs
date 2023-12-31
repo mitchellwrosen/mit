@@ -2,7 +2,6 @@ module Mit.Push
   ( performPush,
     PushResult (..),
     DidntPushReason (..),
-    pushResultCommits,
     pushResultPushed,
   )
 where
@@ -46,14 +45,6 @@ data DidntPushReason
     PushWouldBeRejected !(Seq1 GitCommitInfo) !Int
   | -- | We had commits to push, and tried to push, but it failed.
     TriedToPush !(Seq1 GitCommitInfo)
-
-pushResultCommits :: PushResult -> Maybe (Seq1 GitCommitInfo)
-pushResultCommits = \case
-  DidntPush NothingToPush -> Nothing
-  DidntPush (PushWouldntReachRemote commits) -> Just commits
-  DidntPush (PushWouldBeRejected commits _) -> Just commits
-  DidntPush (TriedToPush commits) -> Just commits
-  Pushed commits -> Just commits
 
 pushResultPushed :: PushResult -> Bool
 pushResultPushed = \case

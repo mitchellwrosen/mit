@@ -10,7 +10,7 @@ where
 import Data.Text qualified as Text
 import Data.Text.Encoding.Base64 qualified as Text
 import Data.Text.IO qualified as Text
-import Mit.Git (gitMaybeHead, gitRevParseAbsoluteGitDir)
+import Mit.Git (gitMaybeHead)
 import Mit.Label (goto, label)
 import Mit.Logger (Logger)
 import Mit.Prelude
@@ -28,10 +28,9 @@ emptyMitState :: MitState ()
 emptyMitState =
   MitState {head = (), merging = Nothing, undo = Nothing}
 
-deleteMitState :: Logger ProcessInfo -> Text -> IO ()
-deleteMitState logger branch64 = do
-  mitfile <- getMitfile logger branch64
-  removeFile mitfile `catch` \(_ :: IOException) -> pure ()
+deleteMitState :: Text -> Text -> IO ()
+deleteMitState gitdir branch64 = do
+  removeFile (makeMitfile gitdir branch64) `catch` \(_ :: IOException) -> pure ()
 
 parseMitState :: Text -> Maybe (MitState Text)
 parseMitState contents = do
@@ -49,14 +48,14 @@ parseMitState contents = do
       else Just <$> parseUndo undosLine1
   pure MitState {head, merging, undo}
 
-readMitState :: Logger ProcessInfo -> Text -> IO (MitState ())
-readMitState logger branch = do
+readMitState :: Logger ProcessInfo -> Text -> Text -> IO (MitState ())
+readMitState logger gitdir branch = do
   label \return -> do
     head <-
       gitMaybeHead logger >>= \case
         Nothing -> goto return emptyMitState
         Just head -> pure head
-    mitfile <- getMitfile logger branch64
+    let mitfile = makeMitfile gitdir branch64
     contents <-
       try (Text.readFile mitfile) >>= \case
         Left (_ :: IOException) -> goto return emptyMitState
@@ -68,16 +67,16 @@ readMitState logger branch = do
     state <-
       case maybeState of
         Nothing -> do
-          deleteMitState logger branch64
+          deleteMitState gitdir branch64
           goto return emptyMitState
         Just state -> pure state
     pure (state {head = ()} :: MitState ())
   where
     branch64 = Text.encodeBase64 branch
 
-writeMitState :: Logger ProcessInfo -> Text -> MitState Text -> IO ()
-writeMitState logger branch state = do
-  mitfile <- getMitfile logger (Text.encodeBase64 branch)
+writeMitState :: Text -> Text -> MitState Text -> IO ()
+writeMitState gitdir branch state = do
+  let mitfile = makeMitfile gitdir (Text.encodeBase64 branch)
   Text.writeFile mitfile contents `catch` \(_ :: IOException) -> pure ()
   where
     contents :: Text
@@ -88,7 +87,6 @@ writeMitState logger branch state = do
           "undo " <> maybe Text.empty renderUndo state.undo
         ]
 
-getMitfile :: Logger ProcessInfo -> Text -> IO FilePath
-getMitfile logger branch64 = do
-  gitdir <- gitRevParseAbsoluteGitDir logger
-  pure (Text.unpack (gitdir <> "/.mit-" <> branch64))
+makeMitfile :: Text -> Text -> FilePath
+makeMitfile gitdir branch64 = do
+  Text.unpack (gitdir <> "/.mit-" <> branch64)

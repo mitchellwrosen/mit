@@ -194,14 +194,14 @@ gitConflicts logger =
 -- | Get the conflicts with the given commitish.
 --
 -- Precondition: there is no merge in progress.
-gitConflictsWith :: Logger ProcessInfo -> Text -> IO [GitConflict]
-gitConflictsWith logger commit = do
+gitConflictsWith :: Logger ProcessInfo -> Text -> Text -> IO [GitConflict]
+gitConflictsWith logger gitdir commit = do
   maybeStash <- gitStash logger
   conflicts <- do
     git logger ["merge", "--no-commit", "--no-ff", commit] >>= \case
       False -> gitConflicts logger
       True -> pure []
-  whenM (gitMergeInProgress logger) (git @() logger ["merge", "--abort"])
+  whenM (gitMergeInProgress gitdir) (git @() logger ["merge", "--abort"])
   whenJust maybeStash \stash -> git logger ["stash", "apply", "--quiet", stash]
   pure conflicts
 
@@ -285,9 +285,8 @@ gitMaybeHead logger =
     Right commit -> Just commit
 
 -- | Get whether a merge is in progress.
-gitMergeInProgress :: Logger ProcessInfo -> IO Bool
-gitMergeInProgress logger = do
-  gitdir <- gitRevParseAbsoluteGitDir logger
+gitMergeInProgress :: Text -> IO Bool
+gitMergeInProgress gitdir =
   doesFileExist (Text.unpack (gitdir <> "/MERGE_HEAD"))
 
 gitNumCommitsBetween :: Logger ProcessInfo -> Text -> Text -> IO Int
@@ -312,9 +311,11 @@ gitRemoteBranchHead logger remote branch =
     Left _ -> Nothing
     Right head -> Just head
 
-gitRevParseAbsoluteGitDir :: (ProcessOutput a) => Logger ProcessInfo -> IO a
+gitRevParseAbsoluteGitDir :: Logger ProcessInfo -> IO (Maybe Text)
 gitRevParseAbsoluteGitDir logger =
-  git logger ["rev-parse", "--absolute-git-dir"]
+  git logger ["rev-parse", "--absolute-git-dir"] <&> \case
+    Left _ -> Nothing
+    Right gitdir -> Just gitdir
 
 gitShow :: Logger ProcessInfo -> Text -> IO GitCommitInfo
 gitShow logger commit =

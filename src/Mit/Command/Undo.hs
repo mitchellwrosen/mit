@@ -15,13 +15,13 @@ import Mit.Undo (applyUndo)
 import System.Exit (ExitCode (..))
 
 -- FIXME output what we just undid
-mitUndo :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> IO () -> IO ()
-mitUndo exit output pinfo sync = do
+mitUndo :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> Text -> IO () -> IO ()
+mitUndo exit output pinfo gitdir sync = do
   branch <-
     gitCurrentBranch pinfo & onNothingM do
       log output Output.NotOnBranch
       goto exit (ExitFailure 1)
-  state <- readMitState pinfo branch
+  state <- readMitState pinfo gitdir branch
   undo <-
     state.undo & onNothing do
       log output Output.NothingToUndo
