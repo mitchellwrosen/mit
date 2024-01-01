@@ -15,6 +15,8 @@ where
 
 import Data.Coerce (coerce)
 import Data.Foldable qualified
+import Data.Foldable qualified as Foldable
+import Data.Foldable1 (Foldable1 (foldMap1, foldMap1'))
 import Data.List.NonEmpty qualified as List (NonEmpty)
 import Data.List.NonEmpty qualified as List.NonEmpty
 import Data.Maybe (fromMaybe)
@@ -25,6 +27,24 @@ import Prelude hiding (last)
 
 newtype Seq1 a = Seq1 (Seq a)
   deriving newtype (Foldable)
+
+pattern Cons :: a -> Seq a -> Seq1 a
+pattern Cons x xs <- Seq1 (x Seq.:<| xs)
+
+{-# COMPLETE Cons #-}
+
+instance Foldable1 Seq1 where
+  foldMap1 :: (Semigroup m) => (a -> m) -> Seq1 a -> m
+  foldMap1 f (Cons x xs) =
+    go (f x) (Foldable.toList xs)
+    where
+      go y = \case
+        [] -> y
+        z : zs -> y <> go (f z) zs
+
+  foldMap1' :: (Semigroup m) => (a -> m) -> Seq1 a -> m
+  foldMap1' f (Cons x xs) =
+    Foldable.foldl' (\acc y -> acc <> f y) (f x) xs
 
 length :: forall a. Seq1 a -> Int
 length =

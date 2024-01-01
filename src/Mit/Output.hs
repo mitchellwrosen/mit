@@ -14,9 +14,9 @@ data Output
   | DirectoryAlreadyExists !Text
   | GitTooOld
   | MergeInProgress
-  | MergeFailed !Text !Text !(Seq1 GitCommitInfo)
+  | MergeFailed !(Seq1 GitCommitInfo) !(Seq1 GitConflict)
   | -- FIXME persist the commits that we're merging so we can report them (no more Just Nothing case)
-    MergeSucceeded !Text !Text !(Maybe (Seq1 GitCommitInfo))
+    MergeSucceeded !(Maybe (Seq1 GitCommitInfo))
   | NoGitDir
   | NoSuchBranch
   | NotOnBranch

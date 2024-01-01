@@ -6,8 +6,10 @@ where
 import Control.Applicative (many)
 import Data.Char qualified as Char
 import Data.Foldable qualified as Foldable (toList)
+import Data.Foldable1 (foldMap1')
 import Data.List qualified as List
 import Data.List.NonEmpty qualified as List1
+import Data.Semigroup qualified as Semigroup
 import Data.Sequence qualified as Seq
 import Data.Text qualified as Text
 import Data.Text.Builder.Linear qualified as Text (Builder)
@@ -354,7 +356,7 @@ mitCommitMerge exit output pinfo gitdir = do
   writeMitState gitdir branch state1
 
   whenJust state0.merging \source ->
-    when (source /= branch) (log output (Output.MergeSucceeded source branch Nothing))
+    when (source /= branch) (log output (Output.MergeSucceeded Nothing))
 
   -- Three possible cases:
   --   1. We had a clean working directory before `mit merge`, so proceed to sync
@@ -428,8 +430,8 @@ mitMerge_ exit output pinfo gitdir source branch upstream = do
 
   log output case mergeResult of
     NothingToMerge -> Output.NothingToMerge source branch
-    TriedToMerge commits _conflicts -> Output.MergeFailed source branch commits
-    Merged commits -> Output.MergeSucceeded source branch (Just commits)
+    TriedToMerge commits conflicts -> Output.MergeFailed commits conflicts
+    Merged commits -> Output.MergeSucceeded (Just commits)
 
   stashConflicts <-
     case (mergeResultConflicts mergeResult, snapshotStash snapshot) of
@@ -729,35 +731,31 @@ renderOutput = \case
   Output.DirectoryAlreadyExists directory ->
     Pretty.line (Pretty.style Text.red ("Directory " <> Pretty.directory directory <> " already exists."))
   Output.GitTooOld -> Pretty.line (Pretty.style Text.red "Minimum required git version: 2.30.1")
-  Output.MergeFailed source target commits ->
-    Pretty.paragraphs
-      [ (Pretty.branch source <> " was not merged into " <> Pretty.branch target <> ".")
-          & Pretty.style Text.red
-          & Pretty.line,
-        syncStanza Sync {commits, success = False, source, target}
-      ]
-  Output.MergeSucceeded source target maybeCommits ->
+  Output.MergeFailed commits conflicts ->
+    Pretty.lines $
+      Pretty.style
+        Text.red
+        ( "Tried to merge "
+            <> commitsN (Seq1.length commits)
+            <> ", but there were conflicts."
+        )
+        : map (\conflict -> "  " <> Pretty.style Text.red (prettyGitConflict conflict)) (Seq1.toList conflicts)
+  Output.MergeSucceeded maybeCommits ->
     case maybeCommits of
-      Nothing ->
-        (Pretty.branch source <> " was merged into " <> Pretty.branch target <> ".")
-          & Pretty.style Text.green
-          & Pretty.line
+      Nothing -> Pretty.line (Pretty.style Text.green "Merged commits.")
       Just commits ->
-        Pretty.paragraphs
-          [ (Pretty.branch source <> " was merged into " <> Pretty.branch target <> ".")
-              & Pretty.style Text.green
-              & Pretty.line,
-            Pretty.indent 2 (prettyCommits commits)
-          ]
+        Pretty.lines $
+          Pretty.style Text.green ("Merged " <> commitsN (Seq1.length commits) <> ".")
+            : Pretty.indent 2 (prettyCommits commits)
   Output.MergeInProgress -> Pretty.line (Pretty.style Text.red (Pretty.style Text.bold "git merge" <> " in progress."))
   Output.NoGitDir -> Pretty.line (Pretty.style Text.red "The current directory doesn't contain a git repository.")
   Output.NoSuchBranch -> Pretty.line (Pretty.style Text.red "No such branch.")
   Output.NotOnBranch -> Pretty.line (Pretty.style Text.red "You are not on a branch.")
   Output.NothingToCommit -> Pretty.line (Pretty.style Text.red "There's nothing to commit.")
   Output.NothingToMerge source target ->
-    (Pretty.branch target <> " is already up-to-date with " <> Pretty.branch source <> ".")
-      & Pretty.style Text.green
-      & Pretty.line
+    Pretty.line $
+      Pretty.style Text.green $
+        Pretty.branch target <> " is already up-to-date with " <> Pretty.branch source <> "."
   Output.NothingToUndo -> Pretty.line (Pretty.style Text.red "Nothing to undo.")
   Output.PullFailed commits conflicts ->
     Pretty.lines $
@@ -769,17 +767,15 @@ renderOutput = \case
         )
         : map (\conflict -> "  " <> Pretty.style Text.red (prettyGitConflict conflict)) (Seq1.toList conflicts)
   Output.PullSucceeded commits ->
-    Pretty.paragraphs
-      [ Pretty.line (Pretty.style Text.green ("Pulled " <> commitsN (Seq1.length commits) <> ".")),
-        Pretty.indent 2 (prettyCommits commits)
-      ]
+    Pretty.lines $
+      Pretty.style Text.green ("Pulled " <> commitsN (Seq1.length commits) <> ".")
+        : Pretty.indent 2 (prettyCommits commits)
   Output.PushFailed commits ->
     Pretty.line (Pretty.style Text.red ("Tried to push " <> commitsN (Seq1.length commits) <> ", but failed."))
   Output.PushSucceeded commits ->
-    Pretty.paragraphs
-      [ Pretty.line (Pretty.style Text.green ("Pushed " <> commitsN (Seq1.length commits) <> ".")),
-        Pretty.indent 2 (prettyCommits commits)
-      ]
+    Pretty.lines $
+      Pretty.style Text.green ("Pushed " <> commitsN (Seq1.length commits) <> ".")
+        : Pretty.indent 2 (prettyCommits commits)
   Output.PushWouldBeRejected localCommits numRemoteCommits ->
     Pretty.line
       ( Pretty.style
@@ -824,17 +820,35 @@ prettyCommits commits =
       then List.map p (List.take 10 (Seq1.toList commits))
       else List.map p (List.take 8 (Seq1.toList commits)) ++ ["│ ...", p (Seq1.last commits)]
   where
-    p = ("│ " <>) . prettyGitCommitInfo
+    p = ("│ " <>) . prettyGitCommitInfo2 dateWidth
+
+    dateWidth :: Int
+    dateWidth =
+      commits
+        & foldMap1' (\commit -> Semigroup.Max (Text.length commit.date))
+        & Semigroup.getMax
 
 prettyGitCommitInfo :: GitCommitInfo -> Pretty.Line
 prettyGitCommitInfo info =
   Pretty.style (Text.Builder.bold . Text.Builder.black) (Pretty.text info.shorthash)
     <> Pretty.char ' '
+    <> Pretty.style (Text.Builder.italic . Text.Builder.yellow) (Pretty.text info.date)
+    <> Pretty.char ' '
     <> Pretty.style (Text.Builder.bold . Text.Builder.white) (Pretty.text info.subject)
     <> " - "
     <> Pretty.style (Text.Builder.italic . Text.Builder.white) (Pretty.text info.author)
-    <> Pretty.char ' '
+
+prettyGitCommitInfo2 :: Int -> GitCommitInfo -> Pretty.Line
+prettyGitCommitInfo2 dateWidth info =
+  Pretty.style (Text.Builder.bold . Text.Builder.black) (Pretty.text info.shorthash)
+    <> Semigroup.stimes (dateWidth - thisDateWidth + 1) (Pretty.char ' ')
     <> Pretty.style (Text.Builder.italic . Text.Builder.yellow) (Pretty.text info.date)
+    <> Pretty.char ' '
+    <> Pretty.style (Text.Builder.bold . Text.Builder.white) (Pretty.text info.subject)
+    <> " - "
+    <> Pretty.style (Text.Builder.italic . Text.Builder.white) (Pretty.text info.author)
+  where
+    thisDateWidth = Text.length info.date
 
 prettyGitConflict :: GitConflict -> Pretty.Line
 prettyGitConflict (GitConflict xy name) =
