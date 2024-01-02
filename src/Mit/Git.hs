@@ -173,9 +173,7 @@ gitCommitsBetween logger commit1 commit2 =
         git
           logger
           [ "rev-list",
-            "--color=always",
-            "--date=human",
-            "--format=format:%an\xFEFF%ad\xFEFF%H\xFEFF%h\xFEFF%s",
+            "--format=format:%an\xFEFF%ah\xFEFF%H\xFEFF%h\xFEFF%s",
             "--max-count=11",
             maybe id (\c1 c2 -> c1 <> ".." <> c2) commit1 commit2
           ]
