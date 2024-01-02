@@ -424,7 +424,8 @@ mitMerge_ exit output pinfo gitdir source branch upstream = do
 
   abortIfCouldFastForwardToUpstream exit output pinfo branch maybeHead0 upstream maybeUpstreamHead fetched
 
-  cleanWorkingTree pinfo snapshot
+  whenJust (snapshotStash snapshot) \_stash ->
+    git @() pinfo ["reset", "--hard", "--quiet", "HEAD"]
 
   mergeResult <- performMerge pinfo gitdir sourceCommit ("⅄ " <> source <> " → " <> branch)
 
@@ -544,7 +545,8 @@ mitSyncWith exit output pinfo gitdir maybeUndo = do
   maybeUpstreamHead <- gitRemoteBranchHead pinfo "origin" branch
   snapshot <- performSnapshot pinfo
 
-  cleanWorkingTree pinfo snapshot
+  whenJust (snapshotStash snapshot) \_stash ->
+    git @() pinfo ["reset", "--hard", "--quiet", "HEAD"]
 
   mergeResult <-
     case maybeUpstreamHead of
@@ -622,12 +624,6 @@ abortIfCouldFastForwardToUpstream exit output pinfo branch maybeHead upstream ma
     upstreamIsAhead = do
       log output (Output.UpstreamIsAhead branch upstream)
       goto exit (ExitFailure 1)
-
--- Clean the working tree, if it's dirty (it's been stashed).
-cleanWorkingTree :: Logger ProcessInfo -> Snapshot -> IO ()
-cleanWorkingTree pinfo snapshot = do
-  whenJust (snapshotStash snapshot) \_stash ->
-    git @() pinfo ["reset", "--hard", "--quiet", "HEAD"]
 
 putPretty :: Pretty -> IO ()
 putPretty p =

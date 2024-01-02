@@ -2,7 +2,6 @@ local/main> echo 'Hello, world!' > foo.txt # success
 local/main> mit commit --all --message 'initial commit' # success
  
   Pushed 1 commit.
-   
-    │ cdc6973 initial commit - Bob Ross Jan 1 1970
+    │ cdc6973 Jan 1 1970 initial commit - Bob Ross
  
 
