@@ -734,10 +734,21 @@ prettyCommits :: Seq1 GitCommitInfo -> Pretty
 prettyCommits commits =
   Pretty.lines $
     if Seq1.length commits <= 10
-      then List.map p (List.take 10 (Seq1.toList commits))
-      else List.map p (List.take 8 (Seq1.toList commits)) ++ ["│ ...", p (Seq1.last commits)]
+      then f (List.take 10 (Seq1.toList commits))
+      else f (List.take 8 (Seq1.toList commits)) ++ ["│ ...", p (Seq1.last commits)]
   where
-    p = ("│ " <>) . prettyGitCommitInfo dateWidth
+    f :: [GitCommitInfo] -> [Pretty.Line]
+    f =
+      snd . List.mapAccumL g ""
+
+    g :: Text -> GitCommitInfo -> (Text, Pretty.Line)
+    g previousDate commit
+      | commit.date == previousDate = (previousDate, p commit {date = ""})
+      | otherwise = (commit.date, p commit)
+
+    p :: GitCommitInfo -> Pretty.Line
+    p commit =
+      "│ " <> prettyGitCommitInfo dateWidth commit
 
     dateWidth :: Int
     dateWidth =
