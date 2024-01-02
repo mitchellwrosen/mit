@@ -16,7 +16,8 @@ local/topic> mit merge main # success
   topic is already up-to-date with main.
  
  
-  ✓ topic ≡ origin/topic
+  Pushed 1 commit.
+    │ cdc6973 Jan 1 1970 initial commit - Bob Ross
  
 
 local/topic> git diff --no-ext-diff # success

@@ -27,7 +27,9 @@ local/topic> mit merge main # success
     │ b344055 Jan 1 1970 second commit - Bob Ross
  
  
-  ✓ topic ≡ origin/topic
+  Pushed 2 commits.
+    │ b344055 Jan 1 1970 second commit - Bob Ross
+    │ cdc6973 Jan 1 1970 initial commit - Bob Ross
  
 
 local/topic> git diff --no-ext-diff # success

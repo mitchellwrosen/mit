@@ -27,9 +27,12 @@ local/topic> mit merge main # success
     │ b344055 Jan 1 1970 second commit - Bob Ross
  
  
-  ✓ topic ≡ origin/topic
-   
-  These files are in conflict:
+  Pushed 2 commits.
+    │ b344055 Jan 1 1970 second commit - Bob Ross
+    │ cdc6973 Jan 1 1970 initial commit - Bob Ross
+ 
+ 
+  Tried to apply uncommitted changes, but there were conflicts.
     foo.txt (both modified)
  
 

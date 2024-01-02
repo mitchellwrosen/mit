@@ -12,7 +12,6 @@ module Mit.Git
     gitBranchWorktreeDir,
     gitCommitsBetween,
     gitConflicts,
-    gitConflictsWith,
     gitCreateStash,
     gitCurrentBranch,
     gitDiff,
@@ -29,6 +28,7 @@ module Mit.Git
     gitUnstageChanges,
     gitVersion,
     -- unused, but useful? not sure
+    gitConflictsWith,
     gitDefaultBranch,
     gitShow,
     parseGitRepo,

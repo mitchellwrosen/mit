@@ -10,9 +10,7 @@ import Data.Foldable1 (foldMap1')
 import Data.List qualified as List
 import Data.List.NonEmpty qualified as List1
 import Data.Semigroup qualified as Semigroup
-import Data.Sequence qualified as Seq
 import Data.Text qualified as Text
-import Data.Text.Builder.Linear qualified as Text (Builder)
 import Data.Text.Builder.Linear qualified as Text.Builder
 import Mit.Command.Branch (mitBranch)
 import Mit.Command.Status (mitStatus)
@@ -26,8 +24,6 @@ import Mit.Git
     git,
     git2,
     gitApplyStash,
-    gitCommitsBetween,
-    gitConflictsWith,
     gitCurrentBranch,
     gitDiff,
     gitExistCommitsBetween,
@@ -56,7 +52,7 @@ import Mit.Push
     pushResultPushed,
   )
 import Mit.Seq1 qualified as Seq1
-import Mit.Snapshot (Snapshot, performSnapshot, snapshotStash, undoToSnapshot)
+import Mit.Snapshot (performSnapshot, snapshotStash, undoToSnapshot)
 import Mit.State (MitState (..), readMitState, writeMitState)
 import Mit.Undo (Undo (..), concatUndos, undoStash)
 import Mit.Verbosity (Verbosity (..), intToVerbosity)
@@ -84,6 +80,11 @@ import Text.Printf (printf)
 -- TODO undo revert
 -- TODO more specific "undo this change" wording
 -- TODO `mit ignore <file>` stops tracking accidentally-added file and adds its name to .git/info/exclude
+
+-- TODO finish porting over to new "output as we go" style
+-- TODO move commands into their own modules
+-- TODO get rid of "snapshot" concept
+-- TODO improve code paths with no remote configured (git remote show-url origin)
 
 main :: IO ()
 main = do
@@ -401,6 +402,7 @@ mitMerge exit output pinfo gitdir source = do
     gitCurrentBranch pinfo & onNothingM do
       log output Output.NotOnBranch
       goto exit (ExitFailure 1)
+
   let upstream = "origin/" <> branch
 
   -- Special case: if on branch "foo", treat `mit merge foo` and `mit merge origin/foo` as `mit sync`
@@ -434,13 +436,17 @@ mitMerge_ exit output pinfo gitdir source branch upstream = do
     TriedToMerge commits conflicts -> Output.MergeFailed commits conflicts
     Merged commits -> Output.MergeSucceeded (Just commits)
 
-  stashConflicts <-
-    case (mergeResultConflicts mergeResult, snapshotStash snapshot) of
-      (Nothing, Just stash) -> gitApplyStash pinfo stash
-      _ -> pure []
-
-  head1 <- git pinfo ["rev-parse", "HEAD"]
+  head1 <- git pinfo ["rev-parse", "HEAD"] -- FIXME oops this can be Nothing
   pushResult <- performPush pinfo branch (Just head1) maybeUpstreamHead fetched
+
+  case pushResult of
+    DidntPush NothingToPush -> pure ()
+    DidntPush (PushWouldBeRejected localCommits numRemoteCommits) ->
+      log output (Output.PushWouldBeRejected localCommits numRemoteCommits)
+    DidntPush (PushWouldntReachRemote commits) -> log output (Output.PushWouldntReachRemote commits)
+    DidntPush (TriedToPush commits) -> log output (Output.PushFailed commits)
+    Pushed commits -> log output (Output.PushSucceeded commits)
+
   let undo1 =
         if pushResultPushed pushResult || isNothing (mergeResultConflicts mergeResult)
           then Nothing
@@ -458,52 +464,10 @@ mitMerge_ exit output pinfo gitdir source branch upstream = do
         undo = undo1
       }
 
-  remoteCommits <-
-    case maybeUpstreamHead of
-      Nothing -> pure Seq.empty
-      Just upstreamHead -> gitCommitsBetween pinfo (Just "HEAD") upstreamHead
-
-  conflictsOnSync <-
-    if Seq.null remoteCommits
-      then pure []
-      else gitConflictsWith pinfo gitdir (fromJust maybeUpstreamHead)
-
-  putPretty $
-    Pretty.paragraphs
-      [ isSynchronizedStanza branch pushResult,
-        Pretty.whenJust (Seq1.fromSeq remoteCommits) \commits ->
-          syncStanza Sync {commits, success = False, source = upstream, target = branch},
-        -- TODO show commits to remote
-        case (Seq1.toList1 <$> mergeResultConflicts mergeResult) <|> List1.nonEmpty stashConflicts of
-          Nothing -> Pretty.empty
-          Just conflicts1 -> conflictsStanza "These files are in conflict:" conflicts1,
-        -- TODO audit this
-        case pushResult of
-          DidntPush NothingToPush -> Pretty.empty
-          DidntPush (PushWouldntReachRemote _) -> runSyncStanza "When you come online, run" branch upstream
-          -- FIXME hrm, but we might have merge conflicts and/or stash conflicts!
-          DidntPush (PushWouldBeRejected _ _) ->
-            case List1.nonEmpty conflictsOnSync of
-              Nothing -> runSyncStanza "Run" branch upstream
-              Just conflictsOnSync1 ->
-                Pretty.paragraphs
-                  [ conflictsStanza
-                      ("These files will be in conflict when you run " <> Pretty.command "mit sync" <> ":")
-                      conflictsOnSync1,
-                    Pretty.line $
-                      "Run "
-                        <> Pretty.command "mit sync"
-                        <> ", resolve the conflicts, then run "
-                        <> Pretty.command "mit commit"
-                        <> " to synchronize "
-                        <> Pretty.branch branch
-                        <> " with "
-                        <> Pretty.branch upstream
-                        <> "."
-                  ]
-          DidntPush (TriedToPush _) -> runSyncStanza "Run" branch upstream
-          Pushed _ -> Pretty.empty
-      ]
+  when (isNothing (mergeResultConflicts mergeResult)) do
+    whenJust (snapshotStash snapshot) \stash -> do
+      conflicts0 <- gitApplyStash pinfo stash
+      whenJust (Seq1.fromList conflicts0) \conflicts1 -> log output (Output.UnstashFailed conflicts1)
 
   when (isJust undo1) (log output Output.CanUndo)
 
@@ -593,12 +557,11 @@ mitSyncWith exit output pinfo gitdir maybeUndo = do
           undo = undo1
         }
 
-  conflicts0 <-
-    case (mergeResultConflicts mergeResult, snapshotStash snapshot) of
-      (Nothing, Just stash) -> gitApplyStash pinfo stash
-      _ -> pure []
+  when (isNothing (mergeResultConflicts mergeResult)) do
+    whenJust (snapshotStash snapshot) \stash -> do
+      conflicts0 <- gitApplyStash pinfo stash
+      whenJust (Seq1.fromList conflicts0) \conflicts1 -> log output (Output.UnstashFailed conflicts1)
 
-  whenJust (Seq1.fromList conflicts0) \conflicts1 -> log output (Output.UnstashFailed conflicts1)
   when (isJust undo1) (log output Output.CanUndo)
 
 -- If origin/branch is strictly ahead of branch (so we could fast-forward), abort, but if we successfully fetched,
@@ -631,14 +594,6 @@ putPretty p =
   where
     emptyLine = Pretty.line (Pretty.char ' ')
 
--- FIXME this type kinda sux now, replace with GitMerge probably?
-data Sync = Sync
-  { commits :: !(Seq1 GitCommitInfo),
-    success :: !Bool,
-    source :: !Text,
-    target :: !Text
-  }
-
 conflictsStanza :: Pretty.Line -> List1 GitConflict -> Pretty
 conflictsStanza prefix conflicts =
   Pretty.lines $
@@ -647,22 +602,6 @@ conflictsStanza prefix conflicts =
   where
     f conflict =
       "  " <> Pretty.style Text.red (prettyGitConflict conflict)
-
-isSynchronizedStanza :: Text -> PushResult -> Pretty
-isSynchronizedStanza branch = \case
-  DidntPush NothingToPush -> synchronized
-  DidntPush (PushWouldntReachRemote _) -> notSynchronizedStanza branch upstream " (you appear to be offline)"
-  DidntPush (PushWouldBeRejected _ _) -> notSynchronizedStanza branch upstream " (their histories have diverged)"
-  DidntPush (TriedToPush _) ->
-    notSynchronizedStanza branch upstream (" (" <> Pretty.style Text.bold "git push" <> " failed)")
-  Pushed _ -> synchronized
-  where
-    upstream = "origin/" <> branch
-
-    synchronized =
-      ("✓ " <> Pretty.branch branch <> " ≡ " <> Pretty.branch upstream)
-        & Pretty.style Text.green
-        & Pretty.line
 
 notSynchronizedStanza :: Text -> Text -> Pretty.Line -> Pretty
 notSynchronizedStanza branch other suffix =
@@ -681,24 +620,6 @@ runSyncStanza prefix branch upstream =
       <> " with "
       <> Pretty.branch upstream
       <> "."
-
-syncStanza :: Sync -> Pretty
-syncStanza sync =
-  Pretty.indent 2 $
-    Pretty.lines $
-      fold
-        [ ["│ " <> Pretty.style colorize (Pretty.branch sync.source <> " → " <> Pretty.branch sync.target)],
-          map (\commit -> "│ " <> prettyGitCommitInfo commit) (Foldable.toList commits'),
-          if more then ["│ ..."] else []
-        ]
-  where
-    colorize :: Text.Builder -> Text.Builder
-    colorize =
-      if sync.success then Text.green else Text.red
-    (commits', more) =
-      case Seq1.length sync.commits > 10 of
-        False -> (Seq1.toSeq sync.commits, False)
-        True -> (Seq1.dropEnd 1 sync.commits, True)
 
 ------------------------------------------------------------------------------------------------------------------------
 -- Rendering output to the terminal
@@ -816,7 +737,7 @@ prettyCommits commits =
       then List.map p (List.take 10 (Seq1.toList commits))
       else List.map p (List.take 8 (Seq1.toList commits)) ++ ["│ ...", p (Seq1.last commits)]
   where
-    p = ("│ " <>) . prettyGitCommitInfo2 dateWidth
+    p = ("│ " <>) . prettyGitCommitInfo dateWidth
 
     dateWidth :: Int
     dateWidth =
@@ -824,18 +745,8 @@ prettyCommits commits =
         & foldMap1' (\commit -> Semigroup.Max (Text.length commit.date))
         & Semigroup.getMax
 
-prettyGitCommitInfo :: GitCommitInfo -> Pretty.Line
-prettyGitCommitInfo info =
-  Pretty.style (Text.Builder.bold . Text.Builder.black) (Pretty.text info.shorthash)
-    <> Pretty.char ' '
-    <> Pretty.style (Text.Builder.italic . Text.Builder.yellow) (Pretty.text info.date)
-    <> Pretty.char ' '
-    <> Pretty.style (Text.Builder.bold . Text.Builder.white) (Pretty.text info.subject)
-    <> " - "
-    <> Pretty.style (Text.Builder.italic . Text.Builder.white) (Pretty.text info.author)
-
-prettyGitCommitInfo2 :: Int -> GitCommitInfo -> Pretty.Line
-prettyGitCommitInfo2 dateWidth info =
+prettyGitCommitInfo :: Int -> GitCommitInfo -> Pretty.Line
+prettyGitCommitInfo dateWidth info =
   Pretty.style (Text.Builder.bold . Text.Builder.black) (Pretty.text info.shorthash)
     <> Semigroup.stimes (dateWidth - thisDateWidth + 1) (Pretty.char ' ')
     <> Pretty.style (Text.Builder.italic . Text.Builder.yellow) (Pretty.text info.date)
