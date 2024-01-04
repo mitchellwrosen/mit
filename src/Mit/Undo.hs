@@ -1,6 +1,5 @@
 module Mit.Undo
   ( Undo (..),
-    concatUndos,
     undoStash,
     renderUndo,
     parseUndo,
@@ -9,30 +8,23 @@ module Mit.Undo
 where
 
 import Data.Text qualified as Text
-import Mit.Git (gitUnstageChanges, git)
+import Mit.Git (git, gitUnstageChanges)
 import Mit.Logger (Logger)
 import Mit.Prelude
 import Mit.ProcessInfo (ProcessInfo)
 
 data Undo
-  = Apply !Text !(Maybe Undo) -- apply stash
-  | Reset !Text !(Maybe Undo) -- reset to commit
-  | Revert !Text !(Maybe Undo) -- revert commit
-
-concatUndos :: Undo -> Undo -> Undo
-concatUndos x0 y =
-  case x0 of
-    Apply commit x -> Apply commit (f x)
-    Reset commit x -> Reset commit (f x)
-    Revert commit x -> Revert commit (f x)
-  where
-    f = Just . maybe y (`concatUndos` y)
+  = Reset !Text
+  | ResetApply !Text !Text
+  | Revert !Text
+  | RevertApply !Text !Text
 
 undoStash :: Undo -> Maybe Text
 undoStash = \case
-  Apply commit _ -> Just commit
-  Reset _ maybeNext -> maybeNext >>= undoStash
-  Revert _ maybeNext -> maybeNext >>= undoStash
+  Reset _ -> Nothing
+  ResetApply _ commit -> Just commit
+  Revert _ -> Nothing
+  RevertApply _ commit -> Just commit
 
 renderUndo :: Undo -> Text
 renderUndo =
@@ -40,37 +32,40 @@ renderUndo =
   where
     f :: Undo -> [Text]
     f = \case
-      Apply commit next -> ("apply/" <> commit) : maybe [] f next
-      Reset commit next -> ("reset/" <> commit) : maybe [] f next
-      Revert commit next -> ("revert/" <> commit) : maybe [] f next
+      Reset commit -> ["reset", commit]
+      ResetApply commit1 commit2 -> ["reset", commit1, "apply", commit2]
+      Revert commit -> ["revert", commit]
+      RevertApply commit1 commit2 -> ["revert", commit1, "apply", commit2]
 
 parseUndo :: Text -> Maybe Undo
 parseUndo =
-  join . f . Text.words
+  f . Text.words
   where
-    f :: [Text] -> Maybe (Maybe Undo)
+    f :: [Text] -> Maybe Undo
     f = \case
-      [] -> Just Nothing
-      undo : undos
-        | Just commit <- Text.stripPrefix "apply/" undo -> Just . Apply commit <$> f undos
-        | Just commit <- Text.stripPrefix "reset/" undo -> Just . Reset commit <$> f undos
-        | Just commit <- Text.stripPrefix "revert/" undo -> Just . Revert commit <$> f undos
-        | otherwise -> Nothing
+      ["reset", commit1, "apply", commit2] -> Just (ResetApply commit1 commit2)
+      ["reset", commit] -> Just (Reset commit)
+      ["revert", commit1, "apply", commit2] -> Just (RevertApply commit1 commit2)
+      ["revert", commit] -> Just (Revert commit)
+      _ -> Nothing
 
 applyUndo :: Logger ProcessInfo -> Undo -> IO ()
-applyUndo logger =
-  go
+applyUndo logger = \case
+  Reset commit -> applyReset commit
+  ResetApply commit1 commit2 -> do
+    applyReset commit1
+    applyApply commit2
+  Revert commit -> applyRevert commit
+  RevertApply commit1 commit2 -> do
+    applyRevert commit1
+    applyApply commit2
   where
-    go :: Undo -> IO ()
-    go = \case
-      Apply commit next -> do
-        git @() logger ["stash", "apply", "--quiet", commit]
-        gitUnstageChanges logger
-        whenJust next go
-      Reset commit next -> do
-        git @() logger ["clean", "-d", "--force"]
-        git @() logger ["reset", "--hard", commit]
-        whenJust next go
-      Revert commit next -> do
-        git @() logger ["revert", commit]
-        whenJust next go
+    applyApply commit = do
+      git @() logger ["stash", "apply", "--quiet", commit]
+      gitUnstageChanges logger
+
+    applyReset commit = do
+      git @() logger ["clean", "-d", "--force"]
+      git @() logger ["reset", "--hard", commit]
+
+    applyRevert commit = git @() logger ["revert", commit]

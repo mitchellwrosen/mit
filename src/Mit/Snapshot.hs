@@ -27,8 +27,8 @@ snapshotStash = \case
 undoToSnapshot :: Snapshot -> Maybe Undo
 undoToSnapshot = \case
   Empty -> Nothing
-  Clean head -> Just (Reset head Nothing)
-  Dirty head stash -> Just (Reset head (Just (Apply stash Nothing)))
+  Clean head -> Just (Reset head)
+  Dirty head stash -> Just (ResetApply head stash)
 
 performSnapshot :: Logger ProcessInfo -> IO Snapshot
 performSnapshot pinfo =

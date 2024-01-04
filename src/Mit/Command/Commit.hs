@@ -43,7 +43,7 @@ import Mit.Push
   )
 import Mit.Seq1 qualified as Seq1
 import Mit.State (MitState (..), readMitState, writeMitState)
-import Mit.Undo (Undo (..), concatUndos, undoStash)
+import Mit.Undo (Undo (..), undoStash)
 import System.Exit (ExitCode (..))
 import System.Posix.Terminal (queryTerminal)
 import Text.Builder.ANSI qualified as Text
@@ -115,12 +115,12 @@ mitCommitMerge exit output pinfo gitdir sync = do
   --        double conflict markers
 
   case maybeUndo >>= undoStash of
-    Nothing -> sync (Just (Reset head0 Nothing))
+    Nothing -> sync (Just (Reset head0))
     Just stash -> do
       conflicts <- gitApplyStash pinfo stash
       case List1.nonEmpty conflicts of
         -- FIXME we just unstashed, now we're about to stash again :/
-        Nothing -> sync (Just (Reset head0 (Just (Apply stash Nothing))))
+        Nothing -> sync (Just (ResetApply head0 stash))
         Just conflicts1 -> do
           putPretty $
             Pretty.paragraphs
@@ -215,13 +215,13 @@ mitCommitNotMerge exit output pinfo gitdir allFlag maybeMessage = do
     Pushed commits -> log output (Output.PushSucceeded commits)
 
   whenJust maybeHead1 \head1 -> do
-    maybeUndoPush <-
+    maybeRevert <-
       case pushResult of
         Pushed commits ->
           case Seq1.toList commits of
             [commit] ->
               gitIsMergeCommit pinfo commit.hash <&> \case
-                False -> Just (Revert commit.hash Nothing)
+                False -> Just commit.hash
                 True -> Nothing
             _ -> pure Nothing
         DidntPush _reason -> pure Nothing
@@ -234,9 +234,9 @@ mitCommitNotMerge exit output pinfo gitdir allFlag maybeMessage = do
                 Nothing -> Nothing
                 Just head0 ->
                   Just case maybeStash of
-                    Nothing -> Reset head0 Nothing
-                    Just stash -> Reset head0 (Just (Apply stash Nothing))
-            (True, False) -> maybeUndoPush
+                    Nothing -> Reset head0
+                    Just stash -> ResetApply head0 stash
+            (True, False) -> Revert <$> maybeRevert
             (True, True) -> do
               -- If we can revert the push *and* there is a stash in the snapshot (i.e. this *isnt* the very first
               -- commit), then we can undo (by reverting then applying the stash).
@@ -245,9 +245,7 @@ mitCommitNotMerge exit output pinfo gitdir allFlag maybeMessage = do
               -- there were no commits before this one (`git stash create` is illegal there), so we don't want to
               -- offer to undo, because although we can revert the commit, we have no way of getting from there to
               -- back to having some dirty stuff to commit.
-              undoPush <- maybeUndoPush
-              stash <- maybeStash
-              Just (concatUndos undoPush (Apply stash Nothing))
+              RevertApply <$> maybeRevert <*> maybeStash
 
     writeMitState gitdir branch MitState {head = head1, merging = Nothing, undo = maybeUndo1}
 
