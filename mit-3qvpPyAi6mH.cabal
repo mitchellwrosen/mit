@@ -93,6 +93,7 @@ library
   exposed-modules:
     Mit
     Mit.Command.Branch
+    Mit.Command.Commit
     Mit.Command.Status
     Mit.Command.Undo
     Mit.Directory

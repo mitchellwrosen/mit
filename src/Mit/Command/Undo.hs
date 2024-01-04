@@ -22,7 +22,10 @@ mitUndo exit output pinfo gitdir sync = do
       log output Output.NotOnBranch
       goto exit (ExitFailure 1)
   headBefore <- git @Text pinfo ["rev-parse", "HEAD"]
-  state <- readMitState gitdir branch headBefore
+  state <-
+    readMitState gitdir branch headBefore & onNothingM do
+      log output Output.NothingToUndo
+      goto exit (ExitFailure 1)
   undo <-
     state.undo & onNothing do
       log output Output.NothingToUndo
