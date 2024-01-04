@@ -3,7 +3,7 @@ module Mit.Command.Undo
   )
 where
 
-import Mit.Git (git, gitCurrentBranch)
+import Mit.Git (git, gitCurrentBranch, gitMaybeHead)
 import Mit.Label (Label, goto)
 import Mit.Logger (Logger, log)
 import Mit.Output (Output)
@@ -15,13 +15,16 @@ import Mit.Undo (applyUndo)
 import System.Exit (ExitCode (..))
 
 -- FIXME output what we just undid
-mitUndo :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> Text -> IO () -> IO ()
-mitUndo exit output pinfo gitdir sync = do
+mitUndo :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> IO () -> Text -> IO ()
+mitUndo exit output pinfo sync gitdir = do
   branch <-
     gitCurrentBranch pinfo & onNothingM do
       log output Output.NotOnBranch
       goto exit (ExitFailure 1)
-  headBefore <- git @Text pinfo ["rev-parse", "HEAD"]
+  headBefore <-
+    gitMaybeHead pinfo & onNothingM do
+      log output Output.NothingToUndo
+      goto exit (ExitFailure 1)
   state <-
     readMitState gitdir branch headBefore & onNothingM do
       log output Output.NothingToUndo

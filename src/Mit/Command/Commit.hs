@@ -5,12 +5,9 @@ module Mit.Command.Commit
   )
 where
 
-import Data.List.NonEmpty qualified as List1
 import Mit.Git
   ( DiffResult (Differences, NoDifferences),
     GitCommitInfo (..),
-    GitConflict (..),
-    GitConflictXY (..),
     git,
     git2,
     gitApplyStash,
@@ -32,8 +29,6 @@ import Mit.Logger (Logger, log)
 import Mit.Output (Output)
 import Mit.Output qualified as Output
 import Mit.Prelude
-import Mit.Pretty (Pretty)
-import Mit.Pretty qualified as Pretty
 import Mit.ProcessInfo (ProcessInfo (..))
 import Mit.Push
   ( DidntPushReason (NothingToPush, PushWouldBeRejected, PushWouldntReachRemote, TriedToPush),
@@ -46,30 +41,29 @@ import Mit.State (MitState (..), readMitState, writeMitState)
 import Mit.Undo (Undo (..), undoStash)
 import System.Exit (ExitCode (..))
 import System.Posix.Terminal (queryTerminal)
-import Text.Builder.ANSI qualified as Text
 
 mitCommit ::
   Label ExitCode ->
   Logger Output ->
   Logger ProcessInfo ->
+  (Maybe Undo -> IO ()) ->
   Text ->
   Bool ->
   Maybe Text ->
-  (Maybe Undo -> IO ()) ->
   IO ()
-mitCommit exit output pinfo gitdir allFlag maybeMessage sync = do
+mitCommit exit output pinfo sync gitdir allFlag maybeMessage = do
   gitMergeInProgress gitdir >>= \case
     False -> mitCommitNotMerge exit output pinfo gitdir allFlag maybeMessage
-    True -> mitCommitMerge exit output pinfo gitdir sync
+    True -> mitCommitMerge exit output pinfo sync gitdir
 
 mitCommitMerge ::
   Label ExitCode ->
   Logger Output ->
   Logger ProcessInfo ->
-  Text ->
   (Maybe Undo -> IO ()) ->
+  Text ->
   IO ()
-mitCommitMerge exit output pinfo gitdir sync = do
+mitCommitMerge exit output pinfo sync gitdir = do
   branch <-
     gitCurrentBranch pinfo & onNothingM do
       log output Output.NotOnBranch
@@ -95,14 +89,15 @@ mitCommitMerge exit output pinfo gitdir sync = do
 
   head1 <- git pinfo ["rev-parse", "HEAD"]
 
-  -- Record that we are no longer merging. FIXME what about undos?
-  let state1 =
-        MitState
-          { head = head1,
-            merging = Nothing,
-            undo = maybeUndo
-          }
-  writeMitState gitdir branch state1
+  -- Record that we are no longer merging.
+  writeMitState
+    gitdir
+    branch
+    MitState
+      { head = head1,
+        merging = Nothing,
+        undo = maybeUndo
+      }
 
   whenJust maybeMerging \source ->
     when (source /= branch) (log output (Output.MergeSucceeded Nothing))
@@ -118,52 +113,12 @@ mitCommitMerge exit output pinfo gitdir sync = do
     Nothing -> sync (Just (Reset head0))
     Just stash -> do
       conflicts <- gitApplyStash pinfo stash
-      case List1.nonEmpty conflicts of
+      case Seq1.fromList conflicts of
         -- FIXME we just unstashed, now we're about to stash again :/
         Nothing -> sync (Just (ResetApply head0 stash))
         Just conflicts1 -> do
-          putPretty $
-            Pretty.paragraphs
-              [ conflictsStanza "These files are in conflict:" conflicts1,
-                Pretty.line $
-                  "Resolve the conflicts, then run "
-                    <> Pretty.command "mit commit"
-                    <> " to synchronize "
-                    <> Pretty.branch branch
-                    <> " with "
-                    <> Pretty.branch ("origin/" <> branch)
-                    <> "."
-              ]
+          log output (Output.UnstashFailed conflicts1)
           when (isJust maybeUndo) (log output Output.CanUndo)
-
-putPretty :: Pretty -> IO ()
-putPretty p =
-  Pretty.put (emptyLine <> Pretty.indent 2 p <> emptyLine)
-  where
-    emptyLine = Pretty.line (Pretty.char ' ')
-
-conflictsStanza :: Pretty.Line -> List1 GitConflict -> Pretty
-conflictsStanza prefix conflicts =
-  Pretty.lines $
-    prefix
-      : map f (List1.toList conflicts)
-  where
-    f conflict =
-      "  " <> Pretty.style Text.red (prettyGitConflict conflict)
-
-prettyGitConflict :: GitConflict -> Pretty.Line
-prettyGitConflict (GitConflict xy name) =
-  Pretty.text name <> " (" <> prettyGitConflictXY xy <> ")"
-
-prettyGitConflictXY :: GitConflictXY -> Pretty.Line
-prettyGitConflictXY = \case
-  AA -> "both added"
-  AU -> "added by us"
-  DD -> "both deleted"
-  DU -> "deleted by us"
-  UA -> "added by them"
-  UD -> "deleted by them"
-  UU -> "both modified"
 
 mitCommitNotMerge :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> Text -> Bool -> Maybe Text -> IO ()
 mitCommitNotMerge exit output pinfo gitdir allFlag maybeMessage = do

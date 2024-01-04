@@ -213,18 +213,16 @@ main2 exit output pinfo command = do
       syncWith = mitSyncWith exit output pinfo gitdir
   case command of
     MitCommand'Branch branch -> mitBranch exit output pinfo branch
-    MitCommand'Commit allFlag maybeMessage -> mitCommit exit output pinfo gitdir allFlag maybeMessage syncWith
+    MitCommand'Commit allFlag maybeMessage -> mitCommit exit output pinfo syncWith gitdir allFlag maybeMessage
     MitCommand'Gc -> mitGc
     MitCommand'Merge branch -> mitMerge exit output pinfo gitdir branch
     MitCommand'Status -> mitStatus pinfo
     MitCommand'Sync -> sync
-    MitCommand'Undo -> mitUndo exit output pinfo gitdir sync
+    MitCommand'Undo -> mitUndo exit output pinfo sync gitdir
 
 data MitCommand
   = MitCommand'Branch !Text
-  | MitCommand'Commit
-      !Bool -- all?
-      !(Maybe Text) -- message
+  | MitCommand'Commit !Bool !(Maybe Text)
   | MitCommand'Gc
   | MitCommand'Merge !Text
   | MitCommand'Status
