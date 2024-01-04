@@ -36,13 +36,13 @@ mitBranch exit output pinfo branch = do
       if directory == worktreeDir
         then goto done ()
         else do
-          log output (Output.BranchAlreadyCheckedOut branch directory)
+          log output (Output.BranchAlreadyCheckedOut branch worktreeDir directory)
           goto exit (ExitFailure 1)
 
     -- Maybe branch "foo" isn't checked out in any worktree, but there's already some directory at /my/repo/foo, which
     -- is also a problem.
     whenM (doesDirectoryExist worktreeDir) do
-      log output (Output.DirectoryAlreadyExists worktreeDir)
+      log output (Output.DirectoryAlreadyExists branch worktreeDir)
       goto exit (ExitFailure 1)
 
     -- Create the new worktree with a detached HEAD.
@@ -67,9 +67,9 @@ mitBranch exit output pinfo branch = do
           -- probably some slightly out-of-date main
           whenJustM (gitDefaultBranch pinfo "origin") \defaultBranch ->
             git @() pinfo ["reset", "--hard", "--quiet", "origin/" <> defaultBranch]
-          log output (Output.CreatedBranch branch worktreeDir Nothing)
+          log output (Output.CreatedBranch branch worktreeDir)
         True -> do
           let upstream = "origin/" <> branch
           git @() pinfo ["reset", "--hard", "--quiet", upstream]
           git @() pinfo ["branch", "--quiet", "--set-upstream-to", upstream]
-          log output (Output.CreatedBranch branch worktreeDir (Just upstream))
+          log output (Output.CreatedBranch branch worktreeDir)

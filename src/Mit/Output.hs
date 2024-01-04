@@ -7,11 +7,11 @@ import Mit.Git (GitCommitInfo, GitConflict)
 import Mit.Prelude
 
 data Output
-  = BranchAlreadyCheckedOut !Text !Text -- branch name, directory
+  = BranchAlreadyCheckedOut !Text !Text !Text -- branch name, where we want to check it out, where it is checked out
   | CanUndo
   | CheckedOutBranch !Text !Text -- branch name, directory
-  | CreatedBranch !Text !Text !(Maybe Text) -- branch name, directory, maybe upstream branch name
-  | DirectoryAlreadyExists !Text
+  | CreatedBranch !Text !Text
+  | DirectoryAlreadyExists !Text !Text -- branch name, directory
   | GitTooOld
   | MergeInProgress
   | MergeFailed !(Seq1 GitCommitInfo) !(Seq1 GitConflict)
@@ -30,4 +30,4 @@ data Output
   | PushWouldBeRejected !(Seq1 GitCommitInfo) !Int
   | PushWouldntReachRemote !(Seq1 GitCommitInfo)
   | UnstashFailed !(Seq1 GitConflict)
-  | UpstreamIsAhead !Text !Text -- branch name, upstream branch name
+  | UpstreamIsAhead !Int

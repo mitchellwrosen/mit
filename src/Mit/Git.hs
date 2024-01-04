@@ -22,6 +22,7 @@ module Mit.Git
     gitMaybeHead,
     gitMergeInProgress,
     gitNumCommitsBetween,
+    gitNumCommitsOn,
     gitRemoteBranchExists,
     gitRemoteBranchHead,
     gitRevParseAbsoluteGitDir,
@@ -296,6 +297,13 @@ gitNumCommitsBetween logger commit1 commit2 =
       pure case Text.Read.decimal commitsString of
         Right (commits, "") -> commits
         _ -> 0
+
+gitNumCommitsOn :: Logger ProcessInfo -> Text -> IO Int
+gitNumCommitsOn logger commit = do
+  commitsString <- git logger ["rev-list", "--count", commit]
+  pure case Text.Read.decimal commitsString of
+    Right (commits, "") -> commits
+    _ -> 0
 
 -- | Does the given remote branch (refs/remotes/...) exist?
 gitRemoteBranchExists :: Logger ProcessInfo -> Text -> Text -> IO Bool

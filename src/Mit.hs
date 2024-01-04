@@ -31,6 +31,8 @@ import Mit.Git
     gitIsMergeCommit,
     gitMaybeHead,
     gitMergeInProgress,
+    gitNumCommitsBetween,
+    gitNumCommitsOn,
     gitRemoteBranchHead,
     gitRevParseAbsoluteGitDir,
     gitUnstageChanges,
@@ -258,12 +260,11 @@ mitCommitNotMerge exit output pinfo gitdir allFlag maybeMessage = do
       log output Output.NotOnBranch
       goto exit (ExitFailure 1)
   maybeHead0 <- gitMaybeHead pinfo
-  let upstream = "origin/" <> branch
   maybeUpstreamHead <- gitRemoteBranchHead pinfo "origin" branch
   state0 <- readMitState pinfo gitdir branch
   snapshot <- performSnapshot pinfo
 
-  abortIfCouldFastForwardToUpstream exit output pinfo branch maybeHead0 upstream maybeUpstreamHead fetched
+  abortIfCouldFastForwardToUpstream exit output pinfo maybeHead0 maybeUpstreamHead fetched
 
   -- Initiate a commit, which (if interactive) can be cancelled with Ctrl+C.
   committed <- do
@@ -408,10 +409,10 @@ mitMerge exit output pinfo gitdir source = do
   -- Special case: if on branch "foo", treat `mit merge foo` and `mit merge origin/foo` as `mit sync`
   case source == branch || source == upstream of
     True -> mitSyncWith exit output pinfo gitdir Nothing
-    False -> mitMerge_ exit output pinfo gitdir source branch upstream
+    False -> mitMerge_ exit output pinfo gitdir source branch
 
-mitMerge_ :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> Text -> Text -> Text -> Text -> IO ()
-mitMerge_ exit output pinfo gitdir source branch upstream = do
+mitMerge_ :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> Text -> Text -> Text -> IO ()
+mitMerge_ exit output pinfo gitdir source branch = do
   fetched <- gitFetch pinfo "origin"
   maybeHead0 <- gitMaybeHead pinfo
   maybeUpstreamHead <- gitRemoteBranchHead pinfo "origin" branch
@@ -424,7 +425,7 @@ mitMerge_ exit output pinfo gitdir source branch upstream = do
         log output Output.NoSuchBranch
         goto exit (ExitFailure 1)
 
-  abortIfCouldFastForwardToUpstream exit output pinfo branch maybeHead0 upstream maybeUpstreamHead fetched
+  abortIfCouldFastForwardToUpstream exit output pinfo maybeHead0 maybeUpstreamHead fetched
 
   whenJust (snapshotStash snapshot) \_stash ->
     git @() pinfo ["reset", "--hard", "--quiet", "HEAD"]
@@ -570,23 +571,23 @@ abortIfCouldFastForwardToUpstream ::
   Label ExitCode ->
   Logger Output ->
   Logger ProcessInfo ->
-  Text ->
   Maybe Text ->
-  Text ->
   Maybe Text ->
   Bool ->
   IO ()
-abortIfCouldFastForwardToUpstream exit output pinfo branch maybeHead upstream maybeUpstreamHead fetched = do
+abortIfCouldFastForwardToUpstream exit output pinfo maybeHead maybeUpstreamHead fetched = do
   when fetched do
     whenJust maybeUpstreamHead \upstreamHead -> do
-      head <- maybeHead & onNothing upstreamIsAhead
-      whenM (gitExistCommitsBetween pinfo head upstreamHead) do
-        whenNotM (gitExistCommitsBetween pinfo upstreamHead head) upstreamIsAhead
-  where
-    upstreamIsAhead :: IO void
-    upstreamIsAhead = do
-      log output (Output.UpstreamIsAhead branch upstream)
-      goto exit (ExitFailure 1)
+      head <-
+        maybeHead & onNothing do
+          numRemoteCommits <- gitNumCommitsOn pinfo upstreamHead
+          log output (Output.UpstreamIsAhead numRemoteCommits)
+          goto exit (ExitFailure 1)
+      numRemoteCommits <- gitNumCommitsBetween pinfo head upstreamHead
+      when (numRemoteCommits > 0) do
+        whenNotM (gitExistCommitsBetween pinfo upstreamHead head) do
+          log output (Output.UpstreamIsAhead numRemoteCommits)
+          goto exit (ExitFailure 1)
 
 putPretty :: Pretty -> IO ()
 putPretty p =
@@ -603,101 +604,88 @@ conflictsStanza prefix conflicts =
     f conflict =
       "  " <> Pretty.style Text.red (prettyGitConflict conflict)
 
-notSynchronizedStanza :: Text -> Text -> Pretty.Line -> Pretty
-notSynchronizedStanza branch other suffix =
-  ("✗ " <> Pretty.branch branch <> " ≢ " <> Pretty.branch other <> suffix)
-    & Pretty.style Text.red
-    & Pretty.line
-
-runSyncStanza :: Pretty.Line -> Text -> Text -> Pretty
-runSyncStanza prefix branch upstream =
-  Pretty.line $
-    prefix
-      <> " "
-      <> Pretty.command "mit sync"
-      <> " to synchronize "
-      <> Pretty.branch branch
-      <> " with "
-      <> Pretty.branch upstream
-      <> "."
-
 ------------------------------------------------------------------------------------------------------------------------
 -- Rendering output to the terminal
 
 renderOutput :: Output -> Pretty
 renderOutput = \case
-  Output.BranchAlreadyCheckedOut branch directory ->
+  Output.BranchAlreadyCheckedOut branch dir1 dir2 ->
     Pretty.line $
       Pretty.style Text.red $
-        Pretty.branch branch
+        "✗ "
+          <> Pretty.branch branch
           <> " is already checked out in "
-          <> Pretty.directory directory
+          <> Pretty.directory dir2
+          <> ", so I can't check it out again in "
+          <> Pretty.directory dir1
           <> "."
   Output.CanUndo -> Pretty.line ("Run " <> Pretty.command "mit undo" <> " to undo this change.")
   Output.CheckedOutBranch branch directory ->
-    Pretty.line ("Checked out " <> Pretty.branch branch <> " in " <> Pretty.directory directory)
-  Output.CreatedBranch branch directory maybeUpstream ->
+    Pretty.line ("✓ I checked out " <> Pretty.branch branch <> " in " <> Pretty.directory directory)
+  Output.CreatedBranch branch directory ->
+    Pretty.line ("✓ I created " <> Pretty.branch branch <> " in " <> Pretty.directory directory <> ".")
+  Output.DirectoryAlreadyExists branch directory ->
     Pretty.line $
-      "Created "
-        <> Pretty.branch branch
-        <> " in "
-        <> Pretty.directory directory
-        <> case maybeUpstream of
-          Nothing -> ""
-          Just upstream -> " tracking " <> Pretty.branch upstream
-  Output.DirectoryAlreadyExists directory ->
-    Pretty.line (Pretty.style Text.red ("Directory " <> Pretty.directory directory <> " already exists."))
-  Output.GitTooOld -> Pretty.line (Pretty.style Text.red "Minimum required git version: 2.30.1")
+      Pretty.style Text.red $
+        "✗ I can't check out "
+          <> Pretty.branch branch
+          <> " in "
+          <> Pretty.directory directory
+          <> ", because the directory already exists."
+  Output.GitTooOld -> Pretty.line (Pretty.style Text.red "✗ I require git version 2.30.1 or later.")
   Output.MergeFailed commits conflicts ->
     Pretty.lines $
       Pretty.style
         Text.red
-        ( "Tried to merge "
+        ( "✗ I tried to merge "
             <> commitsN (Seq1.length commits)
-            <> ", but there were conflicts."
+            <> ", but there are conflicts."
         )
         : map (\conflict -> "  " <> Pretty.style Text.red (prettyGitConflict conflict)) (Seq1.toList conflicts)
   Output.MergeSucceeded maybeCommits ->
     case maybeCommits of
-      Nothing -> Pretty.line (Pretty.style Text.green "Merged commits.")
+      Nothing -> Pretty.line (Pretty.style Text.green "✓ I merged some commits.")
       Just commits ->
         Pretty.lines $
-          Pretty.style Text.green ("Merged " <> commitsN (Seq1.length commits) <> ".")
+          Pretty.style Text.green ("✓ I merged " <> commitsN (Seq1.length commits) <> ".")
             : Pretty.indent 2 (prettyCommits commits)
-  Output.MergeInProgress -> Pretty.line (Pretty.style Text.red (Pretty.style Text.bold "git merge" <> " in progress."))
-  Output.NoGitDir -> Pretty.line (Pretty.style Text.red "The current directory doesn't contain a git repository.")
-  Output.NoSuchBranch -> Pretty.line (Pretty.style Text.red "No such branch.")
-  Output.NotOnBranch -> Pretty.line (Pretty.style Text.red "You are not on a branch.")
-  Output.NothingToCommit -> Pretty.line (Pretty.style Text.red "There's nothing to commit.")
+  Output.MergeInProgress ->
+    Pretty.line $
+      Pretty.style Text.red $
+        "✗ There's currently a merge in progress that has to be resolved first."
+  Output.NoGitDir -> Pretty.line (Pretty.style Text.red "✗ The current directory doesn't contain a git repository.")
+  Output.NoSuchBranch -> Pretty.line (Pretty.style Text.red "✗ No such branch.")
+  Output.NotOnBranch -> Pretty.line (Pretty.style Text.red "✗ You are not on a branch.")
+  Output.NothingToCommit -> Pretty.line (Pretty.style Text.red "✗ There's nothing to commit.")
   Output.NothingToMerge source target ->
     Pretty.line $
       Pretty.style Text.green $
-        Pretty.branch target <> " is already up-to-date with " <> Pretty.branch source <> "."
-  Output.NothingToUndo -> Pretty.line (Pretty.style Text.red "Nothing to undo.")
+        "✓ " <> Pretty.branch target <> " is already up-to-date with " <> Pretty.branch source <> "."
+  Output.NothingToUndo -> Pretty.line (Pretty.style Text.red "✗ There's nothing to undo.")
   Output.PullFailed commits conflicts ->
     Pretty.lines $
       Pretty.style
         Text.red
-        ( "Tried to pull "
+        ( "✗ I tried to pull "
             <> commitsN (Seq1.length commits)
-            <> ", but there were conflicts."
+            <> ", but there are conflicts."
         )
         : map (\conflict -> "  " <> Pretty.style Text.red (prettyGitConflict conflict)) (Seq1.toList conflicts)
   Output.PullSucceeded commits ->
     Pretty.lines $
-      Pretty.style Text.green ("Pulled " <> commitsN (Seq1.length commits) <> ".")
+      Pretty.style Text.green ("✓ I pulled " <> commitsN (Seq1.length commits) <> ".")
         : Pretty.indent 2 (prettyCommits commits)
   Output.PushFailed commits ->
-    Pretty.line (Pretty.style Text.red ("Tried to push " <> commitsN (Seq1.length commits) <> ", but failed."))
+    Pretty.line (Pretty.style Text.red ("✗ I tried to push " <> commitsN (Seq1.length commits) <> ", but failed."))
   Output.PushSucceeded commits ->
     Pretty.lines $
-      Pretty.style Text.green ("Pushed " <> commitsN (Seq1.length commits) <> ".")
+      Pretty.style Text.green ("✓ I pushed " <> commitsN (Seq1.length commits) <> ".")
         : Pretty.indent 2 (prettyCommits commits)
   Output.PushWouldBeRejected localCommits numRemoteCommits ->
     Pretty.line
       ( Pretty.style
           Text.red
-          ( "Didn't try to push "
+          ( "✗ I didn't try to push "
               <> commitsN (Seq1.length localCommits)
               <> ", because there "
               <> commitsVN numRemoteCommits
@@ -708,17 +696,14 @@ renderOutput = \case
     Pretty.line
       ( Pretty.style
           Text.red
-          ("Didn't try to push " <> commitsN (Seq1.length commits) <> ", because you appear to be offline.")
+          ("✗ I didn't try to push " <> commitsN (Seq1.length commits) <> ", because you appear to be offline.")
       )
   Output.UnstashFailed conflicts ->
     Pretty.lines $
-      Pretty.style Text.red ("Tried to apply uncommitted changes, but there were conflicts.")
+      Pretty.style Text.red ("✗ I tried to restore your uncommitted changes, but there are conflicts.")
         : map (\conflict -> "  " <> Pretty.style Text.red (prettyGitConflict conflict)) (Seq1.toList conflicts)
-  Output.UpstreamIsAhead branch upstream ->
-    Pretty.paragraphs
-      [ notSynchronizedStanza branch upstream ".",
-        runSyncStanza "Run" branch upstream
-      ]
+  Output.UpstreamIsAhead numRemoteCommits ->
+    Pretty.line (Pretty.style Text.red ("✗ There " <> commitsVN numRemoteCommits <> " to pull first."))
   where
     commitsN :: Int -> Pretty.Line
     commitsN = \case
