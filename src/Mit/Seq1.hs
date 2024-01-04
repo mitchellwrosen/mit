@@ -1,5 +1,5 @@
 module Mit.Seq1
-  ( Seq1,
+  ( Seq1 (Cons, Snoc),
     Mit.Seq1.length,
     last,
     dropEnd,
@@ -32,6 +32,11 @@ pattern Cons :: a -> Seq a -> Seq1 a
 pattern Cons x xs <- Seq1 (x Seq.:<| xs)
 
 {-# COMPLETE Cons #-}
+
+pattern Snoc :: Seq a -> a -> Seq1 a
+pattern Snoc xs x <- Seq1 (xs Seq.:|> x)
+
+{-# COMPLETE Snoc #-}
 
 instance Foldable1 Seq1 where
   foldMap1 :: (Semigroup m) => (a -> m) -> Seq1 a -> m

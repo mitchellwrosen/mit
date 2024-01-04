@@ -111,6 +111,7 @@ library
     Mit.Seq1
     Mit.Snapshot
     Mit.State
+    Mit.TextUtils
     Mit.Undo
     Mit.Verbosity
   hs-source-dirs: src
