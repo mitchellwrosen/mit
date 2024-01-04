@@ -10,11 +10,8 @@ where
 import Data.Text qualified as Text
 import Data.Text.Encoding.Base64 qualified as Text
 import Data.Text.IO qualified as Text
-import Mit.Git (gitMaybeHead)
 import Mit.Label (goto, label)
-import Mit.Logger (Logger)
 import Mit.Prelude
-import Mit.ProcessInfo (ProcessInfo)
 import Mit.Undo (Undo (..), parseUndo, renderUndo)
 import System.Directory (removeFile)
 
@@ -48,13 +45,9 @@ parseMitState contents = do
       else Just <$> parseUndo undosLine1
   pure MitState {head, merging, undo}
 
-readMitState :: Logger ProcessInfo -> Text -> Text -> IO (MitState ())
-readMitState logger gitdir branch = do
+readMitState :: Text -> Text -> Text -> IO (MitState ())
+readMitState gitdir branch head = do
   label \return -> do
-    head <-
-      gitMaybeHead logger >>= \case
-        Nothing -> goto return emptyMitState
-        Just head -> pure head
     let mitfile = makeMitfile gitdir branch64
     contents <-
       try (Text.readFile mitfile) >>= \case

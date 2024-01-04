@@ -55,7 +55,7 @@ import Mit.Push
   )
 import Mit.Seq1 qualified as Seq1
 import Mit.Snapshot (performSnapshot, snapshotStash, undoToSnapshot)
-import Mit.State (MitState (..), readMitState, writeMitState)
+import Mit.State (MitState (..), emptyMitState, readMitState, writeMitState)
 import Mit.Undo (Undo (..), concatUndos, undoStash)
 import Mit.Verbosity (Verbosity (..), intToVerbosity)
 import Options.Applicative qualified as Opt
@@ -261,7 +261,10 @@ mitCommitNotMerge exit output pinfo gitdir allFlag maybeMessage = do
       goto exit (ExitFailure 1)
   maybeHead0 <- gitMaybeHead pinfo
   maybeUpstreamHead <- gitRemoteBranchHead pinfo "origin" branch
-  state0 <- readMitState pinfo gitdir branch
+  state0 <-
+    case maybeHead0 of
+      Nothing -> pure emptyMitState
+      Just head0 -> readMitState gitdir branch head0
   snapshot <- performSnapshot pinfo
 
   abortIfCouldFastForwardToUpstream exit output pinfo maybeHead0 maybeUpstreamHead fetched
@@ -334,8 +337,8 @@ mitCommitMerge exit output pinfo gitdir = do
     gitCurrentBranch pinfo & onNothingM do
       log output Output.NotOnBranch
       goto exit (ExitFailure 1)
-  state0 <- readMitState pinfo gitdir branch
   head0 <- git pinfo ["rev-parse", "HEAD"]
+  state0 <- readMitState gitdir branch head0
 
   -- Make the merge commit. Commonly we'll have gotten here by `mit merge <branch>`, so we'll have a `state0.merging`
   -- that tells us we're merging in <branch>. But we also handle the case that we went `git merge` -> `mit commit`,

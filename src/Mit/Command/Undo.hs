@@ -21,12 +21,12 @@ mitUndo exit output pinfo gitdir sync = do
     gitCurrentBranch pinfo & onNothingM do
       log output Output.NotOnBranch
       goto exit (ExitFailure 1)
-  state <- readMitState pinfo gitdir branch
+  headBefore <- git @Text pinfo ["rev-parse", "HEAD"]
+  state <- readMitState gitdir branch headBefore
   undo <-
     state.undo & onNothing do
       log output Output.NothingToUndo
       goto exit (ExitFailure 1)
-  headBefore <- git @Text pinfo ["rev-parse", "HEAD"]
   applyUndo pinfo undo
   headAfter <- git pinfo ["rev-parse", "HEAD"]
   when (headBefore /= headAfter) sync

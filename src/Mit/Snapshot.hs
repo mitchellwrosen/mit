@@ -31,10 +31,10 @@ undoToSnapshot = \case
   Dirty head stash -> Just (Reset head (Just (Apply stash Nothing)))
 
 performSnapshot :: Logger ProcessInfo -> IO Snapshot
-performSnapshot logger =
-  gitMaybeHead logger >>= \case
+performSnapshot pinfo =
+  gitMaybeHead pinfo >>= \case
     Nothing -> pure Empty
     Just head ->
-      gitCreateStash logger <&> \case
+      gitCreateStash pinfo <&> \case
         Nothing -> Clean head
         Just stash -> Dirty head stash
