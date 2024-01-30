@@ -37,7 +37,7 @@ data PushResult
     Pushed !(Seq1 GitCommitInfo)
 
 data DidntPushReason
-  = -- | There was nothing to push.
+  = -- | There was nothing to push (or the user explicitly asked to not push).
     NothingToPush
   | -- | We have commits to push, but we appear to be offline.
     PushWouldntReachRemote !(Seq1 GitCommitInfo)

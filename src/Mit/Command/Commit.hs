@@ -49,12 +49,13 @@ mitCommit ::
   (Maybe Undo -> IO ()) ->
   Text ->
   Bool ->
+  Bool ->
   Maybe Text ->
   IO ()
-mitCommit exit output pinfo sync gitdir allFlag maybeMessage = do
+mitCommit exit output pinfo sync gitdir allFlag dontSyncFlag maybeMessage = do
   gitMergeInProgress gitdir >>= \case
-    False -> mitCommitNotMerge exit output pinfo gitdir allFlag maybeMessage
-    True -> mitCommitMerge exit output pinfo sync gitdir
+    False -> mitCommitNotMerge exit output pinfo gitdir allFlag dontSyncFlag maybeMessage
+    True -> mitCommitMerge exit output pinfo sync gitdir dontSyncFlag
 
 mitCommitMerge ::
   Label ExitCode ->
@@ -62,8 +63,9 @@ mitCommitMerge ::
   Logger ProcessInfo ->
   (Maybe Undo -> IO ()) ->
   Text ->
+  Bool ->
   IO ()
-mitCommitMerge exit output pinfo sync gitdir = do
+mitCommitMerge exit output pinfo sync gitdir dontSyncFlag = do
   branch <-
     gitCurrentBranch pinfo & onNothingM do
       log output Output.NotOnBranch
@@ -110,18 +112,26 @@ mitCommitMerge exit output pinfo sync gitdir = do
   --        double conflict markers
 
   case maybeUndo >>= undoStash of
-    Nothing -> sync (Just (Reset head0))
+    Nothing -> when (not dontSyncFlag) (sync (Just (Reset head0)))
     Just stash -> do
       conflicts <- gitApplyStash pinfo stash
       case Seq1.fromList conflicts of
         -- FIXME we just unstashed, now we're about to stash again :/
-        Nothing -> sync (Just (ResetApply head0 stash))
+        Nothing -> when (not dontSyncFlag) (sync (Just (ResetApply head0 stash)))
         Just conflicts1 -> do
           log output (Output.UnstashFailed conflicts1)
           when (isJust maybeUndo) (log output Output.CanUndo)
 
-mitCommitNotMerge :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> Text -> Bool -> Maybe Text -> IO ()
-mitCommitNotMerge exit output pinfo gitdir allFlag maybeMessage = do
+mitCommitNotMerge ::
+  Label ExitCode ->
+  Logger Output ->
+  Logger ProcessInfo ->
+  Text ->
+  Bool ->
+  Bool ->
+  Maybe Text ->
+  IO ()
+mitCommitNotMerge exit output pinfo gitdir allFlag dontSyncFlag maybeMessage = do
   -- Check to see if there's even anything to commit, and bail if not.
   gitUnstageChanges pinfo
   gitDiff pinfo >>= \case
@@ -135,7 +145,10 @@ mitCommitNotMerge exit output pinfo gitdir allFlag maybeMessage = do
       log output Output.NotOnBranch
       goto exit (ExitFailure 1)
 
-  fetched <- gitFetch pinfo "origin"
+  fetched <-
+    if dontSyncFlag
+      then pure False
+      else gitFetch pinfo "origin"
   maybeUpstreamHead <- gitRemoteBranchHead pinfo "origin" branch
   maybeHead0 <- gitMaybeHead pinfo
   abortIfCouldFastForwardToUpstream exit output pinfo maybeHead0 maybeUpstreamHead fetched
@@ -159,7 +172,10 @@ mitCommitNotMerge exit output pinfo gitdir allFlag maybeMessage = do
   maybeHead1 <- if committed then Just <$> git pinfo ["rev-parse", "HEAD"] else pure maybeHead0
 
   -- Attempt a push (even if the commit was cancelled, since we might have other unpublished commits).
-  pushResult <- performPush pinfo branch maybeHead1 maybeUpstreamHead fetched
+  pushResult <-
+    if dontSyncFlag
+      then pure (DidntPush NothingToPush)
+      else performPush pinfo branch maybeHead1 maybeUpstreamHead fetched
 
   case pushResult of
     DidntPush NothingToPush -> pure ()

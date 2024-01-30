@@ -160,6 +160,7 @@ main = do
               Opt.info
                 ( MitCommand'Commit
                     <$> Opt.switch (Opt.help "Include all changes" <> Opt.long "all")
+                    <*> Opt.switch (Opt.help "Don't sync after committing" <> Opt.long "no-sync")
                     <*> Opt.optional
                       ( Opt.strOption $
                           Opt.help "Commit message"
@@ -213,7 +214,8 @@ main2 exit output pinfo command = do
       syncWith = mitSyncWith exit output pinfo gitdir
   case command of
     MitCommand'Branch branch -> mitBranch exit output pinfo branch
-    MitCommand'Commit allFlag maybeMessage -> mitCommit exit output pinfo syncWith gitdir allFlag maybeMessage
+    MitCommand'Commit allFlag dontSyncFlag maybeMessage ->
+      mitCommit exit output pinfo syncWith gitdir allFlag dontSyncFlag maybeMessage
     MitCommand'Gc -> mitGc
     MitCommand'Merge branch -> mitMerge exit output pinfo gitdir branch
     MitCommand'Status -> mitStatus pinfo
@@ -222,7 +224,7 @@ main2 exit output pinfo command = do
 
 data MitCommand
   = MitCommand'Branch !Text
-  | MitCommand'Commit !Bool !(Maybe Text)
+  | MitCommand'Commit !Bool !Bool !(Maybe Text)
   | MitCommand'Gc
   | MitCommand'Merge !Text
   | MitCommand'Status
