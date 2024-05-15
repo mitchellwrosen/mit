@@ -6,13 +6,13 @@ where
 import Data.Text qualified as Text
 import Mit.Directory (cd, doesDirectoryExist)
 import Mit.Git (git, gitBranchWorktreeDir, gitDefaultBranch, gitFetch, gitRemoteBranchExists)
-import Mit.Label (Label, goto, label)
 import Mit.Logger (Logger, log)
 import Mit.Output (Output)
 import Mit.Output qualified as Output
 import Mit.Prelude
 import Mit.ProcessInfo (ProcessInfo)
 import System.Exit (ExitCode (..))
+import UnconditionalJump (Label, goto, label)
 
 mitBranch :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> Text -> IO ()
 mitBranch exit output pinfo branch = do

@@ -24,7 +24,6 @@ import Mit.Git
     gitRemoteBranchHead,
     gitUnstageChanges,
   )
-import Mit.Label (Label, goto)
 import Mit.Logger (Logger, log)
 import Mit.Output (Output)
 import Mit.Output qualified as Output
@@ -41,6 +40,7 @@ import Mit.State (MitState (..), readMitState, writeMitState)
 import Mit.Undo (Undo (..), undoStash)
 import System.Exit (ExitCode (..))
 import System.Posix.Terminal (queryTerminal)
+import UnconditionalJump (Label, goto)
 
 mitCommit ::
   Label ExitCode ->

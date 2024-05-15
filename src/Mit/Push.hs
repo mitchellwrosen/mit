@@ -7,11 +7,11 @@ module Mit.Push
 where
 
 import Mit.Git (GitCommitInfo, git, gitCommitsBetween, gitNumCommitsBetween)
-import Mit.Label (goto, label)
 import Mit.Logger (Logger)
 import Mit.Prelude
 import Mit.ProcessInfo (ProcessInfo)
 import Mit.Seq1 qualified as Seq1
+import UnconditionalJump (goto, label)
 
 performPush :: Logger ProcessInfo -> Text -> Maybe Text -> Maybe Text -> Bool -> IO PushResult
 performPush logger branch maybeHead maybeUpstreamHead fetched = do

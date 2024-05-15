@@ -31,7 +31,6 @@ import Mit.Git
     gitRevParseAbsoluteGitDir,
     gitVersion,
   )
-import Mit.Label (Label, goto, label)
 import Mit.Logger (Logger, log, makeLogger)
 import Mit.Merge (MergeResult (..), mergeResultConflicts, performMerge)
 import Mit.Output (Output)
@@ -57,6 +56,7 @@ import System.Exit (ExitCode (..), exitWith)
 import Text.Builder.ANSI qualified as Text
 import Text.Builder.ANSI qualified as Text.Builder
 import Text.Printf (printf)
+import UnconditionalJump (Label, goto, label)
 
 -- FIXME: nicer "git status" story. in particular the conflict markers in the commits after a merge are a bit
 -- ephemeral feeling

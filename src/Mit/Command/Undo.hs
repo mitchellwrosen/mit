@@ -4,7 +4,6 @@ module Mit.Command.Undo
 where
 
 import Mit.Git (git, gitCurrentBranch, gitMaybeHead)
-import Mit.Label (Label, goto)
 import Mit.Logger (Logger, log)
 import Mit.Output (Output)
 import Mit.Output qualified as Output
@@ -13,6 +12,7 @@ import Mit.ProcessInfo (ProcessInfo)
 import Mit.State (MitState (..), readMitState)
 import Mit.Undo (applyUndo)
 import System.Exit (ExitCode (..))
+import UnconditionalJump (Label, goto)
 
 -- FIXME output what we just undid
 mitUndo :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> IO () -> Text -> IO ()

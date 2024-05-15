@@ -9,10 +9,10 @@ where
 import Data.Text qualified as Text
 import Data.Text.Encoding.Base64 qualified as Text
 import Data.Text.IO qualified as Text
-import Mit.Label (goto, label)
 import Mit.Prelude
 import Mit.Undo (Undo (..), parseUndo, renderUndo)
 import System.Directory (removeFile)
+import UnconditionalJump (goto, label)
 
 data MitState = MitState
   { head :: !Text,
