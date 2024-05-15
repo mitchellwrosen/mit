@@ -2,4 +2,4 @@ packages:
   .,
   mitscript
 
-with-compiler: ghc-9.6
+with-compiler: ghc-9.8.2
