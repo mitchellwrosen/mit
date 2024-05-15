@@ -13,7 +13,8 @@ import Data.Semigroup qualified as Semigroup
 import Data.Text qualified as Text
 import Data.Text.Builder.Linear qualified as Text.Builder
 import Mit.Command.Branch (mitBranch)
-import Mit.Command.Commit (abortIfCouldFastForwardToUpstream, mitCommit)
+import Mit.Command.Commit (mitCommit)
+import Mit.Command.Merge (mitMerge)
 import Mit.Command.Status (mitStatus)
 import Mit.Command.Undo (mitUndo)
 import Mit.Git
@@ -212,12 +213,13 @@ main2 exit output pinfo command = do
 
   let sync = mitSync exit output pinfo gitdir
       syncWith = mitSyncWith exit output pinfo gitdir
+
   case command of
     MitCommand'Branch branch -> mitBranch exit output pinfo branch
     MitCommand'Commit allFlag dontSyncFlag maybeMessage ->
       mitCommit exit output pinfo syncWith gitdir allFlag dontSyncFlag maybeMessage
     MitCommand'Gc -> mitGc
-    MitCommand'Merge branch -> mitMerge exit output pinfo gitdir branch
+    MitCommand'Merge branch -> mitMerge exit output pinfo (syncWith Nothing) gitdir branch
     MitCommand'Status -> mitStatus pinfo
     MitCommand'Sync -> sync
     MitCommand'Undo -> mitUndo exit output pinfo sync gitdir
@@ -234,85 +236,6 @@ data MitCommand
 mitGc :: IO ()
 mitGc =
   pure ()
-
-mitMerge :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> Text -> Text -> IO ()
-mitMerge exit output pinfo gitdir source = do
-  whenM (gitMergeInProgress gitdir) do
-    log output Output.MergeInProgress
-    goto exit (ExitFailure 1)
-
-  branch <-
-    gitCurrentBranch pinfo & onNothingM do
-      log output Output.NotOnBranch
-      goto exit (ExitFailure 1)
-
-  let upstream = "origin/" <> branch
-
-  -- Special case: if on branch "foo", treat `mit merge foo` and `mit merge origin/foo` as `mit sync`
-  case source == branch || source == upstream of
-    True -> mitSyncWith exit output pinfo gitdir Nothing
-    False -> mitMerge_ exit output pinfo gitdir source branch
-
-mitMerge_ :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> Text -> Text -> Text -> IO ()
-mitMerge_ exit output pinfo gitdir source branch = do
-  fetched <- gitFetch pinfo "origin"
-  maybeHead0 <- gitMaybeHead pinfo
-  maybeUpstreamHead <- gitRemoteBranchHead pinfo "origin" branch
-  snapshot <- performSnapshot pinfo
-
-  -- When given 'mit merge foo', prefer running 'git merge origin/foo' over 'git merge foo'
-  sourceCommit <-
-    gitRemoteBranchHead pinfo "origin" source & onNothingM do
-      git pinfo ["rev-parse", "refs/heads/" <> source] & onLeftM \_ -> do
-        log output Output.NoSuchBranch
-        goto exit (ExitFailure 1)
-
-  abortIfCouldFastForwardToUpstream exit output pinfo maybeHead0 maybeUpstreamHead fetched
-
-  whenJust (snapshotStash snapshot) \_stash ->
-    git @() pinfo ["reset", "--hard", "--quiet", "HEAD"]
-
-  mergeResult <- performMerge pinfo gitdir sourceCommit ("⅄ " <> source <> " → " <> branch)
-
-  log output case mergeResult of
-    NothingToMerge -> Output.NothingToMerge source branch
-    TriedToMerge commits conflicts -> Output.MergeFailed commits conflicts
-    Merged commits -> Output.MergeSucceeded (Just commits)
-
-  head1 <- git pinfo ["rev-parse", "HEAD"] -- FIXME oops this can be Nothing
-  pushResult <- performPush pinfo branch (Just head1) maybeUpstreamHead fetched
-
-  case pushResult of
-    DidntPush NothingToPush -> pure ()
-    DidntPush (PushWouldBeRejected localCommits numRemoteCommits) ->
-      log output (Output.PushWouldBeRejected localCommits numRemoteCommits)
-    DidntPush (PushWouldntReachRemote commits) -> log output (Output.PushWouldntReachRemote commits)
-    DidntPush (TriedToPush commits) -> log output (Output.PushFailed commits)
-    Pushed commits -> log output (Output.PushSucceeded commits)
-
-  let undo1 =
-        if pushResultPushed pushResult || isNothing (mergeResultConflicts mergeResult)
-          then Nothing
-          else undoToSnapshot snapshot
-
-  writeMitState
-    gitdir
-    branch
-    MitState
-      { head = head1,
-        merging =
-          case mergeResultConflicts mergeResult of
-            Nothing -> Nothing
-            Just _conflicts -> Just source,
-        undo = undo1
-      }
-
-  when (isNothing (mergeResultConflicts mergeResult)) do
-    whenJust (snapshotStash snapshot) \stash -> do
-      conflicts0 <- gitApplyStash pinfo stash
-      whenJust (Seq1.fromList conflicts0) \conflicts1 -> log output (Output.UnstashFailed conflicts1)
-
-  when (isJust undo1) (log output Output.CanUndo)
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
 mitSync :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> Text -> IO ()

@@ -95,7 +95,9 @@ library
     Mit
     Mit.Command.Branch
     Mit.Command.Commit
+    Mit.Command.Merge
     Mit.Command.Status
+    Mit.Command.Sync
     Mit.Command.Undo
     Mit.Directory
     Mit.Git
