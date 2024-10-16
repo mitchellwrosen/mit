@@ -1,6 +1,5 @@
 packages:
   .,
-  mitscript,
-  submodules/unconditional-jump
+  mitscript
 
 with-compiler: ghc-9.8.2

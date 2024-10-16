@@ -1,3 +1,0 @@
-[submodule "submodules/unconditional-jump"]
-	path = submodules/unconditional-jump
-	url = git@github.com:awkward-squad/unconditional-jump
