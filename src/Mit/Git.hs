@@ -175,7 +175,6 @@ gitCommitsBetween logger commit1 commit2 =
           logger
           [ "rev-list",
             "--format=format:%an\xFEFF%ah\xFEFF%H\xFEFF%h\xFEFF%s",
-            "--max-count=11",
             maybe id (\c1 c2 -> c1 <> ".." <> c2) commit1 commit2
           ]
       pure (parseGitCommitInfo <$> dropEvens commits)
