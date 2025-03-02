@@ -45,10 +45,12 @@ import Data.Text.IO qualified as Text
 import Data.Text.Read qualified as Text.Read
 import GHC.Clock (getMonotonicTime)
 import Ki qualified
+import Mit.Git.GitCommitInfo (GitCommitInfo (..), parseGitCommitInfo)
+import Mit.Git.GitConflict (GitConflict (..), GitConflictXY (..), parseGitConflict)
 import Mit.Logger (Logger, log)
+import Mit.Output (ProcessInfo1 (..))
 import Mit.Prelude
 import Mit.Process (ProcessOutput (..))
-import Mit.ProcessInfo (ProcessInfo (..))
 import System.Directory (doesFileExist)
 import System.Exit (ExitCode (..))
 import System.IO (Handle, hClose, hIsEOF)
@@ -70,74 +72,6 @@ data DiffResult
   = Differences
   | NoDifferences
 
-data GitCommitInfo = GitCommitInfo
-  { author :: Text,
-    date :: Text,
-    hash :: Text,
-    shorthash :: Text,
-    subject :: Text
-  }
-  deriving stock (Show)
-
-parseGitCommitInfo :: Text -> GitCommitInfo
-parseGitCommitInfo line =
-  case Text.split (== '\xFEFF') line of
-    [author, date, hash, shorthash, subject] -> GitCommitInfo {author, date, hash, shorthash, subject}
-    _ -> error (Text.unpack line)
-
--- FIXME some other color, magenta?
-
-data GitConflict
-  = GitConflict GitConflictXY Text
-  deriving stock (Eq, Show)
-
--- FIXME
---
--- error: The following untracked working tree files would be overwritten by merge:
---         administration-client/administration-client.cabal
---         aeson-simspace/aeson-simspace.cabal
---         attack-designer/api/attack-designer-api.cabal
---         attack-designer/db/attack-designer-db.cabal
---         attack-designer/server/attack-designer-server.cabal
---         attack-integrations/attack-integrations.cabal
---         authz/simspace-authz.cabal
---         caching/caching.cabal
---         common-testlib/common-testlib.cabal
---         db-infra/db-infra.cabal
---         db-infra/migrations/0_migrate-rich-text-images-to-minio/migrate-rich-text-images-to-minio.cabal
---         db-infra/migrations/2.0.0.1010_migrate-questions-into-content-modules/range-data-server-migrate-questions-into-content-modules.cabal
---         db-infra/migrations/2.0.0.19_migrate-hello-table/range-data-server-migrate-hello-table.cabal
---         db-infra/migrations/2.0.0.21_migrate-puppet-yaml-to-text/range-data-server-migrate-puppet-yaml-to-text.cabal
---         db-infra/migrations/2.0.0.9015_migrate-refresh-stocks/range-data-server-migrate-refresh-stocks.cabal
---         db-infra/migrations/shared/range-data-server-migration.cabal
--- Please move or remove them before you merge.
--- Aborting
-parseGitConflict :: Text -> Maybe GitConflict
-parseGitConflict line = do
-  [xy, name] <- Just (Text.words line)
-  GitConflict <$> parseGitConflictXY xy <*> Just name
-
-data GitConflictXY
-  = AA -- both added
-  | AU -- added by us
-  | DD -- both deleted
-  | DU -- deleted by us
-  | UA -- added by them
-  | UD -- deleted by them
-  | UU -- both modified
-  deriving stock (Eq, Show)
-
-parseGitConflictXY :: Text -> Maybe GitConflictXY
-parseGitConflictXY = \case
-  "AA" -> Just AA
-  "AU" -> Just AU
-  "DD" -> Just DD
-  "DU" -> Just DU
-  "UA" -> Just UA
-  "UD" -> Just UD
-  "UU" -> Just UU
-  _ -> Nothing
-
 data GitVersion
   = GitVersion Int Int Int
   deriving stock (Eq, Ord)
@@ -147,7 +81,7 @@ showGitVersion (GitVersion x y z) =
   Text.pack (show x) <> "." <> Text.pack (show y) <> "." <> Text.pack (show z)
 
 -- | Apply stash, return conflicts.
-gitApplyStash :: Logger ProcessInfo -> Text -> IO [GitConflict]
+gitApplyStash :: Logger ProcessInfo1 -> Text -> IO [GitConflict]
 gitApplyStash logger stash = do
   conflicts <-
     git logger ["stash", "apply", "--quiet", stash] >>= \case
@@ -157,14 +91,14 @@ gitApplyStash logger stash = do
   pure conflicts
 
 -- | Get the directory a branch's worktree is checked out in, if it exists.
-gitBranchWorktreeDir :: Logger ProcessInfo -> Text -> IO (Maybe Text)
+gitBranchWorktreeDir :: Logger ProcessInfo1 -> Text -> IO (Maybe Text)
 gitBranchWorktreeDir logger branch = do
   worktrees <- gitListWorktrees logger
   pure case List.find (\worktree -> worktree.branch == Just branch) worktrees of
     Nothing -> Nothing
     Just worktree -> Just worktree.directory
 
-gitCommitsBetween :: Logger ProcessInfo -> Maybe Text -> Text -> IO (Seq GitCommitInfo)
+gitCommitsBetween :: Logger ProcessInfo1 -> Maybe Text -> Text -> IO (Seq GitCommitInfo)
 gitCommitsBetween logger commit1 commit2 =
   if commit1 == Just commit2
     then pure Seq.empty
@@ -185,14 +119,14 @@ gitCommitsBetween logger commit1 commit2 =
       _ Seq.:<| x Seq.:<| xs -> x Seq.<| dropEvens xs
       xs -> xs
 
-gitConflicts :: Logger ProcessInfo -> IO [GitConflict]
+gitConflicts :: Logger ProcessInfo1 -> IO [GitConflict]
 gitConflicts logger =
   mapMaybe parseGitConflict <$> git logger ["status", "--no-renames", "--porcelain=v1"]
 
 -- | Get the conflicts with the given commitish.
 --
 -- Precondition: there is no merge in progress.
-gitConflictsWith :: Logger ProcessInfo -> Text -> Text -> IO [GitConflict]
+gitConflictsWith :: Logger ProcessInfo1 -> Text -> Text -> IO [GitConflict]
 gitConflictsWith logger gitdir commit = do
   maybeStash <- gitStash logger
   conflicts <- do
@@ -203,7 +137,7 @@ gitConflictsWith logger gitdir commit = do
   whenJust maybeStash \stash -> git logger ["stash", "apply", "--quiet", stash]
   pure conflicts
 
-gitCreateStash :: Logger ProcessInfo -> IO (Maybe Text)
+gitCreateStash :: Logger ProcessInfo1 -> IO (Maybe Text)
 gitCreateStash logger = do
   git @() logger ["add", "--all"] -- it seems certain things (like renames), unless staged, cannot be stashed
   stash <-
@@ -217,26 +151,26 @@ gitCreateStash logger = do
   pure stash
 
 -- | Get the name of the current branch.
-gitCurrentBranch :: Logger ProcessInfo -> IO (Maybe Text)
+gitCurrentBranch :: Logger ProcessInfo1 -> IO (Maybe Text)
 gitCurrentBranch logger =
   git logger ["branch", "--show-current"] <&> \case
     Seq.Empty -> Nothing
     branch Seq.:<| _ -> Just branch
 
-gitDefaultBranch :: Logger ProcessInfo -> Text -> IO (Maybe Text)
+gitDefaultBranch :: Logger ProcessInfo1 -> Text -> IO (Maybe Text)
 gitDefaultBranch logger remote =
   git logger ["symbolic-ref", "refs/remotes/" <> remote <> "/HEAD"] <&> \case
     Left _code -> Nothing
     Right branch -> Just (Text.drop (14 + Text.length remote) branch)
 
 -- | Report whether there are any tracked, unstaged changes.
-gitDiff :: Logger ProcessInfo -> IO DiffResult
+gitDiff :: Logger ProcessInfo1 -> IO DiffResult
 gitDiff logger = do
   git logger ["diff", "--quiet"] <&> \case
     False -> Differences
     True -> NoDifferences
 
-gitExistCommitsBetween :: Logger ProcessInfo -> Text -> Text -> IO Bool
+gitExistCommitsBetween :: Logger ProcessInfo1 -> Text -> Text -> IO Bool
 gitExistCommitsBetween logger commit1 commit2 =
   if commit1 == commit2
     then pure False
@@ -245,11 +179,11 @@ gitExistCommitsBetween logger commit1 commit2 =
       pure (not (Seq.null commits))
 
 -- | Do any untracked files exist?
-gitExistUntrackedFiles :: Logger ProcessInfo -> IO Bool
+gitExistUntrackedFiles :: Logger ProcessInfo1 -> IO Bool
 gitExistUntrackedFiles logger =
   not . null <$> gitListUntrackedFiles logger
 
-gitFetch :: Logger ProcessInfo -> Text -> IO Bool
+gitFetch :: Logger ProcessInfo1 -> Text -> IO Bool
 gitFetch logger remote = do
   fetched <- readIORef fetchedRef
   case Map.lookup remote fetched of
@@ -266,17 +200,17 @@ fetchedRef =
 {-# NOINLINE fetchedRef #-}
 
 -- | Get whether a commit is a merge commit.
-gitIsMergeCommit :: Logger ProcessInfo -> Text -> IO Bool
+gitIsMergeCommit :: Logger ProcessInfo1 -> Text -> IO Bool
 gitIsMergeCommit logger commit =
   git logger ["rev-parse", "--quiet", "--verify", commit <> "^2"]
 
 -- | List all untracked files.
-gitListUntrackedFiles :: Logger ProcessInfo -> IO [Text]
+gitListUntrackedFiles :: Logger ProcessInfo1 -> IO [Text]
 gitListUntrackedFiles logger =
   git logger ["ls-files", "--exclude-standard", "--other"]
 
 -- | Get the head commit, if it exists.
-gitMaybeHead :: Logger ProcessInfo -> IO (Maybe Text)
+gitMaybeHead :: Logger ProcessInfo1 -> IO (Maybe Text)
 gitMaybeHead logger =
   git logger ["rev-parse", "HEAD"] <&> \case
     Left _ -> Nothing
@@ -287,7 +221,7 @@ gitMergeInProgress :: Text -> IO Bool
 gitMergeInProgress gitdir =
   doesFileExist (Text.unpack (gitdir <> "/MERGE_HEAD"))
 
-gitNumCommitsBetween :: Logger ProcessInfo -> Text -> Text -> IO Int
+gitNumCommitsBetween :: Logger ProcessInfo1 -> Text -> Text -> IO Int
 gitNumCommitsBetween logger commit1 commit2 =
   if commit1 == commit2
     then pure 0
@@ -297,7 +231,7 @@ gitNumCommitsBetween logger commit1 commit2 =
         Right (commits, "") -> commits
         _ -> 0
 
-gitNumCommitsOn :: Logger ProcessInfo -> Text -> IO Int
+gitNumCommitsOn :: Logger ProcessInfo1 -> Text -> IO Int
 gitNumCommitsOn logger commit = do
   commitsString <- git logger ["rev-list", "--count", commit]
   pure case Text.Read.decimal commitsString of
@@ -305,24 +239,24 @@ gitNumCommitsOn logger commit = do
     _ -> 0
 
 -- | Does the given remote branch (refs/remotes/...) exist?
-gitRemoteBranchExists :: Logger ProcessInfo -> Text -> Text -> IO Bool
+gitRemoteBranchExists :: Logger ProcessInfo1 -> Text -> Text -> IO Bool
 gitRemoteBranchExists logger remote branch =
   git logger ["rev-parse", "--quiet", "--verify", "refs/remotes/" <> remote <> "/" <> branch]
 
 -- | Get the head of a remote branch.
-gitRemoteBranchHead :: Logger ProcessInfo -> Text -> Text -> IO (Maybe Text)
+gitRemoteBranchHead :: Logger ProcessInfo1 -> Text -> Text -> IO (Maybe Text)
 gitRemoteBranchHead logger remote branch =
   git logger ["rev-parse", "refs/remotes/" <> remote <> "/" <> branch] <&> \case
     Left _ -> Nothing
     Right head -> Just head
 
-gitRevParseAbsoluteGitDir :: Logger ProcessInfo -> IO (Maybe Text)
+gitRevParseAbsoluteGitDir :: Logger ProcessInfo1 -> IO (Maybe Text)
 gitRevParseAbsoluteGitDir logger =
   git logger ["rev-parse", "--absolute-git-dir"] <&> \case
     Left _ -> Nothing
     Right gitdir -> Just gitdir
 
-gitShow :: Logger ProcessInfo -> Text -> IO GitCommitInfo
+gitShow :: Logger ProcessInfo1 -> Text -> IO GitCommitInfo
 gitShow logger commit =
   fmap parseGitCommitInfo do
     git
@@ -335,7 +269,7 @@ gitShow logger commit =
       ]
 
 -- | Stash uncommitted changes (if any).
-gitStash :: Logger ProcessInfo -> IO (Maybe Text)
+gitStash :: Logger ProcessInfo1 -> IO (Maybe Text)
 gitStash logger = do
   gitCreateStash logger >>= \case
     Nothing -> pure Nothing
@@ -344,7 +278,7 @@ gitStash logger = do
       git @() logger ["reset", "--hard", "--quiet", "HEAD"]
       pure (Just stash)
 
-gitUnstageChanges :: Logger ProcessInfo -> IO ()
+gitUnstageChanges :: Logger ProcessInfo1 -> IO ()
 gitUnstageChanges logger = do
   git @() logger ["reset", "--quiet", "--", "."]
   untrackedFiles <- gitListUntrackedFiles logger
@@ -354,7 +288,7 @@ gitUnstageChanges logger = do
 -- | Parse the @git@ version from the output of @git --version@.
 --
 -- If parsing fails, returns version @0.0.0@.
-gitVersion :: Logger ProcessInfo -> IO GitVersion
+gitVersion :: Logger ProcessInfo1 -> IO GitVersion
 gitVersion logger = do
   v0 <- git logger ["--version"]
   pure do
@@ -374,7 +308,7 @@ data GitWorktree = GitWorktree
   }
 
 -- | List worktrees.
-gitListWorktrees :: Logger ProcessInfo -> IO [GitWorktree]
+gitListWorktrees :: Logger ProcessInfo1 -> IO [GitWorktree]
 gitListWorktrees logger = do
   git logger ["worktree", "list"] <&> map \line ->
     case Parsec.parse parser "" line of
@@ -413,7 +347,7 @@ parseGitRepo url = do
   url' <- Text.stripSuffix ".git" url
   pure (url, Text.takeWhileEnd (/= '/') url')
 
-git :: (ProcessOutput a) => Logger ProcessInfo -> [Text] -> IO a
+git :: (ProcessOutput a) => Logger ProcessInfo1 -> [Text] -> IO a
 git logger args = do
   let spec :: CreateProcess
       spec =
@@ -446,7 +380,7 @@ git logger args = do
       errput <- atomically (Ki.await stderrThread)
       log
         logger
-        ProcessInfo
+        ProcessInfo1
           { name = "git",
             args,
             output,
@@ -488,7 +422,7 @@ ignoreSyncExceptions action =
 -- Yucky interactive/inherity variant (so 'git commit' can open an editor).
 --
 -- FIXME bracket
-git2 :: Logger ProcessInfo -> [Text] -> IO Bool
+git2 :: Logger ProcessInfo1 -> [Text] -> IO Bool
 git2 logger args = do
   t0 <- getMonotonicTime
   (_, _, stderrHandle, processHandle) <- do
@@ -519,7 +453,7 @@ git2 logger args = do
   errput <- drainTextHandle (fromJust stderrHandle)
   log
     logger
-    ProcessInfo
+    ProcessInfo1
       { name = "git",
         args,
         output = Seq.empty,

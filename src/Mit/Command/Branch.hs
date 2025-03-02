@@ -10,12 +10,13 @@ import Mit.Logger (Logger, log)
 import Mit.Output (Output)
 import Mit.Output qualified as Output
 import Mit.Prelude
-import Mit.ProcessInfo (ProcessInfo)
 import System.Exit (ExitCode (..))
 import UnconditionalJump (Label, goto, label)
 
-mitBranch :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> Text -> IO ()
-mitBranch exit output pinfo branch = do
+mitBranch :: Label ExitCode -> Logger Output -> Text -> IO ()
+mitBranch exit output branch = do
+  let pinfo = Output.ProcessInfo >$< output
+
   -- Get the worktree directory that corresponds to the branch.
   --
   -- For example, if the main branch (and git repo) is in /my/repo/main, and the branch is called "foo", then the

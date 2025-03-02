@@ -18,7 +18,6 @@ import Mit.Merge (MergeResult (..), mergeResultConflicts, performMerge)
 import Mit.Output (Output)
 import Mit.Output qualified as Output
 import Mit.Prelude
-import Mit.ProcessInfo (ProcessInfo (..))
 import Mit.Push
   ( DidntPushReason (NothingToPush, PushWouldBeRejected, PushWouldntReachRemote, TriedToPush),
     PushResult (DidntPush, Pushed),
@@ -31,8 +30,10 @@ import Mit.State (MitState (..), writeMitState)
 import System.Exit (ExitCode (..))
 import UnconditionalJump (Label, goto)
 
-mitMerge :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> IO () -> Text -> Text -> IO ()
-mitMerge exit output pinfo sync gitdir source = do
+mitMerge :: Label ExitCode -> Logger Output -> IO () -> Text -> Text -> IO ()
+mitMerge exit output sync gitdir source = do
+  let pinfo = Output.ProcessInfo >$< output
+
   whenM (gitMergeInProgress gitdir) do
     log output Output.MergeInProgress
     goto exit (ExitFailure 1)
@@ -47,10 +48,12 @@ mitMerge exit output pinfo sync gitdir source = do
   -- Special case: if on branch "foo", treat `mit merge foo` and `mit merge origin/foo` as `mit sync`
   case source == branch || source == upstream of
     True -> sync
-    False -> mitMerge_ exit output pinfo gitdir source branch
+    False -> mitMerge_ exit output gitdir source branch
 
-mitMerge_ :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> Text -> Text -> Text -> IO ()
-mitMerge_ exit output pinfo gitdir source branch = do
+mitMerge_ :: Label ExitCode -> Logger Output -> Text -> Text -> Text -> IO ()
+mitMerge_ exit output gitdir source branch = do
+  let pinfo = Output.ProcessInfo >$< output
+
   fetched <- gitFetch pinfo "origin"
   maybeHead0 <- gitMaybeHead pinfo
   maybeUpstreamHead <- gitRemoteBranchHead pinfo "origin" branch
@@ -63,7 +66,7 @@ mitMerge_ exit output pinfo gitdir source branch = do
         log output Output.NoSuchBranch
         goto exit (ExitFailure 1)
 
-  abortIfCouldFastForwardToUpstream exit output pinfo maybeHead0 maybeUpstreamHead fetched
+  abortIfCouldFastForwardToUpstream exit output maybeHead0 maybeUpstreamHead fetched
 
   whenJust (snapshotStash snapshot) \_stash ->
     git @() pinfo ["reset", "--hard", "--quiet", "HEAD"]

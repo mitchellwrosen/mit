@@ -10,8 +10,8 @@ where
 import Data.Text qualified as Text
 import Mit.Git (git, gitUnstageChanges)
 import Mit.Logger (Logger)
+import Mit.Output (ProcessInfo1)
 import Mit.Prelude
-import Mit.ProcessInfo (ProcessInfo)
 
 data Undo
   = Reset !Text
@@ -49,7 +49,7 @@ parseUndo =
       ["revert", commit] -> Just (Revert commit)
       _ -> Nothing
 
-applyUndo :: Logger ProcessInfo -> Undo -> IO ()
+applyUndo :: Logger ProcessInfo1 -> Undo -> IO ()
 applyUndo logger = \case
   Reset commit -> applyReset commit
   ResetApply commit1 commit2 -> do

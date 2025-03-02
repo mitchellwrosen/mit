@@ -1,10 +1,13 @@
 module Mit.Output
   ( Output (..),
+    ProcessInfo1 (..),
   )
 where
 
-import Mit.Git (GitCommitInfo, GitConflict)
+import Mit.Git.GitCommitInfo (GitCommitInfo)
+import Mit.Git.GitConflict (GitConflict)
 import Mit.Prelude
+import System.Exit (ExitCode)
 
 data Output
   = BranchAlreadyCheckedOut !Text !Text !Text -- branch name, where we want to check it out, where it is checked out
@@ -23,6 +26,7 @@ data Output
   | NothingToCommit
   | NothingToMerge !Text !Text
   | NothingToUndo
+  | ProcessInfo !ProcessInfo1
   | PullFailed !(Seq1 GitCommitInfo) !(Seq1 GitConflict)
   | PullSucceeded !(Seq1 GitCommitInfo)
   | PushFailed !(Seq1 GitCommitInfo)
@@ -31,3 +35,13 @@ data Output
   | PushWouldntReachRemote !(Seq1 GitCommitInfo)
   | UnstashFailed !(Seq1 GitConflict)
   | UpstreamIsAhead !Int
+
+-- | Information about a completed process.
+data ProcessInfo1 = ProcessInfo1
+  { name :: !Text,
+    args :: ![Text],
+    output :: !(Seq Text),
+    errput :: !(Seq Text),
+    exitCode :: !ExitCode,
+    seconds :: !Double
+  }

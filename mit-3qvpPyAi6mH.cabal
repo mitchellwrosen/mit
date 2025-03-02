@@ -101,13 +101,14 @@ library
     Mit.Command.Undo
     Mit.Directory
     Mit.Git
+    Mit.Git.GitCommitInfo
+    Mit.Git.GitConflict
     Mit.Logger
     Mit.Merge
     Mit.Output
     Mit.Prelude
     Mit.Pretty
     Mit.Process
-    Mit.ProcessInfo
     Mit.Push
     Mit.Seq
     Mit.Seq1

@@ -34,12 +34,11 @@ import Mit.Git
   )
 import Mit.Logger (Logger, log, makeLogger)
 import Mit.Merge (MergeResult (..), mergeResultConflicts, performMerge)
-import Mit.Output (Output)
+import Mit.Output (Output, ProcessInfo1 (..))
 import Mit.Output qualified as Output
 import Mit.Prelude
 import Mit.Pretty (Pretty)
 import Mit.Pretty qualified as Pretty
-import Mit.ProcessInfo (ProcessInfo (..))
 import Mit.Push
   ( DidntPushReason (NothingToPush, PushWouldBeRejected, PushWouldntReachRemote, TriedToPush),
     PushResult (DidntPush, Pushed),
@@ -102,50 +101,9 @@ main = do
 
   let output :: Logger Output
       output =
-        makeLogger (putPretty . renderOutput)
+        makeLogger (Pretty.put . renderOutput verbosity)
 
-  let pinfo :: Logger ProcessInfo
-      pinfo =
-        case verbosity of
-          V0 -> makeLogger \_ -> pure ()
-          V1 -> makeLogger \info -> Pretty.put (v1 info)
-          V2 -> makeLogger \info -> Pretty.put (v1 info <> v2 info)
-        where
-          v1 :: ProcessInfo -> Pretty
-          v1 info =
-            Pretty.line $
-              Pretty.style (Text.Builder.bold . Text.Builder.brightBlack) $
-                let prefix =
-                      marker info
-                        <> " ["
-                        <> Pretty.builder (foldMap Text.Builder.fromChar (printf "%.0f" (info.seconds * (1000 :: Double)) :: [Char]))
-                        <> "ms] "
-                        <> Pretty.text info.name
-                        <> " "
-                 in case List1.nonEmpty info.args of
-                      Nothing -> prefix
-                      Just args1 -> prefix <> sconcat (List1.intersperse (Pretty.char ' ') (quote <$> args1))
-          v2 :: ProcessInfo -> Pretty
-          v2 info =
-            (info.output <> info.errput)
-              & Foldable.toList
-              & map (Pretty.style Text.Builder.brightBlack . Pretty.text)
-              & Pretty.lines
-              & Pretty.indent 4
-
-          quote :: Text -> Pretty.Line
-          quote s =
-            if Text.any Char.isSpace s
-              then Pretty.char '\'' <> Pretty.text (Text.replace "'" "\\'" s) <> Pretty.char '\''
-              else Pretty.text s
-
-          marker :: ProcessInfo -> Pretty.Line
-          marker info =
-            case info.exitCode of
-              ExitFailure _ -> Pretty.char '✗'
-              ExitSuccess -> Pretty.char '✓'
-
-  exitCode <- main1 output pinfo command
+  exitCode <- main1 output command
   exitWith exitCode
   where
     parser :: Opt.Parser (Verbosity, MitCommand)
@@ -192,14 +150,16 @@ main = do
                 (Opt.progDesc "Undo the last `mit` command (if possible).")
           ]
 
-main1 :: Logger Output -> Logger ProcessInfo -> MitCommand -> IO ExitCode
-main1 output pinfo command =
+main1 :: Logger Output -> MitCommand -> IO ExitCode
+main1 output command =
   label \exit -> do
-    main2 exit output pinfo command
+    main2 exit output command
     pure ExitSuccess
 
-main2 :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> MitCommand -> IO ()
-main2 exit output pinfo command = do
+main2 :: Label ExitCode -> Logger Output -> MitCommand -> IO ()
+main2 exit output command = do
+  let pinfo = Output.ProcessInfo >$< output
+
   version <- gitVersion pinfo
   -- 'git stash create' broken before 2.30.1
   when (version < GitVersion 2 30 1) do
@@ -211,18 +171,18 @@ main2 exit output pinfo command = do
       log output Output.NoGitDir
       goto exit (ExitFailure 1)
 
-  let sync = mitSync exit output pinfo gitdir
-      syncWith = mitSyncWith exit output pinfo gitdir
+  let sync = mitSync exit output gitdir
+      syncWith = mitSyncWith exit output gitdir
 
   case command of
-    MitCommand'Branch branch -> mitBranch exit output pinfo branch
+    MitCommand'Branch branch -> mitBranch exit output branch
     MitCommand'Commit allFlag dontSyncFlag maybeMessage ->
-      mitCommit exit output pinfo syncWith gitdir allFlag dontSyncFlag maybeMessage
+      mitCommit exit output syncWith gitdir allFlag dontSyncFlag maybeMessage
     MitCommand'Gc -> mitGc
-    MitCommand'Merge branch -> mitMerge exit output pinfo (syncWith Nothing) gitdir branch
+    MitCommand'Merge branch -> mitMerge exit output (syncWith Nothing) gitdir branch
     MitCommand'Status -> mitStatus pinfo
     MitCommand'Sync -> sync
-    MitCommand'Undo -> mitUndo exit output pinfo sync gitdir
+    MitCommand'Undo -> mitUndo exit output sync gitdir
 
 data MitCommand
   = MitCommand'Branch !Text
@@ -238,12 +198,12 @@ mitGc =
   pure ()
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
-mitSync :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> Text -> IO ()
-mitSync exit output pinfo gitdir = do
+mitSync :: Label ExitCode -> Logger Output -> Text -> IO ()
+mitSync exit output gitdir = do
   whenM (gitMergeInProgress gitdir) do
     log output Output.MergeInProgress
     goto exit (ExitFailure 1)
-  mitSyncWith exit output pinfo gitdir Nothing
+  mitSyncWith exit output gitdir Nothing
 
 -- | @mitSyncWith _ maybeUndos@
 --
@@ -265,8 +225,9 @@ mitSync exit output pinfo gitdir = do
 --
 -- Instead, we want to undo to the point before running the 'mit merge' that caused the conflicts, which were later
 -- resolved by 'mit commit'.
-mitSyncWith :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> Text -> Maybe Undo -> IO ()
-mitSyncWith exit output pinfo gitdir maybeUndo = do
+mitSyncWith :: Label ExitCode -> Logger Output -> Text -> Maybe Undo -> IO ()
+mitSyncWith exit output gitdir maybeUndo = do
+  let pinfo = Output.ProcessInfo >$< output
   fetched <- gitFetch pinfo "origin"
   branch <- do
     gitCurrentBranch pinfo & onNothingM do
@@ -330,92 +291,133 @@ mitSyncWith exit output pinfo gitdir maybeUndo = do
 
   when (isJust undo1) (log output Output.CanUndo)
 
-putPretty :: Pretty -> IO ()
-putPretty p =
-  Pretty.put (emptyLine <> Pretty.indent 2 p <> emptyLine)
-  where
-    emptyLine = Pretty.line (Pretty.char ' ')
-
 ------------------------------------------------------------------------------------------------------------------------
 -- Rendering output to the terminal
 
-renderOutput :: Output -> Pretty
-renderOutput = \case
+renderOutput :: Verbosity -> Output -> Pretty
+renderOutput verbosity = \case
   Output.BranchAlreadyCheckedOut branch dir1 dir2 ->
-    Pretty.line $
-      Pretty.style Text.red $
-        "✗ "
-          <> Pretty.branch branch
-          <> " is already checked out in "
-          <> Pretty.directory dir2
-          <> ", so I can't check it out again in "
-          <> Pretty.directory dir1
-          <> "."
-  Output.CanUndo -> Pretty.line ("Run " <> Pretty.command "mit undo" <> " to undo this change.")
+    indented $
+      Pretty.line $
+        Pretty.style Text.red $
+          "✗ "
+            <> Pretty.branch branch
+            <> " is already checked out in "
+            <> Pretty.directory dir2
+            <> ", so I can't check it out again in "
+            <> Pretty.directory dir1
+            <> "."
+  Output.CanUndo -> indented (Pretty.line ("Run " <> Pretty.command "mit undo" <> " to undo this change."))
   Output.CheckedOutBranch branch directory ->
-    Pretty.line ("✓ I checked out " <> Pretty.branch branch <> " in " <> Pretty.directory directory)
+    indented (Pretty.line ("✓ I checked out " <> Pretty.branch branch <> " in " <> Pretty.directory directory))
   Output.CreatedBranch branch directory ->
-    Pretty.line ("✓ I created " <> Pretty.branch branch <> " in " <> Pretty.directory directory <> ".")
+    indented (Pretty.line ("✓ I created " <> Pretty.branch branch <> " in " <> Pretty.directory directory <> "."))
   Output.DirectoryAlreadyExists branch directory ->
-    Pretty.line $
-      Pretty.style Text.red $
-        "✗ I can't check out "
-          <> Pretty.branch branch
-          <> " in "
-          <> Pretty.directory directory
-          <> ", because the directory already exists."
-  Output.GitTooOld -> Pretty.line (Pretty.style Text.red "✗ I require git version 2.30.1 or later.")
+    indented $
+      Pretty.line $
+        Pretty.style Text.red $
+          "✗ I can't check out "
+            <> Pretty.branch branch
+            <> " in "
+            <> Pretty.directory directory
+            <> ", because the directory already exists."
+  Output.GitTooOld -> indented (Pretty.line (Pretty.style Text.red "✗ I require git version 2.30.1 or later."))
   Output.MergeFailed commits conflicts ->
-    Pretty.lines $
-      Pretty.style
-        Text.red
-        ( "✗ I tried to merge "
-            <> commitsN (Seq1.length commits)
-            <> ", but there are conflicts."
-        )
-        : map (\conflict -> "  " <> Pretty.style Text.red (prettyGitConflict conflict)) (Seq1.toList conflicts)
+    indented $
+      Pretty.lines $
+        Pretty.style
+          Text.red
+          ( "✗ I tried to merge "
+              <> commitsN (Seq1.length commits)
+              <> ", but there are conflicts."
+          )
+          : map (\conflict -> "  " <> Pretty.style Text.red (prettyGitConflict conflict)) (Seq1.toList conflicts)
   Output.MergeSucceeded maybeCommits ->
-    case maybeCommits of
+    indented case maybeCommits of
       Nothing -> Pretty.line (Pretty.style Text.green "✓ I merged some commits.")
       Just commits ->
         Pretty.lines $
           Pretty.style Text.green ("✓ I merged " <> commitsN (Seq1.length commits) <> ".")
             : Pretty.indent 2 (prettyCommits commits)
   Output.MergeInProgress ->
-    Pretty.line $
-      Pretty.style Text.red $
-        "✗ There's currently a merge in progress that has to be resolved first."
-  Output.NoGitDir -> Pretty.line (Pretty.style Text.red "✗ The current directory doesn't contain a git repository.")
-  Output.NoSuchBranch -> Pretty.line (Pretty.style Text.red "✗ No such branch.")
-  Output.NotOnBranch -> Pretty.line (Pretty.style Text.red "✗ You are not on a branch.")
-  Output.NothingToCommit -> Pretty.line (Pretty.style Text.red "✗ There's nothing to commit.")
+    indented $
+      Pretty.line $
+        Pretty.style Text.red $
+          "✗ There's currently a merge in progress that has to be resolved first."
+  Output.NoGitDir ->
+    indented (Pretty.line (Pretty.style Text.red "✗ The current directory doesn't contain a git repository."))
+  Output.NoSuchBranch -> indented (Pretty.line (Pretty.style Text.red "✗ No such branch."))
+  Output.NotOnBranch -> indented (Pretty.line (Pretty.style Text.red "✗ You are not on a branch."))
+  Output.NothingToCommit -> indented (Pretty.line (Pretty.style Text.red "✗ There's nothing to commit."))
   Output.NothingToMerge source target ->
-    Pretty.line $
-      Pretty.style Text.green $
-        "✓ " <> Pretty.branch target <> " is already up-to-date with " <> Pretty.branch source <> "."
-  Output.NothingToUndo -> Pretty.line (Pretty.style Text.red "✗ There's nothing to undo.")
+    indented $
+      Pretty.line $
+        Pretty.style Text.green $
+          "✓ " <> Pretty.branch target <> " is already up-to-date with " <> Pretty.branch source <> "."
+  Output.NothingToUndo -> indented (Pretty.line (Pretty.style Text.red "✗ There's nothing to undo."))
+  Output.ProcessInfo info ->
+    case verbosity of
+      V0 -> Pretty.empty
+      V1 -> v1
+      V2 ->
+        v1
+          <> ( (info.output <> info.errput)
+                 & Foldable.toList
+                 & map (Pretty.style Text.Builder.brightBlack . Pretty.text)
+                 & Pretty.lines
+                 & Pretty.indent 4
+             )
+    where
+      v1 :: Pretty
+      v1 =
+        Pretty.line $
+          Pretty.style (Text.Builder.bold . Text.Builder.brightBlack) $
+            let prefix =
+                  ( case info.exitCode of
+                      ExitFailure _ -> Pretty.char '✗'
+                      ExitSuccess -> Pretty.char '✓'
+                  )
+                    <> " ["
+                    <> Pretty.builder (foldMap Text.Builder.fromChar (printf "%.0f" (info.seconds * (1000 :: Double)) :: [Char]))
+                    <> "ms] "
+                    <> Pretty.text info.name
+                    <> " "
+             in case List1.nonEmpty info.args of
+                  Nothing -> prefix
+                  Just args1 -> prefix <> sconcat (List1.intersperse (Pretty.char ' ') (quote <$> args1))
+      quote :: Text -> Pretty.Line
+      quote s =
+        if Text.any Char.isSpace s
+          then Pretty.char '\'' <> Pretty.text (Text.replace "'" "\\'" s) <> Pretty.char '\''
+          else Pretty.text s
   Output.PullFailed commits conflicts ->
-    Pretty.lines $
-      Pretty.style
-        Text.red
-        ( "✗ I tried to pull "
-            <> commitsN (Seq1.length commits)
-            <> ", but there are conflicts."
-        )
-        : map (\conflict -> "  " <> Pretty.style Text.red (prettyGitConflict conflict)) (Seq1.toList conflicts)
+    indented $
+      Pretty.lines $
+        Pretty.style
+          Text.red
+          ( "✗ I tried to pull "
+              <> commitsN (Seq1.length commits)
+              <> ", but there are conflicts."
+          )
+          : map (\conflict -> "  " <> Pretty.style Text.red (prettyGitConflict conflict)) (Seq1.toList conflicts)
   Output.PullSucceeded commits ->
-    Pretty.lines $
-      Pretty.style Text.green ("✓ I pulled " <> commitsN (Seq1.length commits) <> ".")
-        : Pretty.indent 2 (prettyCommits commits)
+    indented $
+      Pretty.lines $
+        Pretty.style Text.green ("✓ I pulled " <> commitsN (Seq1.length commits) <> ".")
+          : Pretty.indent 2 (prettyCommits commits)
   Output.PushFailed commits ->
-    Pretty.line (Pretty.style Text.red ("✗ I tried to push " <> commitsN (Seq1.length commits) <> ", but failed."))
+    indented $
+      Pretty.line $
+        Pretty.style Text.red ("✗ I tried to push " <> commitsN (Seq1.length commits) <> ", but failed.")
   Output.PushSucceeded commits ->
-    Pretty.lines $
-      Pretty.style Text.green ("✓ I pushed " <> commitsN (Seq1.length commits) <> ".")
-        : Pretty.indent 2 (prettyCommits commits)
+    indented $
+      Pretty.lines $
+        Pretty.style Text.green ("✓ I pushed " <> commitsN (Seq1.length commits) <> ".")
+          : Pretty.indent 2 (prettyCommits commits)
   Output.PushWouldBeRejected localCommits numRemoteCommits ->
-    Pretty.line
-      ( Pretty.style
+    indented $
+      Pretty.line $
+        Pretty.style
           Text.red
           ( "✗ I didn't try to push "
               <> commitsN (Seq1.length localCommits)
@@ -423,19 +425,19 @@ renderOutput = \case
               <> commitsVN numRemoteCommits
               <> " to pull first."
           )
-      )
   Output.PushWouldntReachRemote commits ->
-    Pretty.line
-      ( Pretty.style
+    indented $
+      Pretty.line $
+        Pretty.style
           Text.red
           ("✗ I didn't try to push " <> commitsN (Seq1.length commits) <> ", because you appear to be offline.")
-      )
   Output.UnstashFailed conflicts ->
-    Pretty.lines $
-      Pretty.style Text.red ("✗ I tried to restore your uncommitted changes, but there are conflicts.")
-        : map (\conflict -> "  " <> Pretty.style Text.red (prettyGitConflict conflict)) (Seq1.toList conflicts)
+    indented $
+      Pretty.lines $
+        Pretty.style Text.red ("✗ I tried to restore your uncommitted changes, but there are conflicts.")
+          : map (\conflict -> "  " <> Pretty.style Text.red (prettyGitConflict conflict)) (Seq1.toList conflicts)
   Output.UpstreamIsAhead numRemoteCommits ->
-    Pretty.line (Pretty.style Text.red ("✗ There " <> commitsVN numRemoteCommits <> " to pull first."))
+    indented (Pretty.line (Pretty.style Text.red ("✗ There " <> commitsVN numRemoteCommits <> " to pull first.")))
   where
     commitsN :: Int -> Pretty.Line
     commitsN = \case
@@ -446,6 +448,12 @@ renderOutput = \case
     commitsVN = \case
       1 -> "is 1 commit"
       n -> "are " <> Pretty.int n <> " commits"
+
+    indented :: Pretty -> Pretty
+    indented p =
+      emptyLine <> Pretty.indent 2 p <> emptyLine
+      where
+        emptyLine = Pretty.line (Pretty.char ' ')
 
 prettyCommits :: Seq1 GitCommitInfo -> Pretty
 prettyCommits commits =

@@ -5,11 +5,11 @@ where
 
 import Mit.Git (git, gitUnstageChanges)
 import Mit.Logger (Logger)
+import Mit.Output (ProcessInfo1)
 import Mit.Prelude
 import Mit.Pretty qualified as Pretty
-import Mit.ProcessInfo (ProcessInfo)
 
-mitStatus :: Logger ProcessInfo -> IO ()
+mitStatus :: Logger ProcessInfo1 -> IO ()
 mitStatus pinfo = do
   gitUnstageChanges pinfo
   lines <- git pinfo ["status", "--porcelain=v1"]

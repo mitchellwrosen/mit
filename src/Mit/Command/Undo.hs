@@ -8,15 +8,16 @@ import Mit.Logger (Logger, log)
 import Mit.Output (Output)
 import Mit.Output qualified as Output
 import Mit.Prelude
-import Mit.ProcessInfo (ProcessInfo)
 import Mit.State (MitState (..), readMitState)
 import Mit.Undo (applyUndo)
 import System.Exit (ExitCode (..))
 import UnconditionalJump (Label, goto)
 
 -- FIXME output what we just undid
-mitUndo :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> IO () -> Text -> IO ()
-mitUndo exit output pinfo sync gitdir = do
+mitUndo :: Label ExitCode -> Logger Output -> IO () -> Text -> IO ()
+mitUndo exit output sync gitdir = do
+  let pinfo = Output.ProcessInfo >$< output
+
   branch <-
     gitCurrentBranch pinfo & onNothingM do
       log output Output.NotOnBranch

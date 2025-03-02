@@ -9,7 +9,7 @@ where
 import Mit.Git (gitCreateStash, gitMaybeHead)
 import Mit.Logger (Logger)
 import Mit.Prelude
-import Mit.ProcessInfo (ProcessInfo)
+import Mit.Output (ProcessInfo1)
 import Mit.Undo (Undo (..))
 
 -- | The snapshot of a git repository.
@@ -30,7 +30,7 @@ undoToSnapshot = \case
   Clean head -> Just (Reset head)
   Dirty head stash -> Just (ResetApply head stash)
 
-performSnapshot :: Logger ProcessInfo -> IO Snapshot
+performSnapshot :: Logger ProcessInfo1 -> IO Snapshot
 performSnapshot pinfo =
   gitMaybeHead pinfo >>= \case
     Nothing -> pure Empty

@@ -8,13 +8,13 @@ where
 
 import Mit.Git (GitCommitInfo, GitConflict, git, gitCommitsBetween, gitConflicts, gitMergeInProgress)
 import Mit.Logger (Logger)
+import Mit.Output (ProcessInfo1)
 import Mit.Prelude
-import Mit.ProcessInfo (ProcessInfo)
 import Mit.Seq1 qualified as Seq1
 
 -- | @performMerge logger message commit@ merges @commit@ into the current branch, preferring a fast-forward. If a merge
 -- commit is created, its commit message is @message@.
-performMerge :: Logger ProcessInfo -> Text -> Text -> Text -> IO MergeResult
+performMerge :: Logger ProcessInfo1 -> Text -> Text -> Text -> IO MergeResult
 performMerge logger gitdir commit message = do
   head <- git logger ["rev-parse", "HEAD"]
   commits0 <- gitCommitsBetween logger (Just head) commit

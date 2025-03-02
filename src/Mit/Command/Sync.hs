@@ -18,7 +18,6 @@ import Mit.Merge (MergeResult (..), mergeResultConflicts, performMerge)
 import Mit.Output (Output)
 import Mit.Output qualified as Output
 import Mit.Prelude
-import Mit.ProcessInfo (ProcessInfo (..))
 import Mit.Push
   ( DidntPushReason (NothingToPush, PushWouldBeRejected, PushWouldntReachRemote, TriedToPush),
     PushResult (DidntPush, Pushed),
@@ -33,12 +32,12 @@ import System.Exit (ExitCode (..))
 import UnconditionalJump (Label, goto)
 
 -- TODO implement "lateral sync", i.e. a merge from some local or remote branch, followed by a sync to upstream
-mitSync :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> Text -> IO ()
-mitSync exit output pinfo gitdir = do
+mitSync :: Label ExitCode -> Logger Output -> Text -> IO ()
+mitSync exit output gitdir = do
   whenM (gitMergeInProgress gitdir) do
     log output Output.MergeInProgress
     goto exit (ExitFailure 1)
-  mitSyncWith exit output pinfo gitdir Nothing
+  mitSyncWith exit output gitdir Nothing
 
 -- | @mitSyncWith _ maybeUndos@
 --
@@ -60,8 +59,10 @@ mitSync exit output pinfo gitdir = do
 --
 -- Instead, we want to undo to the point before running the 'mit merge' that caused the conflicts, which were later
 -- resolved by 'mit commit'.
-mitSyncWith :: Label ExitCode -> Logger Output -> Logger ProcessInfo -> Text -> Maybe Undo -> IO ()
-mitSyncWith exit output pinfo gitdir maybeUndo = do
+mitSyncWith :: Label ExitCode -> Logger Output -> Text -> Maybe Undo -> IO ()
+mitSyncWith exit output gitdir maybeUndo = do
+  let pinfo = Output.ProcessInfo >$< output
+
   fetched <- gitFetch pinfo "origin"
   branch <- do
     gitCurrentBranch pinfo & onNothingM do

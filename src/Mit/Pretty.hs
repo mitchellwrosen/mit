@@ -42,12 +42,14 @@ instance IsString Line where
     builder . fromString
 
 put :: Pretty -> IO ()
-put = do
-  f . coerce (Text.Builder.runBuilder . fold . List.intersperse (Text.Builder.fromChar '\n'))
-  where
-    f :: Text -> IO ()
-    f t =
-      Mit.Prelude.when (not (Text.null t)) (Text.putStrLn t)
+put = \case
+  [] -> pure ()
+  xs ->
+    f (coerce (Text.Builder.runBuilder . fold . List.intersperse (Text.Builder.fromChar '\n')) xs)
+    where
+      f :: Text -> IO ()
+      f t =
+        Mit.Prelude.when (not (Text.null t)) (Text.putStrLn t)
 
 empty :: Pretty
 empty =

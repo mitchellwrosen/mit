@@ -28,7 +28,6 @@ import Mit.Logger (Logger, log)
 import Mit.Output (Output)
 import Mit.Output qualified as Output
 import Mit.Prelude
-import Mit.ProcessInfo (ProcessInfo (..))
 import Mit.Push
   ( DidntPushReason (NothingToPush, PushWouldBeRejected, PushWouldntReachRemote, TriedToPush),
     PushResult (DidntPush, Pushed),
@@ -45,27 +44,27 @@ import UnconditionalJump (Label, goto)
 mitCommit ::
   Label ExitCode ->
   Logger Output ->
-  Logger ProcessInfo ->
   (Maybe Undo -> IO ()) ->
   Text ->
   Bool ->
   Bool ->
   Maybe Text ->
   IO ()
-mitCommit exit output pinfo sync gitdir allFlag dontSyncFlag maybeMessage = do
+mitCommit exit output sync gitdir allFlag dontSyncFlag maybeMessage = do
   gitMergeInProgress gitdir >>= \case
-    False -> mitCommitNotMerge exit output pinfo gitdir allFlag dontSyncFlag maybeMessage
-    True -> mitCommitMerge exit output pinfo sync gitdir dontSyncFlag
+    False -> mitCommitNotMerge exit output gitdir allFlag dontSyncFlag maybeMessage
+    True -> mitCommitMerge exit output sync gitdir dontSyncFlag
 
 mitCommitMerge ::
   Label ExitCode ->
   Logger Output ->
-  Logger ProcessInfo ->
   (Maybe Undo -> IO ()) ->
   Text ->
   Bool ->
   IO ()
-mitCommitMerge exit output pinfo sync gitdir dontSyncFlag = do
+mitCommitMerge exit output sync gitdir dontSyncFlag = do
+  let pinfo = Output.ProcessInfo >$< output
+
   branch <-
     gitCurrentBranch pinfo & onNothingM do
       log output Output.NotOnBranch
@@ -125,13 +124,14 @@ mitCommitMerge exit output pinfo sync gitdir dontSyncFlag = do
 mitCommitNotMerge ::
   Label ExitCode ->
   Logger Output ->
-  Logger ProcessInfo ->
   Text ->
   Bool ->
   Bool ->
   Maybe Text ->
   IO ()
-mitCommitNotMerge exit output pinfo gitdir allFlag dontSyncFlag maybeMessage = do
+mitCommitNotMerge exit output gitdir allFlag dontSyncFlag maybeMessage = do
+  let pinfo = Output.ProcessInfo >$< output
+
   -- Check to see if there's even anything to commit, and bail if not.
   gitUnstageChanges pinfo
   gitDiff pinfo >>= \case
@@ -151,7 +151,7 @@ mitCommitNotMerge exit output pinfo gitdir allFlag dontSyncFlag maybeMessage = d
       else gitFetch pinfo "origin"
   maybeUpstreamHead <- gitRemoteBranchHead pinfo "origin" branch
   maybeHead0 <- gitMaybeHead pinfo
-  abortIfCouldFastForwardToUpstream exit output pinfo maybeHead0 maybeUpstreamHead fetched
+  abortIfCouldFastForwardToUpstream exit output maybeHead0 maybeUpstreamHead fetched
 
   maybeState0 <-
     case maybeHead0 of
@@ -233,12 +233,13 @@ mitCommitNotMerge exit output pinfo gitdir allFlag dontSyncFlag maybeMessage = d
 abortIfCouldFastForwardToUpstream ::
   Label ExitCode ->
   Logger Output ->
-  Logger ProcessInfo ->
   Maybe Text ->
   Maybe Text ->
   Bool ->
   IO ()
-abortIfCouldFastForwardToUpstream exit output pinfo maybeHead maybeUpstreamHead fetched = do
+abortIfCouldFastForwardToUpstream exit output maybeHead maybeUpstreamHead fetched = do
+  let pinfo = Output.ProcessInfo >$< output
+
   when fetched do
     whenJust maybeUpstreamHead \upstreamHead -> do
       head <-
